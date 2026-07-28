@@ -1,0 +1,82 @@
+name: Сообщить об ошибке
+description: Воспроизводимая ошибка AppRestore без чувствительных данных
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за сообщение. Не прикладывайте IPA, Apple ID, пароль,
+        2FA-код, passphrase, токены или необработанные логи с UDID.
+        Уязвимости отправляйте по инструкции в SECURITY.md.
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Безопасность данных
+      options:
+        - label: Я удалил(а) из описания IPA, credentials, токены, UDID и приватные пути.
+          required: true
+        - label: Это обычная ошибка, а не конфиденциальная уязвимость.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Версия AppRestore
+      description: Вывод `apprestore --version`.
+      placeholder: "0.1.3"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Операционная система
+      options:
+        - Windows 11 x64
+        - Windows 10 x64
+        - macOS
+        - Другая
+    validations:
+      required: true
+
+  - type: input
+    id: powershell
+    attributes:
+      label: PowerShell или shell
+      description: Например, Windows PowerShell 5.1, PowerShell 7.6 или zsh.
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги воспроизведения
+      description: Укажите минимальную последовательность команд и действий.
+      placeholder: |
+        1. Выполнить ...
+        2. Подключить ...
+        3. Выбрать ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемое поведение
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Фактическое поведение
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Очищенная диагностика
+      description: |
+        Приложите вывод `apprestore doctor` после удаления UDID, email,
+        локальных путей и других персональных данных.
+      render: shell

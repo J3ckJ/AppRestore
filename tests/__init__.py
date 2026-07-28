@@ -1,0 +1,1 @@
+"""AppRestore test suite."""

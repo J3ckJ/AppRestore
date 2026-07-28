@@ -1,0 +1,400 @@
+& {
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = "Stop"
+    $ProgressPreference = "SilentlyContinue"
+
+    $AppRestoreVersion = @@APPRESTORE_VERSION@@
+    $DefaultArchiveUrl = @@APPRESTORE_ARCHIVE_URL@@
+    $ExpectedArchiveSha256 = @@APPRESTORE_ARCHIVE_SHA256@@
+    $ArchiveRootName = "AppRestore-$AppRestoreVersion"
+    $ArchiveFileName = "$ArchiveRootName-source.zip"
+    $UrlOverrideVariable = "APPRESTORE_BOOTSTRAP_ARCHIVE_URL"
+
+    if ($PSVersionTable.PSVersion -lt [version]"5.1") {
+        throw "AppRestore requires PowerShell 5.1 or newer."
+    }
+    if (-not [string]::Equals(
+        $env:OS,
+        "Windows_NT",
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "This bootstrap installs the Windows version of AppRestore."
+    }
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        throw "LOCALAPPDATA is not defined."
+    }
+    if ($ExpectedArchiveSha256 -notmatch "^[0-9a-f]{64}$") {
+        throw "The bootstrap contains an invalid pinned SHA-256 value."
+    }
+
+    $ArchiveUrlText = $DefaultArchiveUrl
+    $ArchiveUrlOverride = [Environment]::GetEnvironmentVariable(
+        $UrlOverrideVariable,
+        "Process"
+    )
+    if (-not [string]::IsNullOrWhiteSpace($ArchiveUrlOverride)) {
+        $ArchiveUrlText = $ArchiveUrlOverride
+    }
+
+    try {
+        $ArchiveUri = [uri]$ArchiveUrlText
+    }
+    catch {
+        throw "The AppRestore archive URL is invalid."
+    }
+    if (-not $ArchiveUri.IsAbsoluteUri) {
+        throw "The AppRestore archive URL must be absolute."
+    }
+    $UsesHttps = [string]::Equals(
+        $ArchiveUri.Scheme,
+        "https",
+        [System.StringComparison]::OrdinalIgnoreCase
+    )
+    $UsesLoopbackHttp = (
+        [string]::Equals(
+            $ArchiveUri.Scheme,
+            "http",
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -and
+        $ArchiveUri.IsLoopback -and
+        -not [string]::IsNullOrWhiteSpace($ArchiveUrlOverride)
+    )
+    if (-not ($UsesHttps -or $UsesLoopbackHttp)) {
+        throw (
+            "The archive URL must use HTTPS. " +
+            "Only the explicit loopback override may use HTTP."
+        )
+    }
+
+    function Assert-SafeReleaseArchive {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Path,
+
+            [Parameter(Mandatory = $true)]
+            [string]$Destination,
+
+            [Parameter(Mandatory = $true)]
+            [string]$ExpectedRoot
+        )
+
+        Add-Type -AssemblyName System.IO.Compression | Out-Null
+        Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
+
+        $DestinationFull = [System.IO.Path]::GetFullPath(
+            $Destination
+        ).TrimEnd("\")
+        $DestinationPrefix = $DestinationFull + "\"
+        $ExpectedInstaller = (
+            $ExpectedRoot + "/install-windows.ps1"
+        ).ToLowerInvariant()
+        $InstallerCount = 0
+        $EntryCount = 0
+        [long]$TotalExpandedBytes = 0
+        $SeenTargets = @{}
+
+        $ReleaseArchive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        try {
+            foreach ($Entry in $ReleaseArchive.Entries) {
+                $EntryCount += 1
+                if ($EntryCount -gt 1000) {
+                    throw "The release archive contains too many entries."
+                }
+
+                $EntryName = $Entry.FullName.Replace("\", "/")
+                if (
+                    [string]::IsNullOrWhiteSpace($EntryName) -or
+                    $EntryName.StartsWith("/") -or
+                    $EntryName.Contains(":")
+                ) {
+                    throw "Unsafe ZIP entry: $($Entry.FullName)"
+                }
+
+                $RawSegments = @($EntryName.Split("/"))
+                $IsDirectory = $EntryName.EndsWith("/")
+                $Segments = @()
+                for ($Index = 0; $Index -lt $RawSegments.Count; $Index++) {
+                    $Segment = $RawSegments[$Index]
+                    if ([string]::IsNullOrEmpty($Segment)) {
+                        if ($IsDirectory -and $Index -eq ($RawSegments.Count - 1)) {
+                            continue
+                        }
+                        throw "Unsafe empty ZIP path segment: $EntryName"
+                    }
+                    if ($Segment -in @(".", "..")) {
+                        throw "Unsafe ZIP traversal entry: $EntryName"
+                    }
+                    $Segments += $Segment
+                }
+
+                if (
+                    $Segments.Count -eq 0 -or
+                    -not [string]::Equals(
+                        $Segments[0],
+                        $ExpectedRoot,
+                        [System.StringComparison]::Ordinal
+                    )
+                ) {
+                    throw "Unexpected release archive root: $EntryName"
+                }
+
+                $NormalizedRelative = $Segments -join "\"
+                $TargetPath = [System.IO.Path]::GetFullPath(
+                    (Join-Path $DestinationFull $NormalizedRelative)
+                )
+                if (-not $TargetPath.StartsWith(
+                    $DestinationPrefix,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                    throw "ZIP entry escapes the extraction directory: $EntryName"
+                }
+
+                $TargetKey = $TargetPath.TrimEnd("\").ToLowerInvariant()
+                if ($SeenTargets.ContainsKey($TargetKey)) {
+                    throw "Duplicate ZIP target: $EntryName"
+                }
+                $SeenTargets[$TargetKey] = $true
+
+                $UnixMode = (
+                    ($Entry.ExternalAttributes -shr 16) -band 0xFFFF
+                )
+                if (($UnixMode -band 0xF000) -eq 0xA000) {
+                    throw "Symbolic links are not allowed in the release archive."
+                }
+                $WindowsAttributes = $Entry.ExternalAttributes -band 0xFFFF
+                if (
+                    ($WindowsAttributes -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0
+                ) {
+                    throw "Reparse points are not allowed in the release archive."
+                }
+
+                $TotalExpandedBytes += $Entry.Length
+                if ($TotalExpandedBytes -gt 64MB) {
+                    throw "The expanded release archive is unexpectedly large."
+                }
+
+                if ($EntryName.ToLowerInvariant() -eq $ExpectedInstaller) {
+                    $InstallerCount += 1
+                }
+            }
+        }
+        finally {
+            $ReleaseArchive.Dispose()
+        }
+
+        if ($EntryCount -eq 0) {
+            throw "The release archive is empty."
+        }
+        if ($InstallerCount -ne 1) {
+            throw "The release archive must contain exactly one payload installer."
+        }
+    }
+
+    function Add-AppRestoreToProcessPath {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$BinPath
+        )
+
+        $BinForComparison = $BinPath.TrimEnd("\")
+        $KeptSegments = @(
+            foreach ($Segment in ($env:Path -split ";")) {
+                $CleanSegment = $Segment.Trim().Trim('"').TrimEnd("\")
+                if (-not [string]::Equals(
+                    $CleanSegment,
+                    $BinForComparison,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                    $Segment
+                }
+            }
+        )
+        $env:Path = (@($BinPath) + $KeptSegments) -join ";"
+    }
+
+    $TempRoot = Join-Path (
+        [System.IO.Path]::GetTempPath()
+    ) ("AppRestore-bootstrap-" + [guid]::NewGuid().ToString("N"))
+    $ArchivePath = Join-Path $TempRoot $ArchiveFileName
+    $ExtractRoot = Join-Path $TempRoot "payload"
+
+    try {
+        New-Item -ItemType Directory -Path $ExtractRoot -Force | Out-Null
+
+        Write-Host "Downloading AppRestore $AppRestoreVersion..."
+        $PreviousSecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol
+        try {
+            [System.Net.ServicePointManager]::SecurityProtocol = (
+                $PreviousSecurityProtocol -bor
+                [System.Net.SecurityProtocolType]::Tls12
+            )
+            $DownloadParameters = @{
+                Uri = $ArchiveUri
+                OutFile = $ArchivePath
+                UseBasicParsing = $true
+                MaximumRedirection = 5
+                TimeoutSec = 300
+                ErrorAction = "Stop"
+            }
+            Microsoft.PowerShell.Utility\Invoke-WebRequest @DownloadParameters |
+                Out-Null
+        }
+        finally {
+            [System.Net.ServicePointManager]::SecurityProtocol = (
+                $PreviousSecurityProtocol
+            )
+        }
+
+        $ArchiveStream = [System.IO.File]::OpenRead($ArchivePath)
+        $Sha256Algorithm = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $ActualArchiveSha256 = (
+                [System.BitConverter]::ToString(
+                    $Sha256Algorithm.ComputeHash($ArchiveStream)
+                ).Replace("-", "").ToLowerInvariant()
+            )
+        }
+        finally {
+            $Sha256Algorithm.Dispose()
+            $ArchiveStream.Dispose()
+        }
+        if (-not [string]::Equals(
+            $ActualArchiveSha256,
+            $ExpectedArchiveSha256,
+            [System.StringComparison]::Ordinal
+        )) {
+            throw (
+                "AppRestore archive SHA-256 mismatch. " +
+                "Expected $ExpectedArchiveSha256, got $ActualArchiveSha256."
+            )
+        }
+
+        Assert-SafeReleaseArchive `
+            -Path $ArchivePath `
+            -Destination $ExtractRoot `
+            -ExpectedRoot $ArchiveRootName
+        [System.IO.Compression.ZipFile]::ExtractToDirectory(
+            $ArchivePath,
+            $ExtractRoot
+        )
+
+        $ExtractedRoot = Join-Path $ExtractRoot $ArchiveRootName
+        $TopLevelItems = @(Get-ChildItem -LiteralPath $ExtractRoot -Force)
+        if (
+            $TopLevelItems.Count -ne 1 -or
+            -not (Test-Path -LiteralPath $ExtractedRoot -PathType Container)
+        ) {
+            throw "The extracted release has an unexpected layout."
+        }
+        $ReparseItems = @(
+            Get-ChildItem -LiteralPath $ExtractedRoot -Force -Recurse |
+                Where-Object {
+                    ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+                }
+        )
+        if ($ReparseItems.Count -ne 0) {
+            throw "The extracted release contains a reparse point."
+        }
+
+        $PayloadInstaller = Join-Path $ExtractedRoot "install-windows.ps1"
+        if (-not (Test-Path -LiteralPath $PayloadInstaller -PathType Leaf)) {
+            throw "The verified release does not contain install-windows.ps1."
+        }
+
+        if ($PSVersionTable.PSEdition -eq "Core") {
+            $PowerShellExecutable = Join-Path $PSHOME "pwsh.exe"
+        }
+        else {
+            $PowerShellExecutable = Join-Path $PSHOME "powershell.exe"
+        }
+        if (-not (Test-Path -LiteralPath $PowerShellExecutable -PathType Leaf)) {
+            throw "Cannot find the current PowerShell executable."
+        }
+
+        & $PowerShellExecutable `
+            -NoLogo `
+            -NoProfile `
+            -ExecutionPolicy Bypass `
+            -File $PayloadInstaller
+        $InstallerExitCode = $LASTEXITCODE
+        if ($InstallerExitCode -ne 0) {
+            throw "The AppRestore installer failed with code $InstallerExitCode."
+        }
+
+        $InstallRoot = [System.IO.Path]::GetFullPath(
+            (Join-Path $env:LOCALAPPDATA "Programs\AppRestore")
+        )
+        $BinTarget = Join-Path $InstallRoot "bin"
+        $ExpectedCommandPath = Join-Path $BinTarget "apprestore.cmd"
+        if (-not (Test-Path -LiteralPath $ExpectedCommandPath -PathType Leaf)) {
+            throw "The installer finished but apprestore.cmd was not created."
+        }
+
+        # The payload runs in a child PowerShell process. Update this original
+        # terminal explicitly so the very next command can be `apprestore`.
+        Add-AppRestoreToProcessPath -BinPath $BinTarget
+        $ResolvedCommand = Get-Command "apprestore" -ErrorAction Stop
+        if (
+            $ResolvedCommand.CommandType -ne
+                [System.Management.Automation.CommandTypes]::Application -or
+            -not [string]::Equals(
+                [string]$ResolvedCommand.Source,
+                $ExpectedCommandPath,
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            throw (
+                "Another command named apprestore shadows " +
+                "$ExpectedCommandPath in this PowerShell session."
+            )
+        }
+
+        $VersionOutput = @(& $ResolvedCommand.Source "--version" 2>&1)
+        $VersionExitCode = $LASTEXITCODE
+        $InstalledVersion = (
+            ($VersionOutput | ForEach-Object { [string]$_ }) -join "`n"
+        ).Trim()
+        if (
+            $VersionExitCode -ne 0 -or
+            -not [string]::Equals(
+                $InstalledVersion,
+                $AppRestoreVersion,
+                [System.StringComparison]::Ordinal
+            )
+        ) {
+            throw (
+                "Installed AppRestore version check failed. " +
+                "Expected $AppRestoreVersion, got '$InstalledVersion' " +
+                "(code $VersionExitCode)."
+            )
+        }
+
+        Write-Host ""
+        Write-Host "AppRestore $AppRestoreVersion is ready."
+        Write-Host "Run: apprestore"
+    }
+    finally {
+        if (Test-Path -LiteralPath $TempRoot) {
+            $ResolvedTempRoot = [System.IO.Path]::GetFullPath($TempRoot)
+            $SystemTempRoot = [System.IO.Path]::GetFullPath(
+                [System.IO.Path]::GetTempPath()
+            ).TrimEnd("\")
+            $ExpectedLeafPrefix = "AppRestore-bootstrap-"
+            $TempLeaf = [System.IO.Path]::GetFileName($ResolvedTempRoot)
+            $TempParent = [System.IO.Path]::GetDirectoryName($ResolvedTempRoot)
+            if (
+                [string]::Equals(
+                    $TempParent,
+                    $SystemTempRoot,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                ) -and
+                $TempLeaf.StartsWith(
+                    $ExpectedLeafPrefix,
+                    [System.StringComparison]::Ordinal
+                )
+            ) {
+                Remove-Item -LiteralPath $ResolvedTempRoot -Recurse -Force
+            }
+        }
+    }
+}

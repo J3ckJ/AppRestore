@@ -1,0 +1,557 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import platform
+import socket
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Mapping
+
+from .catalog import CatalogError, parse_json_output, parse_udids
+from .command import CommandError, Runner
+from .models import Device, DoctorCheck
+from .paths import resolve_tool
+
+
+class ToolUnavailable(RuntimeError):
+    pass
+
+
+IPATOOL_VERSION = "2.3.1"
+# Хеш официального windows-amd64.tar.gz (проверяется установщиком до распаковки).
+# Не использовать для сверки извлечённого ipatool.exe — это разные файлы.
+IPATOOL_WINDOWS_AMD64_ARCHIVE_SHA256 = (
+    "8e986ed9320f205bcd1fd24640ec46a5b92ff346425aff28d1103e57d2fdcadb"
+)
+# Обратная совместимость со старым именем константы.
+IPATOOL_WINDOWS_AMD64_SHA256 = IPATOOL_WINDOWS_AMD64_ARCHIVE_SHA256
+
+
+class AppRestoreTools:
+    def __init__(self, runner: Runner | None = None) -> None:
+        self.runner = runner or Runner()
+        # После успешного login не запускаем лишний процесс `auth info`:
+        # официальный ipatool хранит passphrase только в памяти одного
+        # процесса и на Windows спросил бы его снова.
+        self._ipatool_session_authenticated = False
+
+    def _tool(self, name: str) -> str:
+        executable = resolve_tool(name)
+        if not executable:
+            raise ToolUnavailable(f"{name} is not installed")
+        return executable
+
+    def _ipatool_cmd(self, *parts: str) -> list[str]:
+        # Не проксируем password, 2FA или passphrase через argv/env. В
+        # интерактивных вызовах ipatool сам читает их из унаследованной
+        # консоли без отображения password/passphrase.
+        return [self._tool("ipatool"), *parts]
+
+    def doctor(self) -> list[DoctorCheck]:
+        pymobiledevice3 = resolve_tool("pymobiledevice3")
+        ipatool = resolve_tool("ipatool")
+        ipatool_ok, ipatool_detail = self._ipatool_check(ipatool)
+        checks = [
+            DoctorCheck(
+                "pymobiledevice3",
+                pymobiledevice3 is not None,
+                pymobiledevice3 or "not found",
+            ),
+            DoctorCheck(
+                "ipatool",
+                ipatool_ok,
+                ipatool_detail,
+            ),
+        ]
+        if platform.system() == "Windows":
+            service_ok, service_detail = self._apple_mobile_device_service()
+            checks.append(
+                DoctorCheck(
+                    "Apple Mobile Device Service",
+                    service_ok,
+                    service_detail,
+                )
+            )
+            port_ok, port_detail = self._apple_usbmux_port()
+            checks.append(DoctorCheck("Apple usbmux (127.0.0.1:27015)", port_ok, port_detail))
+        return checks
+
+    def _ipatool_check(self, executable: str | None) -> tuple[bool, str]:
+        if not executable:
+            return False, "not found"
+        path = Path(executable)
+        result = self.runner.run([executable, "--version"])
+        version_text = f"{result.stdout} {result.stderr}".strip()
+        if result.returncode != 0:
+            return False, f"{path} (version check failed)"
+        if IPATOOL_VERSION not in version_text:
+            return False, (
+                f"{path} ({version_text or 'version unknown'}; "
+                f"expected {IPATOOL_VERSION})"
+            )
+        return True, f"{path} ({version_text})"
+
+    def _apple_mobile_device_service(self) -> tuple[bool, str]:
+        sc = resolve_tool("sc") or "sc.exe"
+        for service_name in ("Apple Mobile Device Service", "Apple Mobile Device"):
+            try:
+                result = self.runner.run([sc, "query", service_name], capture=True)
+            except CommandError:
+                continue
+            combined = f"{result.stdout}\n{result.stderr}"
+            if result.returncode == 0:
+                if "RUNNING" in combined.upper():
+                    return True, f"{service_name}: running"
+                return False, f"{service_name}: installed but not running"
+        return (
+            False,
+            "not found; will try winget Apple.AppleMobileDeviceSupport via setup",
+        )
+
+    @staticmethod
+    def _apple_usbmux_port() -> tuple[bool, str]:
+        try:
+            with socket.create_connection(("127.0.0.1", 27015), timeout=1):
+                return True, "listening"
+        except OSError as exc:
+            return False, f"not reachable: {exc}"
+
+    def windows_bridge_ready(self) -> bool:
+        if platform.system() != "Windows":
+            return True
+        port_ok, _ = self._apple_usbmux_port()
+        return port_ok
+
+    def ensure_windows_bridge(self) -> list[str]:
+        """Install/start Apple Mobile Device Support when missing (Windows only)."""
+        notes: list[str] = []
+        if platform.system() != "Windows":
+            return notes
+        if self.windows_bridge_ready():
+            notes.append("Apple USB bridge already available")
+            return notes
+
+        sc = resolve_tool("sc") or "sc.exe"
+        for service_name in ("Apple Mobile Device Service", "Apple Mobile Device"):
+            try:
+                queried = self.runner.run([sc, "query", service_name], capture=True)
+            except CommandError:
+                continue
+            if queried.returncode != 0:
+                continue
+            notes.append(f"Starting {service_name}…")
+            try:
+                self.runner.run([sc, "start", service_name], capture=True)
+            except CommandError:
+                pass
+            if self._wait_usbmux(timeout_sec=20):
+                notes.append("Apple usbmux is listening on 127.0.0.1:27015")
+                return notes
+
+        notes.append(
+            "Installing Apple Mobile Device Support via winget "
+            "(UAC may appear)…"
+        )
+        install_ok = self._winget_install_apple_bridge()
+        if not install_ok:
+            notes.append(
+                "winget could not install Apple.AppleMobileDeviceSupport; "
+                "install Apple Devices or iTunes from Microsoft Store, then reconnect the iPhone"
+            )
+            return notes
+
+        for service_name in ("Apple Mobile Device Service", "Apple Mobile Device"):
+            try:
+                self.runner.run([sc, "start", service_name], capture=True)
+            except CommandError:
+                continue
+
+        if self._wait_usbmux(timeout_sec=45):
+            notes.append("Apple USB bridge is ready")
+        else:
+            notes.append(
+                "Apple Mobile Device Support installed, but usbmux is not listening yet; "
+                "reconnect the iPhone and unlock it"
+            )
+        return notes
+
+    @staticmethod
+    def _wait_usbmux(timeout_sec: int) -> bool:
+        end = time.monotonic() + timeout_sec
+        while time.monotonic() < end:
+            try:
+                with socket.create_connection(("127.0.0.1", 27015), timeout=1):
+                    return True
+            except OSError:
+                time.sleep(1)
+        return False
+
+    def _winget_install_apple_bridge(self) -> bool:
+        winget = resolve_tool("winget")
+        if not winget:
+            return False
+
+        success_codes = {
+            0,
+            (-1978335189) & 0xFFFFFFFF,
+            (-1978334964) & 0xFFFFFFFF,
+        }
+
+        def succeeded(returncode: int) -> bool:
+            return (returncode & 0xFFFFFFFF) in success_codes
+
+        args = [
+            winget,
+            "install",
+            "-e",
+            "--id",
+            "Apple.AppleMobileDeviceSupport",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+        ]
+        try:
+            result = self.runner.run(args, capture=True, timeout=600)
+        except CommandError:
+            result = None
+        if result is not None:
+            if succeeded(result.returncode):
+                return True
+            combined = f"{result.stdout}\n{result.stderr}".lower()
+            if "already installed" in combined:
+                return True
+
+        # Retry elevated via PowerShell if winget needs admin.
+        ps = resolve_tool("powershell") or "powershell.exe"
+        winget_literal = winget.replace("'", "''")
+        elevated = [
+            ps,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            (
+                f"$process = Start-Process -FilePath '{winget_literal}' -ArgumentList "
+                "'install','-e','--id','Apple.AppleMobileDeviceSupport',"
+                "'--accept-package-agreements','--accept-source-agreements',"
+                "'--disable-interactivity' "
+                "-Verb RunAs -Wait -PassThru; exit $process.ExitCode"
+            ),
+        ]
+        try:
+            elevated_result = self.runner.run(elevated, capture=True, timeout=700)
+        except CommandError:
+            return False
+        return succeeded(elevated_result.returncode) or "already installed" in (
+            elevated_result.stdout + elevated_result.stderr
+        ).lower()
+
+    def list_udids(self) -> list[str]:
+        command = [
+            self._tool("pymobiledevice3"),
+            "usbmux",
+            "list",
+            "--simple",
+            "--usb",
+        ]
+        result = self.runner.run(command, check=True)
+        return parse_udids(result.stdout)
+
+    def device_info(self, udid: str) -> Device:
+        result = self.runner.run(
+            [
+                self._tool("pymobiledevice3"),
+                "lockdown",
+                "info",
+                "--udid",
+                udid,
+            ],
+            check=True,
+        )
+        payload = parse_json_output(result.stdout)
+        if not isinstance(payload, dict):
+            raise CatalogError("unexpected lockdown info format")
+        return Device(
+            udid=udid,
+            name=str(payload.get("DeviceName") or "iPhone"),
+            ios_version=str(payload.get("ProductVersion") or "?"),
+        )
+
+    def list_apps(self, udid: str) -> Any:
+        # Prefer a rich lookup with iTunesMetadata so we can recover adam/store IDs
+        # for delisted apps (bundle lookup in ipatool would fail).
+        try:
+            return self._list_apps_with_metadata(udid)
+        except Exception:
+            result = self.runner.run(
+                [
+                    self._tool("pymobiledevice3"),
+                    "apps",
+                    "list",
+                    "--type",
+                    "User",
+                    "--show-placeholders",
+                    "--udid",
+                    udid,
+                ],
+                check=True,
+                timeout=120,
+            )
+            return parse_json_output(result.stdout)
+
+    def _list_apps_with_metadata(self, udid: str) -> Any:
+        async def _run() -> dict[str, Any]:
+            from pymobiledevice3.lockdown import create_using_usbmux
+            from pymobiledevice3.services.installation_proxy import (
+                InstallationProxyService,
+            )
+
+            async with (
+                await create_using_usbmux(
+                    serial=udid,
+                    connection_type="USB",
+                ) as lockdown,
+                InstallationProxyService(lockdown) as proxy,
+            ):
+                options: dict[str, Any] = {
+                    "ApplicationType": "User",
+                    "ShowPlaceholders": True,
+                    "ReturnAttributes": [
+                        "CFBundleIdentifier",
+                        "CFBundleDisplayName",
+                        "CFBundleName",
+                        "CFBundleShortVersionString",
+                        "CFBundleVersion",
+                        "StaticDiskUsage",
+                        "DynamicDiskUsage",
+                        "ApplicationType",
+                        "IsPlaceholder",
+                        "IsDemotedApp",
+                        "iTunesMetadata",
+                        "ApplicationSINF",
+                    ],
+                }
+                result = await proxy.lookup(options)
+                if not isinstance(result, dict):
+                    raise CatalogError("unexpected apps list format")
+                return result
+
+        return asyncio.run(_run())
+
+    def lookup_store_id_on_device(self, udid: str, bundle_id: str) -> str | None:
+        from .catalog import enrich_app_record, find_store_id
+
+        try:
+            payload = self._list_apps_with_metadata(udid)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        info = payload.get(bundle_id)
+        if not isinstance(info, Mapping):
+            # Some firmwares nest inconsistently; scan values.
+            for value in payload.values():
+                if (
+                    isinstance(value, Mapping)
+                    and value.get("CFBundleIdentifier") == bundle_id
+                ):
+                    info = value
+                    break
+        if not isinstance(info, Mapping):
+            return None
+        return find_store_id(enrich_app_record(info))
+
+    def device_request_redownload(self, udid: str, bundle_id: str) -> bool:
+        """Ask the phone to restore/redownload an offloaded app (best-effort)."""
+
+        async def _run() -> None:
+            from pymobiledevice3.lockdown import create_using_usbmux
+            from pymobiledevice3.services.installation_proxy import (
+                InstallationProxyService,
+            )
+
+            async with (
+                await create_using_usbmux(
+                    serial=udid,
+                    connection_type="USB",
+                ) as lockdown,
+                InstallationProxyService(lockdown) as proxy,
+            ):
+                await proxy.restore(bundle_id)
+
+        try:
+            asyncio.run(_run())
+            return True
+        except Exception:
+            return False
+
+    def app_still_offloaded(self, udid: str, bundle_id: str) -> bool:
+        try:
+            payload = self._list_apps_with_metadata(udid)
+        except Exception:
+            return True
+        if not isinstance(payload, dict):
+            return True
+        info = payload.get(bundle_id)
+        if not isinstance(info, Mapping):
+            for value in payload.values():
+                if isinstance(value, Mapping) and value.get("CFBundleIdentifier") == bundle_id:
+                    info = value
+                    break
+        if not isinstance(info, Mapping):
+            # App disappeared from placeholders — treat as restored/removed.
+            return False
+        return bool(
+            info.get("IsPlaceholder") is True
+            or info.get("IsDemotedApp") is True
+            or "placeholder" in str(info.get("ApplicationType") or "").lower()
+        )
+
+    def install_ipa(self, udid: str, ipa: Path) -> None:
+        try:
+            from pymobiledevice3.lockdown import create_using_usbmux
+            from pymobiledevice3.services.afc import AfcService
+            from pymobiledevice3.services.installation_proxy import (
+                InstallationProxyService,
+            )
+        except ImportError:
+            pymobile = resolve_tool("pymobiledevice3")
+            if pymobile:
+                result = self.runner.run(
+                    [pymobile, "apps", "install", str(ipa), "--udid", udid],
+                    capture=False,
+                )
+                if result.returncode == 0:
+                    return
+                raise ToolUnavailable(
+                    "pymobiledevice3 failed to install the verified IPA"
+                )
+        else:
+            async def install_streaming() -> None:
+                remote_dir = "/PublicStaging/AppRestore"
+                remote_path = f"{remote_dir}/{uuid.uuid4().hex}.ipa"
+                async with (
+                    await create_using_usbmux(
+                        serial=udid,
+                        connection_type="USB",
+                    ) as lockdown,
+                    AfcService(lockdown) as afc,
+                    InstallationProxyService(lockdown) as installation_proxy,
+                ):
+                    await afc.makedirs(remote_dir)
+                    try:
+                        await afc.push(
+                            str(ipa),
+                            remote_path,
+                            progress_bar=True,
+                        )
+                        await installation_proxy.send_package(
+                            "Install",
+                            {},
+                            None,
+                            remote_path,
+                        )
+                    finally:
+                        try:
+                            await afc.rm_single(remote_path, force=True)
+                        except Exception:
+                            pass
+
+            try:
+                asyncio.run(install_streaming())
+                return
+            except Exception as exc:
+                raise ToolUnavailable(
+                    f"pymobiledevice3 failed to install the verified IPA: {exc}"
+                ) from exc
+
+        ideviceinstaller = resolve_tool("ideviceinstaller")
+        if ideviceinstaller:
+            result = self.runner.run(
+                [ideviceinstaller, "-u", udid, "install", str(ipa)],
+                capture=False,
+            )
+            if result.returncode == 0:
+                return
+            result = self.runner.run(
+                [ideviceinstaller, "-u", udid, "-i", str(ipa)],
+                capture=False,
+            )
+            if result.returncode == 0:
+                return
+        raise ToolUnavailable("IPA installation failed")
+
+    def ipatool_authenticated(self) -> bool:
+        if self._ipatool_session_authenticated:
+            return True
+        ipatool = resolve_tool("ipatool")
+        if not ipatool:
+            return False
+        result = self.runner.run(self._ipatool_cmd("auth", "info"), capture=False)
+        if result.returncode == 0:
+            self._ipatool_session_authenticated = True
+            return True
+        return False
+
+    def ipatool_auth_info(self) -> dict[str, Any] | None:
+        ipatool = resolve_tool("ipatool")
+        if not ipatool:
+            return None
+        result = self.runner.run(
+            self._ipatool_cmd("--format", "json", "auth", "info"),
+            # stdout нужен вызывающему коду как JSON. Runner перенаправляет
+            # только stdout/stderr; stdin остаётся унаследованным.
+            capture=True,
+        )
+        if result.returncode != 0:
+            return None
+        self._ipatool_session_authenticated = True
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {"authenticated": True}
+        return payload if isinstance(payload, dict) else {"authenticated": True}
+
+    def ipatool_login(self, email: str) -> None:
+        result = self.runner.run(
+            self._ipatool_cmd("auth", "login", "--email", email),
+            capture=False,
+        )
+        if result.returncode != 0:
+            self._ipatool_session_authenticated = False
+            raise ToolUnavailable("ipatool authentication failed")
+        self._ipatool_session_authenticated = True
+
+    def ipatool_revoke(self) -> None:
+        result = self.runner.run(
+            self._ipatool_cmd("auth", "revoke"),
+            capture=False,
+        )
+        self._ipatool_session_authenticated = False
+        if result.returncode != 0:
+            raise ToolUnavailable("ipatool revoke failed")
+
+    def download_ipa(
+        self,
+        output: Path,
+        *,
+        bundle_id: str | None = None,
+        store_id: str | None = None,
+        purchase: bool = False,
+    ) -> bool:
+        if bool(bundle_id) == bool(store_id):
+            raise ValueError("provide exactly one of bundle_id or store_id")
+        args = self._ipatool_cmd("download")
+        if store_id:
+            if not store_id.isdigit() or int(store_id) <= 0:
+                raise ValueError("store_id must be a positive integer")
+            args.extend(["--app-id", store_id])
+        else:
+            args.extend(["--bundle-identifier", str(bundle_id)])
+        if purchase:
+            args.append("--purchase")
+        args.extend(["--output", str(output)])
+        result = self.runner.run(args, capture=False)
+        return result.returncode == 0
