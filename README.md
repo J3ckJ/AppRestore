@@ -1,5 +1,9 @@
 # AppRestore
 
+[![CI](https://github.com/J3ckJ/AppRestore/actions/workflows/ci.yml/badge.svg)](https://github.com/J3ckJ/AppRestore/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/J3ckJ/AppRestore)](https://github.com/J3ckJ/AppRestore/releases/latest)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
+
 AppRestore помогает вернуть сгруженные (`offloaded`) приложения на iPhone:
 находит подходящий локальный IPA, просит устройство повторно загрузить
 приложение либо загружает доступный учётной записи пакет через `ipatool`,
@@ -15,6 +19,15 @@ AppRestore помогает вернуть сгруженные (`offloaded`) п
 > App Store. Приложение должно быть доступно вашей учётной записи либо у вас
 > должна быть законно полученная локальная копия IPA. Окончательное решение об
 > установке принимает iOS. Проект не связан с Apple Inc.
+
+```text
+     _                ____           _
+    / \   _ __  _ __ |  _ \ ___  ___| |_ ___  _ __ ___
+   / _ \ | '_ \| '_ \| |_) / _ \/ __| __/ _ \| '__/ _ \
+  / ___ \| |_) | |_) |  _ <  __/\__ \ || (_) | | |  __/
+ /_/   \_\ .__/| .__/|_| \_\___||___/\__\___/|_|  \___|
+         |_|   |_|
+```
 
 ## Возможности
 
@@ -59,10 +72,12 @@ apprestore
 пользователя. Вторая команда сразу открывает меню в **том же PowerShell** —
 перезапуск терминала не нужен.
 
-Канонические архивы и checksums публикуются в
-[GitHub Releases](https://github.com/J3ckJ/AppRestore/releases). До загрузки
-assets первого релиза `v0.1.3` GitHub URL выше будет возвращать `404`; в этом
-случае используйте установку из исходников либо дождитесь публикации релиза.
+Канонический релиз
+[`v0.1.3`](https://github.com/J3ckJ/AppRestore/releases/tag/v0.1.3), архивы и
+checksums опубликованы в
+[GitHub Releases](https://github.com/J3ckJ/AppRestore/releases). Bootstrap
+закрепляет versioned URL и SHA-256 архива, поэтому подмена release asset
+обнаруживается до запуска установщика.
 
 Совместимое зеркало E.L System Tools сохраняет прежнюю короткую команду:
 
@@ -423,14 +438,14 @@ SHA256SUMS.txt
 - [Сторонние компоненты](./THIRD_PARTY_NOTICES.md)
 - [Сообщить о проблеме](https://github.com/J3ckJ/AppRestore/issues)
 
-Первый GitHub-native релиз имеет номер `0.1.3`. Ссылки на release и one-line
-installer начнут работать после публикации тега и assets. Опубликованные
-version tags и release assets нельзя перезаписывать другими байтами.
+Первый GitHub-native релиз `0.1.3` опубликован вместе с one-line installer и
+SHA-256 checksums. Опубликованные version tags и release assets нельзя
+перезаписывать другими байтами.
 
 При сообщении об ошибке не прикладывайте IPA, пароль Apple ID, 2FA-код,
 passphrase, токены или необработанный лог с UDID.
 
 ## Лицензия
 
-Код заявлен под `GPL-3.0-or-later`. См. [LICENSE](./LICENSE) и
-[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+Copyright © 2026 J3ckJ. Код распространяется под `GPL-3.0-or-later`. См.
+[LICENSE](./LICENSE) и [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
