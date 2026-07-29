@@ -20,9 +20,13 @@
     )) {
         throw "This bootstrap installs the Windows version of AppRestore."
     }
-    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-        throw "LOCALAPPDATA is not defined."
+    $KnownLocalAppData = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::LocalApplicationData
+    )
+    if ([string]::IsNullOrWhiteSpace($KnownLocalAppData)) {
+        throw "Windows Known Folder LocalApplicationData is unavailable."
     }
+    $KnownLocalAppData = [System.IO.Path]::GetFullPath($KnownLocalAppData)
     if ($ExpectedArchiveSha256 -notmatch "^[0-9a-f]{64}$") {
         throw "The bootstrap contains an invalid pinned SHA-256 value."
     }
@@ -322,7 +326,7 @@
         }
 
         $InstallRoot = [System.IO.Path]::GetFullPath(
-            (Join-Path $env:LOCALAPPDATA "Programs\AppRestore")
+            (Join-Path $KnownLocalAppData "Programs\AppRestore")
         )
         $BinTarget = Join-Path $InstallRoot "bin"
         $ExpectedCommandPath = Join-Path $BinTarget "apprestore.cmd"

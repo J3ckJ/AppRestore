@@ -22,18 +22,6 @@ die() {
   exit 1
 }
 
-find_brew() {
-  if command -v brew >/dev/null 2>&1; then
-    command -v brew
-  elif [[ -x /opt/homebrew/bin/brew ]]; then
-    printf '%s\n' /opt/homebrew/bin/brew
-  elif [[ -x /usr/local/bin/brew ]]; then
-    printf '%s\n' /usr/local/bin/brew
-  else
-    return 1
-  fi
-}
-
 python_is_supported() {
   "$1" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' \
     >/dev/null 2>&1
@@ -68,31 +56,9 @@ run_core() {
 }
 
 setup() {
-  local brew python
-  brew=$(find_brew) || die \
-    "не найден Homebrew. Установи его с https://brew.sh и повтори setup"
-
-  printf "%b\n" "${BOLD}${CYAN}Установка зависимостей AppRestore…${NC}"
-  "$brew" install python@3.12 ipatool
-  python=$(command -v python3.12 2>/dev/null || true)
-  if [[ -z "$python" ]]; then
-    python="$("$brew" --prefix python@3.12)/bin/python3.12"
-  fi
-  [[ -x "$python" ]] || die "Homebrew не предоставил Python 3.12"
-
-  mkdir -p "$APP_SUPPORT_DIR" "$APPRESTORE_IPA_DIR" "$APPRESTORE_CACHE_DIR"
-  chmod 700 "$APP_SUPPORT_DIR" "$APPRESTORE_IPA_DIR" \
-    "$APPRESTORE_CACHE_DIR" 2>/dev/null || true
-  "$python" -m venv "$VENV_DIR"
-  "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check \
-    --upgrade pip
-  "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check \
-    --upgrade "$SCRIPT_DIR"
-
-  export PATH="$VENV_DIR/bin:$PATH"
-  printf "%b\n" "${GREEN}Зависимости установлены.${NC}"
-  printf "%b\n" "${DIM}Пароль Apple ID и 2FA вводятся только в самом ipatool.${NC}"
-  "$VENV_DIR/bin/python" "$SCRIPT_DIR/apprestore.py" doctor
+  [[ -x "$SCRIPT_DIR/install-macos.sh" ]] || die \
+    "не найден install-macos.sh рядом с launcher"
+  exec "$SCRIPT_DIR/install-macos.sh"
 }
 
 show_header() {

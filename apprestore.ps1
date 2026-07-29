@@ -16,15 +16,18 @@ if (Test-Path -LiteralPath $BundledBin -PathType Container) {
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
-if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-    throw "Переменная LOCALAPPDATA не определена."
-}
-
-$InstalledRoot = [System.IO.Path]::GetFullPath(
-    (Join-Path $env:LOCALAPPDATA "Programs\AppRestore")
+$KnownLocalAppData = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::LocalApplicationData
 )
-$InstalledEntryPoint = Join-Path $InstalledRoot ".venv\Scripts\apprestore.exe"
-$LocalInstalledEntryPoint = Join-Path $PSScriptRoot ".venv\Scripts\apprestore.exe"
+if ([string]::IsNullOrWhiteSpace($KnownLocalAppData)) {
+    throw "Windows Known Folder LocalApplicationData недоступен."
+}
+$KnownLocalAppData = [System.IO.Path]::GetFullPath($KnownLocalAppData)
+$InstalledRoot = [System.IO.Path]::GetFullPath(
+    (Join-Path $KnownLocalAppData "Programs\AppRestore")
+)
+$InstalledEntryPoint = Join-Path $InstalledRoot "bin\apprestore.cmd"
+$LocalInstalledEntryPoint = Join-Path $PSScriptRoot "bin\apprestore.cmd"
 $Installer = Join-Path $PSScriptRoot "install-windows.ps1"
 
 $EntryPoint = $null

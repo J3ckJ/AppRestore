@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import subprocess
+import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from apprestore_core import cli
+from apprestore_core import __version__, cli
 from apprestore_core.models import Device, OffloadedApp
 from apprestore_core.service import AppRestoreError
 
@@ -51,6 +54,43 @@ class RestoreRetryService:
 
 
 class CliRegressionTests(unittest.TestCase):
+    def test_module_entrypoint_reports_exact_version(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "apprestore_core.cli", "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+            env={
+                **os.environ,
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), __version__)
+
+    def test_module_entrypoint_without_arguments_opens_menu(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "apprestore_core.cli"],
+            input="0\n",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+            env={
+                **os.environ,
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Телефон → сгруженные приложения", result.stdout)
+
     def test_header_renders_original_logo_without_ansi_when_redirected(self) -> None:
         stdout = io.StringIO()
         with redirect_stdout(stdout):

@@ -162,6 +162,30 @@ class ToolArgumentTests(unittest.TestCase):
             powershell_code,
         )
 
+    @patch("apprestore_core.tools.importlib.util.find_spec", return_value=object())
+    @patch("apprestore_core.tools.platform.system", return_value="Windows")
+    def test_windows_uses_relocatable_pymobiledevice_module_command(
+        self,
+        _platform_system: object,
+        _find_spec: object,
+    ) -> None:
+        self.runner.stdout = '["00008020-test"]\n'
+
+        self.assertEqual(self.tools.list_udids(), ["00008020-test"])
+
+        self.assertEqual(
+            self.runner.calls[-1][0],
+            (
+                sys.executable,
+                "-m",
+                "pymobiledevice3",
+                "usbmux",
+                "list",
+                "--simple",
+                "--usb",
+            ),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

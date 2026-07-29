@@ -9,7 +9,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$AppRestoreVersion = "0.1.3"
+$AppRestoreVersion = "0.1.4"
+$ManagedInstallMarkerName = ".apprestore-managed"
+$ManagedInstallMarkerValue = "AppRestore managed installation v1"
 $IpaToolVersion = "2.3.1"
 $IpaToolSha256 = "8e986ed9320f205bcd1fd24640ec46a5b92ff346425aff28d1103e57d2fdcadb"
 $IpaToolUrl = "https://github.com/majd/ipatool/releases/download/v$IpaToolVersion/ipatool-$IpaToolVersion-windows-amd64.tar.gz"
@@ -17,30 +19,17 @@ $PythonInstallerVersion = "3.12.10"
 $PythonInstallerSha256 = "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb"
 $PythonInstallerUrl = "https://www.python.org/ftp/python/$PythonInstallerVersion/python-$PythonInstallerVersion-amd64.exe"
 
-if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-    throw "Переменная LOCALAPPDATA не определена: невозможно выбрать пользовательский каталог."
+$KnownLocalAppData = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::LocalApplicationData
+)
+if ([string]::IsNullOrWhiteSpace($KnownLocalAppData)) {
+    throw "Windows Known Folder LocalApplicationData недоступен."
 }
-
+$KnownLocalAppData = [System.IO.Path]::GetFullPath($KnownLocalAppData)
 $InstallRoot = [System.IO.Path]::GetFullPath(
-    (Join-Path $env:LOCALAPPDATA "Programs\AppRestore")
+    (Join-Path $KnownLocalAppData "Programs\AppRestore")
 )
-$ExpectedRoot = [System.IO.Path]::GetFullPath(
-    (Join-Path $env:LOCALAPPDATA "Programs\AppRestore")
-)
-if (-not [string]::Equals(
-    $InstallRoot,
-    $ExpectedRoot,
-    [System.StringComparison]::OrdinalIgnoreCase
-)) {
-    throw "Отказ: вычисленный каталог установки не совпадает с ожидаемым."
-}
-
-if (Test-Path -LiteralPath $InstallRoot) {
-    $InstallRootItem = Get-Item -LiteralPath $InstallRoot -Force
-    if (($InstallRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "Отказ: каталог установки является ссылкой или точкой повторной обработки."
-    }
-}
+$ProgramsRoot = [System.IO.Path]::GetDirectoryName($InstallRoot)
 
 $Architecture = $env:PROCESSOR_ARCHITEW6432
 if ([string]::IsNullOrWhiteSpace($Architecture)) {
@@ -74,24 +63,84 @@ if (-not (Test-Path -LiteralPath $SourceCore -PathType Container)) {
     throw "Неполный комплект установки: отсутствует apprestore_core."
 }
 
+function Assert-PlainDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+
+    $Item = Get-Item -LiteralPath $Path -Force
+    if (-not $Item.PSIsContainer) {
+        throw "$Label не является каталогом: $Path"
+    }
+    if (
+        ($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+    ) {
+        throw "$Label не может быть ссылкой или reparse point: $Path"
+    }
+}
+
+function Ensure-PlainDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Path $Path | Out-Null
+    }
+    Assert-PlainDirectory -Path $Path -Label $Label
+}
+
+Assert-PlainDirectory `
+    -Path $KnownLocalAppData `
+    -Label "Windows Known Folder LocalApplicationData"
+Ensure-PlainDirectory `
+    -Path $ProgramsRoot `
+    -Label "Каталог программ пользователя"
+if (Test-Path -LiteralPath $InstallRoot) {
+    Assert-PlainDirectory `
+        -Path $InstallRoot `
+        -Label "Каталог установки AppRestore"
+}
+
 function Find-CompatiblePython {
     $VersionCheck = (
         "import struct, sys; " +
         "raise SystemExit(0 if sys.version_info >= (3, 10) " +
         "and struct.calcsize('P') * 8 == 64 else 1)"
     )
-    $KnownPythonRoot = Join-Path $env:LOCALAPPDATA "Programs\Python"
+    $KnownPythonRoot = Join-Path $KnownLocalAppData "Programs\Python"
     $KnownPythons = @()
-    if (Test-Path -LiteralPath $KnownPythonRoot -PathType Container) {
+    if (Test-Path -LiteralPath $KnownPythonRoot) {
+        Assert-PlainDirectory `
+            -Path $KnownPythonRoot `
+            -Label "Каталог Python пользователя"
         $KnownPythons = @(
             Get-ChildItem -LiteralPath $KnownPythonRoot -Directory -Filter "Python3*" |
                 Sort-Object -Property Name -Descending |
-                ForEach-Object { Join-Path $_.FullName "python.exe" }
+                ForEach-Object {
+                    Assert-PlainDirectory `
+                        -Path $_.FullName `
+                        -Label "Каталог установленного Python"
+                    Join-Path $_.FullName "python.exe"
+                }
         )
     }
     foreach ($KnownPython in $KnownPythons) {
         if (-not (Test-Path -LiteralPath $KnownPython -PathType Leaf)) {
             continue
+        }
+        $KnownPythonItem = Get-Item -LiteralPath $KnownPython -Force
+        if (
+            ($KnownPythonItem.Attributes -band
+                [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        ) {
+            throw "python.exe в управляемом каталоге является reparse point."
         }
         $PyExit = -1
         & $KnownPython -c $VersionCheck *> $null
@@ -151,6 +200,22 @@ function Find-CompatiblePython {
 }
 
 function Install-CompatiblePython {
+    $PythonProgramsRoot = [System.IO.Path]::GetFullPath(
+        (Join-Path $ProgramsRoot "Python")
+    )
+    Ensure-PlainDirectory `
+        -Path $ProgramsRoot `
+        -Label "Каталог программ пользователя"
+    Ensure-PlainDirectory `
+        -Path $PythonProgramsRoot `
+        -Label "Каталог Python пользователя"
+    $PythonTarget = [System.IO.Path]::GetFullPath(
+        (Join-Path $PythonProgramsRoot "Python312")
+    )
+    Ensure-PlainDirectory `
+        -Path $PythonTarget `
+        -Label "Каталог Python 3.12"
+
     $Winget = Get-Command "winget.exe" -ErrorAction SilentlyContinue
     if ($null -ne $Winget) {
         Write-Host "Python 3.10+ не найден. Установка Python 3.12 для текущего пользователя…"
@@ -223,7 +288,6 @@ function Install-CompatiblePython {
             )
         }
 
-        $PythonTarget = Join-Path $env:LOCALAPPDATA "Programs\Python\Python312"
         & $PythonInstaller `
             /quiet `
             InstallAllUsers=0 `
@@ -410,11 +474,281 @@ function Ensure-AppleBridge {
     )
 }
 
+function Invoke-AppRestoreInstallTransaction {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$StagingRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$InstallRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$BackupRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$ManagedMarkerName,
+        [Parameter(Mandatory = $true)]
+        [string]$ManagedMarkerValue,
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$PrepareStaging,
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$VerifyStaging,
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$VerifyInstallation
+    )
+
+    $ResolvedInstall = [System.IO.Path]::GetFullPath($InstallRoot)
+    $ResolvedStaging = [System.IO.Path]::GetFullPath($StagingRoot)
+    $ResolvedBackup = [System.IO.Path]::GetFullPath($BackupRoot)
+    $ProgramsRoot = [System.IO.Path]::GetDirectoryName($ResolvedInstall)
+    $InstallLeaf = [System.IO.Path]::GetFileName($ResolvedInstall)
+    $StagingLeaf = [System.IO.Path]::GetFileName($ResolvedStaging)
+    $BackupLeaf = [System.IO.Path]::GetFileName($ResolvedBackup)
+
+    if (-not [string]::Equals(
+        $InstallLeaf,
+        "AppRestore",
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "Некорректное имя live-каталога AppRestore."
+    }
+    foreach ($Candidate in @($ResolvedStaging, $ResolvedBackup)) {
+        if (-not [string]::Equals(
+            [System.IO.Path]::GetDirectoryName($Candidate),
+            $ProgramsRoot,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw "Staging и backup должны находиться рядом с live-каталогом."
+        }
+    }
+    if (
+        -not $StagingLeaf.StartsWith(
+            "AppRestore.staging-",
+            [System.StringComparison]::Ordinal
+        ) -or
+        -not $BackupLeaf.StartsWith(
+            "AppRestore.backup-",
+            [System.StringComparison]::Ordinal
+        )
+    ) {
+        throw "Некорректные имена staging/backup AppRestore."
+    }
+    if (-not (Test-Path -LiteralPath $ResolvedStaging -PathType Container)) {
+        throw "Не найден подготовленный staging-каталог AppRestore."
+    }
+    if (Test-Path -LiteralPath $ResolvedBackup) {
+        throw "Backup-каталог AppRestore уже существует."
+    }
+
+    $AssertPlainTree = {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Path,
+            [Parameter(Mandatory = $true)]
+            [string]$Label
+        )
+        if (-not (Test-Path -LiteralPath $Path)) {
+            return
+        }
+        $RootItem = Get-Item -LiteralPath $Path -Force
+        if (-not $RootItem.PSIsContainer) {
+            throw "$Label должен быть каталогом: $Path"
+        }
+        if (
+            ($RootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne
+            0
+        ) {
+            throw "$Label является ссылкой или точкой повторной обработки: $Path"
+        }
+        $NestedReparse = Get-ChildItem `
+            -LiteralPath $Path `
+            -Force `
+            -Recurse `
+            -ErrorAction Stop |
+            Where-Object {
+                ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+            } |
+            Select-Object -First 1
+        if ($null -ne $NestedReparse) {
+            throw "$Label содержит ссылку: $($NestedReparse.FullName)"
+        }
+    }
+
+    $AssertManagedInstall = {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Path
+        )
+
+        & $AssertPlainTree -Path $Path -Label "Текущая установка"
+        $MarkerPath = Join-Path $Path $ManagedMarkerName
+        $HasExactMarker = (
+            (Test-Path -LiteralPath $MarkerPath -PathType Leaf) -and
+            [string]::Equals(
+                [System.IO.File]::ReadAllText($MarkerPath),
+                $ManagedMarkerValue,
+                [System.StringComparison]::Ordinal
+            )
+        )
+        if ($HasExactMarker) {
+            return
+        }
+
+        $GetSha256 = {
+            param([Parameter(Mandatory = $true)][string]$FilePath)
+
+            $Stream = [System.IO.File]::OpenRead($FilePath)
+            $Algorithm = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                return (
+                    [System.BitConverter]::ToString(
+                        $Algorithm.ComputeHash($Stream)
+                    ).Replace("-", "").ToLowerInvariant()
+                )
+            }
+            finally {
+                $Algorithm.Dispose()
+                $Stream.Dispose()
+            }
+        }
+        $LegacyV013Hashes = [ordered]@{
+            "apprestore.ps1" = "9ee7beff4201448cc44f10cd6a135c4c74bbbc34b5f63e55534e9c562d498d80"
+            "uninstall-windows.ps1" = "a0236a380ce568e15603b311b593ba37e7d3674d2750d16b14c2ae1a39d1c5b4"
+            "src\apprestore.py" = "2ba4e1da347b33a5a698473f1d961b3dfc4074435eb52dbb41ccf772bf60f33c"
+            "src\apprestore_core\__init__.py" = "b04720f00147032b00bc8fb0c1200eccbd5f7c316757d9bba72bc0e10fa2098e"
+            "src\pyproject.toml" = "e4df42479fbe74a45a2fcf669828486fd6acf438709971542650ab6346e48936"
+        }
+        foreach ($LegacyRelativePath in $LegacyV013Hashes.Keys) {
+            $LegacyFile = Join-Path $Path $LegacyRelativePath
+            if (-not (Test-Path -LiteralPath $LegacyFile -PathType Leaf)) {
+                throw "Отказ: $Path не является известной установкой AppRestore v0.1.3."
+            }
+            $LegacyHash = & $GetSha256 -FilePath $LegacyFile
+            if (-not [string]::Equals(
+                $LegacyHash,
+                $LegacyV013Hashes[$LegacyRelativePath],
+                [System.StringComparison]::Ordinal
+            )) {
+                throw "Отказ: fingerprint AppRestore v0.1.3 не совпал: $LegacyRelativePath"
+            }
+        }
+
+        $LegacyCommandWrapper = @'
+@echo off
+setlocal
+set "PATH=%~dp0;%PATH%"
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+"%~dp0..\.venv\Scripts\apprestore.exe" %*
+exit /b %ERRORLEVEL%
+'@
+        $LegacyCommand = Join-Path $Path "bin\apprestore.cmd"
+        if (
+            -not (Test-Path -LiteralPath $LegacyCommand -PathType Leaf) -or
+            -not [string]::Equals(
+                [System.IO.File]::ReadAllText($LegacyCommand),
+                $LegacyCommandWrapper,
+                [System.StringComparison]::Ordinal
+            )
+        ) {
+            throw "Отказ: launcher AppRestore v0.1.3 не совпал."
+        }
+        foreach ($LegacyRuntimeFile in @(
+            (Join-Path $Path ".venv\Scripts\python.exe"),
+            (Join-Path $Path ".venv\Scripts\apprestore.exe"),
+            (Join-Path $Path "bin\ipatool.exe")
+        )) {
+            if (-not (Test-Path -LiteralPath $LegacyRuntimeFile -PathType Leaf)) {
+                throw "Отказ: runtime fingerprint AppRestore v0.1.3 неполон."
+            }
+        }
+    }
+
+    $RemovePlainTree = {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Path,
+            [Parameter(Mandatory = $true)]
+            [string]$Label
+        )
+        if (Test-Path -LiteralPath $Path) {
+            & $AssertPlainTree -Path $Path -Label $Label
+            Remove-Item -LiteralPath $Path -Recurse -Force
+        }
+    }
+
+    $BackupCreated = $false
+    $InstallCommitted = $false
+    $Success = $false
+    try {
+        & $AssertPlainTree -Path $ResolvedStaging -Label "Staging AppRestore"
+        & $PrepareStaging $ResolvedStaging
+        & $AssertPlainTree -Path $ResolvedStaging -Label "Staging AppRestore"
+        & $VerifyStaging $ResolvedStaging
+
+        if (Test-Path -LiteralPath $ResolvedInstall) {
+            & $AssertManagedInstall -Path $ResolvedInstall
+            Move-Item -LiteralPath $ResolvedInstall -Destination $ResolvedBackup
+            $BackupCreated = $true
+        }
+
+        Move-Item -LiteralPath $ResolvedStaging -Destination $ResolvedInstall
+        $InstallCommitted = $true
+        & $VerifyInstallation $ResolvedInstall
+        $Success = $true
+    }
+    catch {
+        $Failure = $_
+        try {
+            if ($InstallCommitted -and (Test-Path -LiteralPath $ResolvedInstall)) {
+                & $RemovePlainTree `
+                    -Path $ResolvedInstall `
+                    -Label "Незавершённая установка"
+            }
+            if ($BackupCreated -and (Test-Path -LiteralPath $ResolvedBackup)) {
+                Move-Item -LiteralPath $ResolvedBackup -Destination $ResolvedInstall
+                $BackupCreated = $false
+            }
+        }
+        catch {
+            throw (
+                "Установка завершилась ошибкой: $($Failure.Exception.Message) " +
+                "Автоматический rollback также не удался: " +
+                "$($_.Exception.Message). Backup: $ResolvedBackup"
+            )
+        }
+        throw $Failure
+    }
+    finally {
+        if (Test-Path -LiteralPath $ResolvedStaging) {
+            & $RemovePlainTree -Path $ResolvedStaging -Label "Staging AppRestore"
+        }
+        if (
+            $Success -and
+            $BackupCreated -and
+            (Test-Path -LiteralPath $ResolvedBackup)
+        ) {
+            try {
+                & $RemovePlainTree -Path $ResolvedBackup -Label "Backup AppRestore"
+                $BackupCreated = $false
+            }
+            catch {
+                Write-Warning (
+                    "Новая версия AppRestore установлена и проверена, но " +
+                    "предыдущий backup не удалось удалить: $ResolvedBackup. " +
+                    $_.Exception.Message
+                )
+            }
+        }
+    }
+}
+
 $TempRoot = Join-Path (
     [System.IO.Path]::GetTempPath()
 ) ("AppRestore-install-" + [guid]::NewGuid().ToString("N"))
 $ArchivePath = Join-Path $TempRoot "ipatool.tar.gz"
 $ExtractPath = Join-Path $TempRoot "ipatool"
+$TransactionId = [guid]::NewGuid().ToString("N")
+$StagingRoot = Join-Path $ProgramsRoot "AppRestore.staging-$TransactionId"
+$BackupRoot = Join-Path $ProgramsRoot "AppRestore.backup-$TransactionId"
 
 try {
     New-Item -ItemType Directory -Path $ExtractPath -Force | Out-Null
@@ -485,24 +819,13 @@ with tarfile.open(archive_path, mode="r:gz") as archive:
         throw "В проверенном архиве ожидался ровно один $ExpectedIpaToolName."
     }
 
-    New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
-    $SourceTarget = Join-Path $InstallRoot "src"
+    Ensure-PlainDirectory `
+        -Path $ProgramsRoot `
+        -Label "Каталог программ пользователя"
+    New-Item -ItemType Directory -Path $StagingRoot | Out-Null
+    $SourceTarget = Join-Path $StagingRoot "src"
     $CoreTarget = Join-Path $SourceTarget "apprestore_core"
-    $BinTarget = Join-Path $InstallRoot "bin"
-    $VenvTarget = Join-Path $InstallRoot ".venv"
-
-    foreach ($ManagedDirectory in @($SourceTarget, $BinTarget, $VenvTarget)) {
-        if (Test-Path -LiteralPath $ManagedDirectory) {
-            $ManagedItem = Get-Item -LiteralPath $ManagedDirectory -Force
-            if (($ManagedItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw "Отказ: управляемый каталог является ссылкой: $ManagedDirectory"
-            }
-        }
-    }
-
-    if (Test-Path -LiteralPath $SourceTarget) {
-        Remove-Item -LiteralPath $SourceTarget -Recurse -Force
-    }
+    $BinTarget = Join-Path $StagingRoot "bin"
     New-Item -ItemType Directory -Path $CoreTarget -Force | Out-Null
     New-Item -ItemType Directory -Path $BinTarget -Force | Out-Null
 
@@ -530,42 +853,173 @@ with tarfile.open(archive_path, mode="r:gz") as archive:
 
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "apprestore.ps1") `
-        -Destination (Join-Path $InstallRoot "apprestore.ps1") `
+        -Destination (Join-Path $StagingRoot "apprestore.ps1") `
         -Force
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "uninstall-windows.ps1") `
-        -Destination (Join-Path $InstallRoot "uninstall-windows.ps1") `
+        -Destination (Join-Path $StagingRoot "uninstall-windows.ps1") `
         -Force
 
-    if (-not (Test-Path -LiteralPath (Join-Path $VenvTarget "Scripts\python.exe") -PathType Leaf)) {
-        Invoke-SelectedPython -Arguments @("-m", "venv", $VenvTarget)
-    }
+    $ExpectedIpaToolExecutableSha256 = (
+        Get-FileHash `
+            -LiteralPath $ExtractedIpaTools[0].FullName `
+            -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
 
-    $VenvPython = Join-Path $VenvTarget "Scripts\python.exe"
-    & $VenvPython `
-        -m pip install `
-        --disable-pip-version-check `
-        --upgrade `
-        $SourceTarget
-    if ($LASTEXITCODE -ne 0) {
-        throw "Не удалось установить AppRestore и его Python-зависимости."
-    }
+    $PrepareStaging = {
+        param([string]$PreparedRoot)
 
-    $CommandWrapper = @'
+        $PreparedSource = Join-Path $PreparedRoot "src"
+        $PreparedBin = Join-Path $PreparedRoot "bin"
+        $PreparedVenv = Join-Path $PreparedRoot ".venv"
+        Invoke-SelectedPython -Arguments @("-m", "venv", $PreparedVenv)
+
+        $PreparedVenvPython = Join-Path $PreparedVenv "Scripts\python.exe"
+        & $PreparedVenvPython `
+            -m pip install `
+            --disable-pip-version-check `
+            --no-input `
+            --upgrade `
+            --force-reinstall `
+            $PreparedSource
+        if ($LASTEXITCODE -ne 0) {
+            throw "Не удалось установить AppRestore и его Python-зависимости."
+        }
+
+        $CommandWrapper = @'
 @echo off
 setlocal
 set "PATH=%~dp0;%PATH%"
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
-"%~dp0..\.venv\Scripts\apprestore.exe" %*
+"%~dp0..\.venv\Scripts\python.exe" -m apprestore_core.cli %*
 exit /b %ERRORLEVEL%
 '@
-    $Utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText(
-        (Join-Path $BinTarget "apprestore.cmd"),
-        $CommandWrapper,
-        $Utf8WithoutBom
-    )
+        $Utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText(
+            (Join-Path $PreparedBin "apprestore.cmd"),
+            $CommandWrapper,
+            $Utf8WithoutBom
+        )
+        [System.IO.File]::WriteAllText(
+            (Join-Path $PreparedRoot $ManagedInstallMarkerName),
+            $ManagedInstallMarkerValue,
+            $Utf8WithoutBom
+        )
+    }
+
+    $VerifyStaging = {
+        param([string]$PreparedRoot)
+
+        $PreparedSource = Join-Path $PreparedRoot "src"
+        $PreparedBin = Join-Path $PreparedRoot "bin"
+        $RequiredPreparedFiles = @(
+            (Join-Path $PreparedRoot $ManagedInstallMarkerName),
+            (Join-Path $PreparedRoot "apprestore.ps1"),
+            (Join-Path $PreparedRoot "uninstall-windows.ps1"),
+            (Join-Path $PreparedSource "pyproject.toml"),
+            (Join-Path $PreparedSource "apprestore.py"),
+            (Join-Path $PreparedSource "apprestore_core\__init__.py"),
+            (Join-Path $PreparedBin "ipatool.exe"),
+            (Join-Path $PreparedBin "apprestore.cmd"),
+            (Join-Path $PreparedRoot ".venv\Scripts\python.exe")
+        )
+        foreach ($RequiredPreparedFile in $RequiredPreparedFiles) {
+            if (-not (Test-Path -LiteralPath $RequiredPreparedFile -PathType Leaf)) {
+                throw "Проверка staging: отсутствует $RequiredPreparedFile"
+            }
+        }
+        $MarkerValue = [System.IO.File]::ReadAllText(
+            (Join-Path $PreparedRoot $ManagedInstallMarkerName)
+        )
+        if (-not [string]::Equals(
+            $MarkerValue,
+            $ManagedInstallMarkerValue,
+            [System.StringComparison]::Ordinal
+        )) {
+            throw "Проверка staging: marker AppRestore повреждён."
+        }
+
+        $PreparedIpaToolSha256 = (
+            Get-FileHash `
+                -LiteralPath (Join-Path $PreparedBin "ipatool.exe") `
+                -Algorithm SHA256
+        ).Hash.ToLowerInvariant()
+        if (-not [string]::Equals(
+            $PreparedIpaToolSha256,
+            $ExpectedIpaToolExecutableSha256,
+            [System.StringComparison]::Ordinal
+        )) {
+            throw "Проверка staging: копия ipatool изменила байты."
+        }
+
+        $PreparedCommand = Join-Path $PreparedBin "apprestore.cmd"
+        $PreparedVersionOutput = @(& $PreparedCommand --version 2>&1)
+        $PreparedVersionCode = $LASTEXITCODE
+        $PreparedVersion = ($PreparedVersionOutput -join "`n").Trim()
+        if (
+            $PreparedVersionCode -ne 0 -or
+            -not [string]::Equals(
+                $PreparedVersion,
+                $AppRestoreVersion,
+                [System.StringComparison]::Ordinal
+            )
+        ) {
+            throw (
+                "Проверка staging: ожидалась версия $AppRestoreVersion, " +
+                "получено '$PreparedVersion' (код $PreparedVersionCode)."
+            )
+        }
+    }
+
+    $VerifyInstallation = {
+        param([string]$LiveRoot)
+
+        $LiveMarker = Join-Path $LiveRoot $ManagedInstallMarkerName
+        $LiveCommand = Join-Path $LiveRoot "bin\apprestore.cmd"
+        $LivePython = Join-Path $LiveRoot ".venv\Scripts\python.exe"
+        foreach ($RequiredLiveFile in @($LiveMarker, $LiveCommand, $LivePython)) {
+            if (-not (Test-Path -LiteralPath $RequiredLiveFile -PathType Leaf)) {
+                throw "Проверка live-установки: отсутствует $RequiredLiveFile"
+            }
+        }
+        if (-not [string]::Equals(
+            [System.IO.File]::ReadAllText($LiveMarker),
+            $ManagedInstallMarkerValue,
+            [System.StringComparison]::Ordinal
+        )) {
+            throw "Проверка live-установки: marker AppRestore повреждён."
+        }
+
+        $LiveVersionOutput = @(& $LiveCommand --version 2>&1)
+        $LiveVersionCode = $LASTEXITCODE
+        $LiveVersion = ($LiveVersionOutput -join "`n").Trim()
+        if (
+            $LiveVersionCode -ne 0 -or
+            -not [string]::Equals(
+                $LiveVersion,
+                $AppRestoreVersion,
+                [System.StringComparison]::Ordinal
+            )
+        ) {
+            throw (
+                "Проверка live-установки: ожидалась версия $AppRestoreVersion, " +
+                "получено '$LiveVersion' (код $LiveVersionCode)."
+            )
+        }
+    }
+
+    Invoke-AppRestoreInstallTransaction `
+        -StagingRoot $StagingRoot `
+        -InstallRoot $InstallRoot `
+        -BackupRoot $BackupRoot `
+        -ManagedMarkerName $ManagedInstallMarkerName `
+        -ManagedMarkerValue $ManagedInstallMarkerValue `
+        -PrepareStaging $PrepareStaging `
+        -VerifyStaging $VerifyStaging `
+        -VerifyInstallation $VerifyInstallation
+
+    $BinTarget = Join-Path $InstallRoot "bin"
 
     if (-not $NoPathUpdate) {
         $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -637,6 +1091,45 @@ exit /b %ERRORLEVEL%
     }
 }
 finally {
+    if (Test-Path -LiteralPath $StagingRoot) {
+        $ResolvedStagingRoot = [System.IO.Path]::GetFullPath($StagingRoot)
+        $StagingParent = [System.IO.Path]::GetDirectoryName($ResolvedStagingRoot)
+        $StagingLeaf = [System.IO.Path]::GetFileName($ResolvedStagingRoot)
+        $StagingItem = Get-Item -LiteralPath $ResolvedStagingRoot -Force
+        $StagingReparse = $null
+        if ($StagingItem.PSIsContainer) {
+            $StagingReparse = Get-ChildItem `
+                -LiteralPath $ResolvedStagingRoot `
+                -Force `
+                -Recurse `
+                -ErrorAction SilentlyContinue |
+                Where-Object {
+                    ($_.Attributes -band
+                        [System.IO.FileAttributes]::ReparsePoint) -ne 0
+                } |
+                Select-Object -First 1
+        }
+        if (
+            $StagingItem.PSIsContainer -and
+            ($StagingItem.Attributes -band
+                [System.IO.FileAttributes]::ReparsePoint) -eq 0 -and
+            $null -eq $StagingReparse -and
+            [string]::Equals(
+                $StagingParent,
+                $ProgramsRoot,
+                [System.StringComparison]::OrdinalIgnoreCase
+            ) -and
+            $StagingLeaf.StartsWith(
+                "AppRestore.staging-",
+                [System.StringComparison]::Ordinal
+            )
+        ) {
+            Remove-Item -LiteralPath $ResolvedStagingRoot -Recurse -Force
+        }
+        else {
+            Write-Warning "Небезопасный staging оставлен для ручной проверки: $ResolvedStagingRoot"
+        }
+    }
     if (Test-Path -LiteralPath $TempRoot) {
         $ExpectedTempRoot = [System.IO.Path]::GetFullPath($TempRoot)
         $SystemTempRoot = [System.IO.Path]::GetFullPath(
