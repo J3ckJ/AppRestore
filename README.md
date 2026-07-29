@@ -13,7 +13,7 @@ AppRestore помогает вернуть сгруженные (`offloaded`) п
 Одно Python-ядро работает на Windows и macOS. Интерактивный режим открывается
 фирменным ASCII-логотипом и не требует знания всех CLI-команд.
 
-> **Статус:** beta. Версия 0.1.3.
+> **Статус:** beta. Версия 0.1.4.
 >
 > AppRestore не обходит DRM, подпись, региональные ограничения или правила
 > App Store. Приложение должно быть доступно вашей учётной записи либо у вас
@@ -73,22 +73,11 @@ apprestore
 перезапуск терминала не нужен.
 
 Канонический релиз
-[`v0.1.3`](https://github.com/J3ckJ/AppRestore/releases/tag/v0.1.3), архивы и
+[`v0.1.4`](https://github.com/J3ckJ/AppRestore/releases/tag/v0.1.4), архивы и
 checksums опубликованы в
 [GitHub Releases](https://github.com/J3ckJ/AppRestore/releases). Bootstrap
 закрепляет versioned URL и SHA-256 архива, поэтому подмена release asset
 обнаруживается до запуска установщика.
-
-Совместимое зеркало E.L System Tools сохраняет прежнюю короткую команду:
-
-```powershell
-irm https://el-system-tools.j3ckj.chatgpt.site/install/apprestore.ps1 | iex
-apprestore
-```
-
-Зеркало должно раздавать тот же versioned bootstrap, что и GitHub Release.
-Если его версия или SHA-256 отличается от опубликованных release assets,
-используйте канонический GitHub URL.
 
 ### Сначала скачать и прочитать установщик
 
@@ -121,8 +110,10 @@ apprestore
 
 Установщик:
 
-1. работает только с `%LOCALAPPDATA%\Programs\AppRestore`;
-2. создаёт отдельное Python-окружение;
+1. получает `LocalApplicationData` через Windows Known Folder API и работает
+   только с его каталогом `Programs\AppRestore`;
+2. полностью собирает и проверяет отдельное Python-окружение в sibling
+   staging-каталоге, затем подменяет рабочую версию с автоматическим rollback;
 3. устанавливает точно `pymobiledevice3==10.1.0`;
 4. загружает официальный `ipatool v2.3.1` для Windows x64 и проверяет SHA-256
    архива;
@@ -133,7 +124,10 @@ apprestore
 
 ```powershell
 .\install-windows.ps1 -NoPathUpdate
-& "$env:LOCALAPPDATA\Programs\AppRestore\apprestore.ps1"
+$localData = [Environment]::GetFolderPath(
+  [Environment+SpecialFolder]::LocalApplicationData
+)
+& (Join-Path $localData "Programs\AppRestore\apprestore.ps1")
 ```
 
 Отключить автоматическую настройку Apple USB-моста:
@@ -156,20 +150,55 @@ apprestore
 
 ## Быстрый старт на macOS
 
-Требуются Homebrew, интернет-соединение и доверенный iPhone по USB.
+Требуются Homebrew, интернет-соединение и доверенный iPhone по USB. Откройте
+Terminal и выполните две команды:
 
 ```bash
-chmod +x apprestore.sh
-./apprestore.sh setup
-./apprestore.sh
+curl -fsSL https://github.com/J3ckJ/AppRestore/releases/latest/download/install.sh | /bin/bash && export PATH="$HOME/.local/bin:$PATH"
+apprestore
 ```
 
-`setup` устанавливает необходимые Homebrew-компоненты, создаёт отдельное
-окружение в `~/Library/Application Support/AppRestore/venv`, устанавливает
-Python-зависимости и запускает диагностику.
+Первая команда загружает macOS bootstrap. Он скачивает только закреплённый
+versioned source ZIP, проверяет SHA-256 и запускает `install-macos.sh` из
+проверенного архива. Приложение и Python-окружение размещаются в
+`~/Library/Application Support/AppRestore`, а launcher — в
+`~/.local/bin/apprestore`. `sudo` не используется.
+
+Часть `export PATH=...` делает вторую команду доступной в текущем Terminal.
+Установщик также добавляет ту же строку в `.zprofile`, `.bash_profile` или
+`.profile` для новых окон shell. Если профиль является symlink или
+нестандартным объектом, установка завершается успешно и печатает инструкцию
+для ручной настройки PATH.
 
 Если Homebrew отсутствует, сначала установите его по официальной инструкции
 на [brew.sh](https://brew.sh).
+
+### Сначала скачать и прочитать macOS bootstrap
+
+`curl ... | /bin/bash` исполняет полученный из сети код. Проверяемый вариант:
+
+```bash
+installer="$(mktemp -t apprestore-install).sh"
+curl -fsSL https://github.com/J3ckJ/AppRestore/releases/latest/download/install.sh -o "$installer"
+shasum -a 256 "$installer"
+less "$installer"
+/bin/bash "$installer"
+export PATH="$HOME/.local/bin:$PATH"
+apprestore
+```
+
+Контрольная сумма `install.sh` публикуется в `SHA256SUMS.txt` того же GitHub
+Release. При ошибке установки временные файлы удаляются; неудачная первая
+установка не оставляет частичное окружение, а при обновлении сохраняется
+предыдущая рабочая версия.
+
+### Установка из macOS checkout
+
+```bash
+./apprestore.sh setup
+export PATH="$HOME/.local/bin:$PATH"
+apprestore
+```
 
 ## Как проходит восстановление
 
@@ -197,6 +226,18 @@ App Store ID, если оно осталось в истории покупок.
 
 AppRestore выполняет структурные проверки, но не является антивирусом и не
 подтверждает происхождение стороннего IPA.
+
+Online-bootstrap перед запуском payload проверяет SHA-256 release-архива,
+запрещает path traversal, symlink, duplicate targets и чрезмерный размер
+распаковки. URL архива и ожидаемый SHA закреплены внутри versioned
+`install.sh`; переменная окружения может заменить URL для локального теста, но
+не контрольную сумму.
+
+Установщики не заменяют произвольный каталог по зарезервированному пути:
+Windows требует exact managed marker либо SHA-256 fingerprint опубликованной
+v0.1.3, а macOS — exact marker своего venv и launcher. После успешной
+проверки новая версия остаётся рабочей даже при ошибке удаления старого backup;
+его путь выводится для ручной проверки.
 
 Перед использованием программа:
 
@@ -230,8 +271,8 @@ apprestore install ".\MyApp.ipa" `
 
 ## Командная строка
 
-На Windows используйте `apprestore`. При запуске из macOS checkout заменяйте
-его на `./apprestore.sh`.
+После установки на Windows и macOS используйте `apprestore`. В исходном
+macOS checkout без установки доступен launcher `./apprestore.sh`.
 
 | Команда | Назначение |
 |---|---|
@@ -274,7 +315,7 @@ JSON реализован для `doctor`, `setup`, `devices`, `scan`, `offloade
 
 | Данные | Windows | macOS |
 |---|---|---|
-| Программа / окружение | `%LOCALAPPDATA%\Programs\AppRestore` | `~/Library/Application Support/AppRestore/venv` |
+| Программа / окружение | `LocalApplicationData (Known Folder)\Programs\AppRestore` | `~/Library/Application Support/AppRestore/venv` |
 | Библиотека IPA | `%USERPROFILE%\AppRestore\ipas` | `~/Library/Application Support/AppRestore/ipas` |
 | Кэш | `%LOCALAPPDATA%\AppRestore` | `~/Library/Caches/AppRestore` |
 | Авторизация | Хранилище `ipatool` | Хранилище `ipatool` |
@@ -300,8 +341,8 @@ JSON-вывод может содержать UDID, локальные пути 
 диагностику от персональных данных.
 
 Собственной телеметрии у AppRestore нет. Во время работы возможны обращения к
-Apple/App Store и `ipatool`, а во время установки — к GitHub Releases,
-совместимому зеркалу проекта, PyPI, `winget`, Homebrew и python.org.
+Apple/App Store и `ipatool`, а во время установки — к GitHub Releases, PyPI,
+`winget`, Homebrew и python.org.
 
 ## Удаление
 
@@ -310,20 +351,29 @@ Apple/App Store и `ipatool`, а во время установки — к GitHu
 Предварительный просмотр:
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\AppRestore\uninstall-windows.ps1" -WhatIf
+$localData = [Environment]::GetFolderPath(
+  [Environment+SpecialFolder]::LocalApplicationData
+)
+& (Join-Path $localData "Programs\AppRestore\uninstall-windows.ps1") -WhatIf
 ```
 
 Обычное удаление сохраняет IPA, кэш и авторизацию `ipatool`:
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\AppRestore\uninstall-windows.ps1"
+$localData = [Environment]::GetFolderPath(
+  [Environment+SpecialFolder]::LocalApplicationData
+)
+& (Join-Path $localData "Programs\AppRestore\uninstall-windows.ps1")
 ```
 
 Полная очистка дополнительно отзывает авторизацию и предлагает удалить
 стандартные каталоги данных:
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\AppRestore\uninstall-windows.ps1" -PurgeUserData
+$localData = [Environment]::GetFolderPath(
+  [Environment+SpecialFolder]::LocalApplicationData
+)
+& (Join-Path $localData "Programs\AppRestore\uninstall-windows.ps1") -PurgeUserData
 ```
 
 Каталоги, заданные через `APPRESTORE_IPA_DIR` и `APPRESTORE_CACHE_DIR`,
@@ -343,7 +393,10 @@ Homebrew-пакеты могут использоваться другими п�
 При `-NoPathUpdate` используйте:
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\AppRestore\apprestore.ps1"
+$localData = [Environment]::GetFolderPath(
+  [Environment+SpecialFolder]::LocalApplicationData
+)
+& (Join-Path $localData "Programs\AppRestore\apprestore.ps1")
 ```
 
 Обычный bootstrap добавляет команду в текущий PowerShell. Другим уже открытым
@@ -408,7 +461,8 @@ python -m compileall -q apprestore.py apprestore_core scripts tests
 ```
 
 `unittest` остаётся быстрым локальным набором, а полный `pytest` дополнительно
-выполняет release/bootstrap E2E в доступных PowerShell-хостах.
+выполняет release/bootstrap E2E в доступных PowerShell-хостах и нативный
+macOS installer contract на macOS runner.
 
 Воспроизводимый release payload:
 
@@ -421,6 +475,7 @@ Builder создаёт в `dist`:
 ```text
 AppRestore-<version>-source.zip
 install.ps1
+install.sh
 SHA256SUMS.txt
 ```
 
@@ -431,16 +486,16 @@ SHA256SUMS.txt
 
 - [Репозиторий](https://github.com/J3ckJ/AppRestore)
 - [Releases](https://github.com/J3ckJ/AppRestore/releases)
-- [Релиз v0.1.3](https://github.com/J3ckJ/AppRestore/releases/tag/v0.1.3)
+- [Релиз v0.1.4](https://github.com/J3ckJ/AppRestore/releases/tag/v0.1.4)
 - [История изменений](./CHANGELOG.md)
 - [Политика безопасности](./SECURITY.md)
 - [Как внести вклад](./CONTRIBUTING.md)
 - [Сторонние компоненты](./THIRD_PARTY_NOTICES.md)
 - [Сообщить о проблеме](https://github.com/J3ckJ/AppRestore/issues)
 
-Первый GitHub-native релиз `0.1.3` опубликован вместе с one-line installer и
-SHA-256 checksums. Опубликованные version tags и release assets нельзя
-перезаписывать другими байтами.
+Релиз `0.1.4` публикует проверяемые one-line installers для Windows и macOS,
+source ZIP и SHA-256 checksums. Опубликованные version tags и release assets
+неизменяемы: последующие исправления выходят новым patch-релизом.
 
 При сообщении об ошибке не прикладывайте IPA, пароль Apple ID, 2FA-код,
 passphrase, токены или необработанный лог с UDID.

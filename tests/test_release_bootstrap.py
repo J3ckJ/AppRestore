@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -20,6 +21,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = ROOT / "scripts" / "build-release.py"
 TEMPLATE = ROOT / "scripts" / "install.ps1.in"
+MACOS_TEMPLATE = ROOT / "scripts" / "install.sh.in"
 
 SPEC = importlib.util.spec_from_file_location(
     "apprestore_build_release",
@@ -146,6 +148,19 @@ def _render_test_bootstrap(
         archive_sha256=archive_sha256,
         template_path=TEMPLATE,
     )
+    known_folder_block = """    $KnownLocalAppData = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::LocalApplicationData
+    )
+    if ([string]::IsNullOrWhiteSpace($KnownLocalAppData)) {
+        throw "Windows Known Folder LocalApplicationData is unavailable."
+    }
+    $KnownLocalAppData = [System.IO.Path]::GetFullPath($KnownLocalAppData)
+"""
+    test_folder_block = """    # Test-only isolation for the fake payload below.
+    $KnownLocalAppData = [System.IO.Path]::GetFullPath($env:LOCALAPPDATA)
+"""
+    assert rendered.count(known_folder_block) == 1
+    rendered = rendered.replace(known_folder_block, test_folder_block)
     path.write_text(rendered, encoding="utf-8", newline="\n")
 
 
@@ -257,6 +272,33 @@ def test_rendered_bootstrap_has_pinned_fields_and_only_url_override() -> None:
     assert "@@APPRESTORE_" not in rendered
 
 
+def test_rendered_macos_bootstrap_has_pinned_fields_and_safe_contract() -> None:
+    digest = "b6" * 32
+    rendered = BUILD_RELEASE.render_macos_bootstrap(
+        version="1.2.3",
+        archive_url=(
+            "https://downloads.example.test/"
+            "AppRestore-1.2.3-source.zip"
+        ),
+        archive_sha256=digest,
+        template_path=MACOS_TEMPLATE,
+    )
+
+    assert "APPRESTORE_VERSION='1.2.3'" in rendered
+    assert (
+        "DEFAULT_ARCHIVE_URL="
+        "'https://downloads.example.test/AppRestore-1.2.3-source.zip'"
+    ) in rendered
+    assert f"EXPECTED_ARCHIVE_SHA256='{digest}'" in rendered
+    assert "APPRESTORE_BOOTSTRAP_ARCHIVE_URL" in rendered
+    assert "APPRESTORE_BOOTSTRAP_ARCHIVE_SHA" not in rendered
+    assert "--proto \"$curl_protocol\"" in rendered
+    assert "--max-filesize 33554432" in rendered
+    assert "validate_archive_entries" in rendered
+    assert "trap cleanup EXIT" in rendered
+    assert "@@APPRESTORE_" not in rendered
+
+
 @pytest.mark.parametrize(
     ("version", "url", "digest"),
     [
@@ -278,6 +320,55 @@ def test_render_bootstrap_rejects_unpinned_metadata(
             archive_sha256=digest,
             template_path=TEMPLATE,
         )
+    with pytest.raises(ValueError):
+        BUILD_RELEASE.render_macos_bootstrap(
+            version=version,
+            archive_url=url,
+            archive_sha256=digest,
+            template_path=MACOS_TEMPLATE,
+        )
+
+
+def test_release_validation_rejects_linked_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_file = tmp_path / "real.py"
+    linked_file = tmp_path / "linked.py"
+    real_file.write_text("print('safe target')\n", encoding="utf-8")
+    try:
+        linked_file.symlink_to(real_file)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    monkeypatch.setattr(BUILD_RELEASE, "ROOT", tmp_path)
+    with pytest.raises(SystemExit, match="missing or unsafe release files"):
+        BUILD_RELEASE.validate([linked_file])
+
+
+def test_release_build_rejects_version_drift(tmp_path: Path) -> None:
+    release_root = tmp_path / "AppRestore"
+    _copy_release_inputs(release_root)
+    package_init = release_root / "apprestore_core" / "__init__.py"
+    package_init.write_text(
+        package_init.read_text(encoding="utf-8").replace(
+            '__version__ = "0.1.4"',
+            '__version__ = "9.9.9"',
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(release_root / "scripts" / "build-release.py")],
+        cwd=release_root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "release version drift" in (result.stdout + result.stderr)
 
 
 def test_release_build_is_deterministic_and_generates_bootstrap(
@@ -297,34 +388,59 @@ def test_release_build_is_deterministic_and_generates_bootstrap(
     )
     assert first.returncode == 0, first.stdout + first.stderr
 
-    archive = release_root / "dist" / "AppRestore-0.1.3-source.zip"
-    bootstrap = release_root / "dist" / "install.ps1"
+    archive = release_root / "dist" / "AppRestore-0.1.4-source.zip"
+    windows_bootstrap = release_root / "dist" / "install.ps1"
+    macos_bootstrap = release_root / "dist" / "install.sh"
     checksums = release_root / "dist" / "SHA256SUMS.txt"
     assert archive.is_file()
-    assert bootstrap.is_file()
+    assert windows_bootstrap.is_file()
+    assert macos_bootstrap.is_file()
     assert checksums.is_file()
 
     archive_digest = _sha256(archive)
-    bootstrap_digest = _sha256(bootstrap)
-    bootstrap_text = bootstrap.read_text(encoding="utf-8")
-    assert f"$ExpectedArchiveSha256 = '{archive_digest}'" in bootstrap_text
+    windows_bootstrap_digest = _sha256(windows_bootstrap)
+    macos_bootstrap_digest = _sha256(macos_bootstrap)
+    windows_bootstrap_text = windows_bootstrap.read_text(encoding="utf-8")
+    macos_bootstrap_text = macos_bootstrap.read_text(encoding="utf-8")
     assert (
-        "https://github.com/J3ckJ/AppRestore/releases/download/v0.1.3/"
-        "AppRestore-0.1.3-source.zip"
-    ) in bootstrap_text
+        f"$ExpectedArchiveSha256 = '{archive_digest}'"
+        in windows_bootstrap_text
+    )
+    assert (
+        "https://github.com/J3ckJ/AppRestore/releases/download/v0.1.4/"
+        "AppRestore-0.1.4-source.zip"
+    ) in windows_bootstrap_text
+    assert f"EXPECTED_ARCHIVE_SHA256='{archive_digest}'" in macos_bootstrap_text
+    assert (
+        "https://github.com/J3ckJ/AppRestore/releases/download/v0.1.4/"
+        "AppRestore-0.1.4-source.zip"
+    ) in macos_bootstrap_text
     assert checksums.read_text(encoding="utf-8") == (
         f"{archive_digest}  {archive.name}\n"
-        f"{bootstrap_digest}  {bootstrap.name}\n"
+        f"{windows_bootstrap_digest}  {windows_bootstrap.name}\n"
+        f"{macos_bootstrap_digest}  {macos_bootstrap.name}\n"
     )
 
     with zipfile.ZipFile(archive) as release_zip:
         names = release_zip.namelist()
-    assert "AppRestore-0.1.3/CONTRIBUTING.md" in names
-    assert "AppRestore-0.1.3/SECURITY.md" in names
-    assert "AppRestore-0.1.3/scripts/install.ps1.in" in names
-    assert "AppRestore-0.1.3/dist/install.ps1" not in names
+        macos_installer = release_zip.getinfo(
+            "AppRestore-0.1.4/install-macos.sh"
+        )
+    assert "AppRestore-0.1.4/CONTRIBUTING.md" in names
+    assert "AppRestore-0.1.4/SECURITY.md" in names
+    assert "AppRestore-0.1.4/install-macos.sh" in names
+    assert "AppRestore-0.1.4/scripts/install.ps1.in" in names
+    assert "AppRestore-0.1.4/scripts/install.sh.in" in names
+    assert "AppRestore-0.1.4/dist/install.ps1" not in names
+    assert "AppRestore-0.1.4/dist/install.sh" not in names
+    assert stat.S_ISREG(macos_installer.external_attr >> 16)
+    assert (macos_installer.external_attr >> 16) & 0o777 == 0o755
 
-    first_hashes = (_sha256(archive), _sha256(bootstrap))
+    first_hashes = (
+        _sha256(archive),
+        _sha256(windows_bootstrap),
+        _sha256(macos_bootstrap),
+    )
     second = subprocess.run(
         [sys.executable, str(script)],
         cwd=release_root,
@@ -334,7 +450,11 @@ def test_release_build_is_deterministic_and_generates_bootstrap(
         check=False,
     )
     assert second.returncode == 0, second.stdout + second.stderr
-    assert (_sha256(archive), _sha256(bootstrap)) == first_hashes
+    assert (
+        _sha256(archive),
+        _sha256(windows_bootstrap),
+        _sha256(macos_bootstrap),
+    ) == first_hashes
 
 
 @pytest.mark.skipif(

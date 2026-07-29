@@ -7,25 +7,20 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-    throw "Переменная LOCALAPPDATA не определена."
+$ManagedInstallMarkerName = ".apprestore-managed"
+$ManagedInstallMarkerValue = "AppRestore managed installation v1"
+$KnownLocalAppData = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::LocalApplicationData
+)
+if ([string]::IsNullOrWhiteSpace($KnownLocalAppData)) {
+    throw "Windows Known Folder LocalApplicationData недоступен."
 }
-
+$KnownLocalAppData = [System.IO.Path]::GetFullPath($KnownLocalAppData)
 $InstallRoot = [System.IO.Path]::GetFullPath(
-    (Join-Path $env:LOCALAPPDATA "Programs\AppRestore")
+    (Join-Path $KnownLocalAppData "Programs\AppRestore")
 )
-$ExpectedRoot = [System.IO.Path]::GetFullPath(
-    (Join-Path $env:LOCALAPPDATA "Programs\AppRestore")
-)
-if (-not [string]::Equals(
-    $InstallRoot,
-    $ExpectedRoot,
-    [System.StringComparison]::OrdinalIgnoreCase
-)) {
-    throw "Отказ: цель удаления не совпадает с фиксированным каталогом AppRestore."
-}
 
-function Assert-NotReparsePoint {
+function Assert-PlainDirectoryTree {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path
@@ -33,15 +28,122 @@ function Assert-NotReparsePoint {
 
     if (Test-Path -LiteralPath $Path) {
         $Item = Get-Item -LiteralPath $Path -Force
+        if (-not $Item.PSIsContainer) {
+            throw "Отказ от удаления объекта, который не является каталогом: $Path"
+        }
         if (($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "Отказ от удаления ссылки или точки повторной обработки: $Path"
+        }
+        $NestedReparse = Get-ChildItem `
+            -LiteralPath $Path `
+            -Force `
+            -Recurse `
+            -ErrorAction Stop |
+            Where-Object {
+                ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+            } |
+            Select-Object -First 1
+        if ($null -ne $NestedReparse) {
+            throw "Отказ: каталог содержит ссылку: $($NestedReparse.FullName)"
         }
     }
 }
 
-Assert-NotReparsePoint -Path $InstallRoot
+function Assert-ManagedAppRestoreInstall {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    Assert-PlainDirectoryTree -Path $Path
+    $MarkerPath = Join-Path $Path $ManagedInstallMarkerName
+    $HasExactMarker = (
+        (Test-Path -LiteralPath $MarkerPath -PathType Leaf) -and
+        [string]::Equals(
+            [System.IO.File]::ReadAllText($MarkerPath),
+            $ManagedInstallMarkerValue,
+            [System.StringComparison]::Ordinal
+        )
+    )
+    if ($HasExactMarker) {
+        return
+    }
+
+    $GetSha256 = {
+        param([Parameter(Mandatory = $true)][string]$FilePath)
+
+        $Stream = [System.IO.File]::OpenRead($FilePath)
+        $Algorithm = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return (
+                [System.BitConverter]::ToString(
+                    $Algorithm.ComputeHash($Stream)
+                ).Replace("-", "").ToLowerInvariant()
+            )
+        }
+        finally {
+            $Algorithm.Dispose()
+            $Stream.Dispose()
+        }
+    }
+    $LegacyV013Hashes = [ordered]@{
+        "apprestore.ps1" = "9ee7beff4201448cc44f10cd6a135c4c74bbbc34b5f63e55534e9c562d498d80"
+        "uninstall-windows.ps1" = "a0236a380ce568e15603b311b593ba37e7d3674d2750d16b14c2ae1a39d1c5b4"
+        "src\apprestore.py" = "2ba4e1da347b33a5a698473f1d961b3dfc4074435eb52dbb41ccf772bf60f33c"
+        "src\apprestore_core\__init__.py" = "b04720f00147032b00bc8fb0c1200eccbd5f7c316757d9bba72bc0e10fa2098e"
+        "src\pyproject.toml" = "e4df42479fbe74a45a2fcf669828486fd6acf438709971542650ab6346e48936"
+    }
+    foreach ($LegacyRelativePath in $LegacyV013Hashes.Keys) {
+        $LegacyFile = Join-Path $Path $LegacyRelativePath
+        if (-not (Test-Path -LiteralPath $LegacyFile -PathType Leaf)) {
+            throw "Отказ: $Path не является известной установкой AppRestore v0.1.3."
+        }
+        $LegacyHash = & $GetSha256 -FilePath $LegacyFile
+        if (-not [string]::Equals(
+            $LegacyHash,
+            $LegacyV013Hashes[$LegacyRelativePath],
+            [System.StringComparison]::Ordinal
+        )) {
+            throw "Отказ: fingerprint AppRestore v0.1.3 не совпал: $LegacyRelativePath"
+        }
+    }
+
+    $LegacyCommandWrapper = @'
+@echo off
+setlocal
+set "PATH=%~dp0;%PATH%"
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+"%~dp0..\.venv\Scripts\apprestore.exe" %*
+exit /b %ERRORLEVEL%
+'@
+    $LegacyCommand = Join-Path $Path "bin\apprestore.cmd"
+    if (
+        -not (Test-Path -LiteralPath $LegacyCommand -PathType Leaf) -or
+        -not [string]::Equals(
+            [System.IO.File]::ReadAllText($LegacyCommand),
+            $LegacyCommandWrapper,
+            [System.StringComparison]::Ordinal
+        )
+    ) {
+        throw "Отказ: launcher AppRestore v0.1.3 не совпал."
+    }
+    foreach ($LegacyRuntimeFile in @(
+        (Join-Path $Path ".venv\Scripts\python.exe"),
+        (Join-Path $Path ".venv\Scripts\apprestore.exe"),
+        (Join-Path $Path "bin\ipatool.exe")
+    )) {
+        if (-not (Test-Path -LiteralPath $LegacyRuntimeFile -PathType Leaf)) {
+            throw "Отказ: runtime fingerprint AppRestore v0.1.3 неполон."
+        }
+    }
+}
+
 $BinTarget = Join-Path $InstallRoot "bin"
 $ProgramExists = Test-Path -LiteralPath $InstallRoot
+if ($ProgramExists) {
+    Assert-ManagedAppRestoreInstall -Path $InstallRoot
+}
 $RemoveProgram = $false
 $UpdatePath = $false
 if ($ProgramExists) {
@@ -113,10 +215,10 @@ if ($PurgeUserData) {
         (Join-Path $HOME "AppRestore\ipas")
     )
     $DefaultCache = [System.IO.Path]::GetFullPath(
-        (Join-Path $env:LOCALAPPDATA "AppRestore")
+        (Join-Path $KnownLocalAppData "AppRestore")
     )
     foreach ($UserDataTarget in @($DefaultIpaLibrary, $DefaultCache)) {
-        Assert-NotReparsePoint -Path $UserDataTarget
+        Assert-PlainDirectoryTree -Path $UserDataTarget
         if (
             (Test-Path -LiteralPath $UserDataTarget) -and
             $PSCmdlet.ShouldProcess(

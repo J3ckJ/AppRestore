@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# Generated AppRestore bootstrap for macOS. Do not edit dist/install.sh.
+
+set -euo pipefail
+umask 077
+
+APPRESTORE_VERSION=@@APPRESTORE_VERSION_SH@@
+DEFAULT_ARCHIVE_URL=@@APPRESTORE_ARCHIVE_URL_SH@@
+EXPECTED_ARCHIVE_SHA256=@@APPRESTORE_ARCHIVE_SHA256_SH@@
+ARCHIVE_ROOT="AppRestore-$APPRESTORE_VERSION"
+TEMP_ROOT=""
+
+die() {
+  printf '%s\n' "AppRestore bootstrap: $*" >&2
+  exit 1
+}
+
+cleanup() {
+  local status=$?
+  trap - EXIT HUP INT TERM
+  if [[ -n "$TEMP_ROOT" && -d "$TEMP_ROOT" ]]; then
+    rm -rf -- "$TEMP_ROOT"
+  fi
+  exit "$status"
+}
+
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print tolower($1)}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print tolower($1)}'
+  else
+    die "не найдена утилита SHA-256 (shasum/sha256sum)"
+  fi
+}
+
+validate_archive_entries() {
+  local archive="$1"
+  local entries_file="$TEMP_ROOT/archive-entries.txt"
+  local entry entry_count=0 installer_count=0 duplicate stats stats_count
+  local total_bytes max_entry_bytes
+
+  max_entry_bytes=8388608
+  total_bytes=67108864
+
+  unzip -tqq "$archive" || die "ZIP-архив повреждён"
+  zipinfo -1 "$archive" >"$entries_file" || die \
+    "не удалось прочитать структуру release-архива"
+  while IFS= read -r entry; do
+    entry_count=$((entry_count + 1))
+    [[ "$entry_count" -le 4096 ]] || die "слишком много файлов в release-архиве"
+    case "$entry" in
+      /*|*\\*|*:*) die "небезопасный путь в release-архиве: $entry" ;;
+    esac
+    case "/$entry/" in
+      */../*|*/./*) die "path traversal в release-архиве: $entry" ;;
+    esac
+    case "$entry" in
+      "$ARCHIVE_ROOT"|"$ARCHIVE_ROOT/"|"$ARCHIVE_ROOT/"*) ;;
+      *) die "неожиданный корень release-архива: $entry" ;;
+    esac
+    if [[ "$entry" == "$ARCHIVE_ROOT/install-macos.sh" ]]; then
+      installer_count=$((installer_count + 1))
+    fi
+  done <"$entries_file"
+  [[ "$entry_count" -gt 0 ]] || die "release-архив пуст"
+  [[ "$installer_count" -eq 1 ]] || die \
+    "release-архив должен содержать ровно один install-macos.sh"
+
+  duplicate="$(
+    LC_ALL=C tr '[:upper:]' '[:lower:]' <"$entries_file" |
+      LC_ALL=C sort |
+      uniq -d |
+      head -n 1
+  )"
+  [[ -z "$duplicate" ]] || die \
+    "duplicate target в release-архиве: $duplicate"
+
+  if zipinfo -l "$archive" | \
+    awk '$1 ~ /^l/ { found=1 } END { exit(found ? 0 : 1) }'; then
+    die "symbolic links запрещены в release-архиве"
+  fi
+
+  stats="$(
+    zipinfo -l "$archive" |
+      awk -v max_entry="$max_entry_bytes" -v max_total="$total_bytes" '
+        $1 ~ /^[-d]/ && $4 ~ /^[0-9]+$/ {
+          count += 1
+          if ($4 > max_entry) {
+            exit 42
+          }
+          total += $4
+          if (total > max_total) {
+            exit 43
+          }
+        }
+        END {
+          if (count > 0) {
+            printf "%d %d\n", count, total
+          }
+        }
+      '
+  )" || die "release-архив превышает допустимый размер распаковки"
+  read -r stats_count total_bytes <<<"$stats"
+  [[ "$stats_count" -eq "$entry_count" ]] || die \
+    "не удалось проверить размеры всех файлов release-архива"
+}
+
+main() {
+  local archive_url curl_protocol archive actual_sha256 payload_root
+
+  [[ "$(uname -s)" == "Darwin" ]] || die "этот bootstrap предназначен для macOS"
+  [[ "${EUID:-$(id -u)}" -ne 0 ]] || die "не запускай bootstrap через sudo"
+  for command in curl awk unzip zipinfo ditto mktemp tr sort uniq head; do
+    command -v "$command" >/dev/null 2>&1 || die "не найдена команда: $command"
+  done
+
+  archive_url="${APPRESTORE_BOOTSTRAP_ARCHIVE_URL:-$DEFAULT_ARCHIVE_URL}"
+  case "$archive_url" in
+    https://*) curl_protocol='=https' ;;
+    http://127.0.0.1:*|http://localhost:*)
+      [[ -n "${APPRESTORE_BOOTSTRAP_ARCHIVE_URL:-}" ]] || die \
+        "HTTP разрешён только для локального test override"
+      curl_protocol='=http,https'
+      ;;
+    *) die "release URL должен использовать HTTPS" ;;
+  esac
+
+  TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/AppRestore-bootstrap.XXXXXXXX")"
+  trap cleanup EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  archive="$TEMP_ROOT/AppRestore-$APPRESTORE_VERSION-source.zip"
+
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --location \
+    --proto "$curl_protocol" \
+    --tlsv1.2 \
+    --max-filesize 33554432 \
+    --output "$archive" \
+    "$archive_url"
+
+  actual_sha256="$(sha256_file "$archive")"
+  [[ "$actual_sha256" == "$EXPECTED_ARCHIVE_SHA256" ]] || die \
+    "SHA-256 mismatch: expected $EXPECTED_ARCHIVE_SHA256, got $actual_sha256"
+
+  validate_archive_entries "$archive"
+  ditto -x -k "$archive" "$TEMP_ROOT/extracted"
+  payload_root="$TEMP_ROOT/extracted/$ARCHIVE_ROOT"
+  [[ -d "$payload_root" && ! -L "$payload_root" ]] || die \
+    "не найден ожидаемый корень release-архива"
+  [[ -f "$payload_root/install-macos.sh" && \
+    ! -L "$payload_root/install-macos.sh" ]] || die \
+    "release не содержит безопасный install-macos.sh"
+
+  /bin/bash "$payload_root/install-macos.sh"
+}
+
+main "$@"

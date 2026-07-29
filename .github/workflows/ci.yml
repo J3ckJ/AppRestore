@@ -29,6 +29,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -44,6 +46,15 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+      - name: Validate relocatable module entrypoint
+        shell: pwsh
+        run: |
+          $Expected = (& python apprestore.py --version).Trim()
+          $Actual = (& python -m apprestore_core.cli --version).Trim()
+          if ($LASTEXITCODE -ne 0 -or $Actual -ne $Expected) {
+            throw "python -m apprestore_core.cli version contract failed"
+          }
 
       - name: Compile Python sources
         run: python -m compileall -q apprestore.py apprestore_core scripts tests
@@ -61,8 +72,14 @@ jobs:
           $ArchiveName = "AppRestore-$Version-source.zip"
           $ArchivePath = Join-Path "dist" $ArchiveName
           $BootstrapPath = Join-Path "dist" "install.ps1"
+          $MacBootstrapPath = Join-Path "dist" "install.sh"
           $ChecksumsPath = Join-Path "dist" "SHA256SUMS.txt"
-          foreach ($Path in @($ArchivePath, $BootstrapPath, $ChecksumsPath)) {
+          foreach ($Path in @(
+            $ArchivePath,
+            $BootstrapPath,
+            $MacBootstrapPath,
+            $ChecksumsPath
+          )) {
             if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
               throw "missing release asset: $Path"
             }
@@ -76,6 +93,10 @@ jobs:
           if (-not $Bootstrap.Contains($ExpectedUrl)) {
             throw "bootstrap contains an unexpected archive URL"
           }
+          $MacBootstrap = Get-Content -LiteralPath $MacBootstrapPath -Raw
+          if (-not $MacBootstrap.Contains($ExpectedUrl)) {
+            throw "macOS bootstrap contains an unexpected archive URL"
+          }
 
           $ArchiveHash = (
             Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256
@@ -83,9 +104,13 @@ jobs:
           $BootstrapHash = (
             Get-FileHash -LiteralPath $BootstrapPath -Algorithm SHA256
           ).Hash.ToLowerInvariant()
+          $MacBootstrapHash = (
+            Get-FileHash -LiteralPath $MacBootstrapPath -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
           $ExpectedChecksums = (
             "$ArchiveHash  $ArchiveName`n" +
-            "$BootstrapHash  install.ps1`n"
+            "$BootstrapHash  install.ps1`n" +
+            "$MacBootstrapHash  install.sh`n"
           )
           $ActualChecksums = (
             Get-Content -LiteralPath $ChecksumsPath -Raw
@@ -93,3 +118,69 @@ jobs:
           if ($ActualChecksums -ne $ExpectedChecksums) {
             throw "SHA256SUMS.txt does not match the generated assets"
           }
+
+  macos-tests:
+    name: macOS / install contract
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project and test runner
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --editable .
+          python -m pip install pytest
+
+      - name: Validate shell syntax
+        run: |
+          /bin/bash -n apprestore.sh
+          /bin/bash -n install-macos.sh
+          /bin/bash -n scripts/install.sh.in
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Validate relocatable module entrypoint
+        run: |
+          expected="$(python apprestore.py --version)"
+          actual="$(python -m apprestore_core.cli --version)"
+          test "$actual" = "$expected"
+
+      - name: Compile Python sources
+        run: python -m compileall -q apprestore.py apprestore_core scripts tests
+
+      - name: Build release assets
+        run: python scripts/build-release.py
+
+      - name: Validate macOS release asset
+        run: |
+          version="$(python apprestore.py --version)"
+          archive="dist/AppRestore-${version}-source.zip"
+          test -f "$archive"
+          test -f dist/install.ps1
+          test -f dist/install.sh
+          test -f dist/SHA256SUMS.txt
+          /bin/bash -n dist/install.sh
+          grep -F \
+            "https://github.com/J3ckJ/AppRestore/releases/download/v${version}/AppRestore-${version}-source.zip" \
+            dist/install.sh
+          archive_hash="$(shasum -a 256 "$archive" | awk '{print $1}')"
+          grep -F "${archive_hash}  AppRestore-${version}-source.zip" \
+            dist/SHA256SUMS.txt
+          mac_hash="$(shasum -a 256 dist/install.sh | awk '{print $1}')"
+          grep -F "${mac_hash}  install.sh" dist/SHA256SUMS.txt

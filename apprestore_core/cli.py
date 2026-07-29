@@ -215,7 +215,8 @@ def _command_setup(service: AppRestoreService, json_output: bool) -> int:
         notes.extend(service.tools.ensure_windows_bridge())
     else:
         notes.append(
-            "On macOS use ./apprestore.sh setup (Homebrew + Python deps)."
+            "On macOS reinstall from the signed release bootstrap or run "
+            "./apprestore.sh setup from a source checkout."
         )
 
     checks = service.tools.doctor()
@@ -560,3 +561,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.error("unknown command")
     return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
