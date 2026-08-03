@@ -22,6 +22,33 @@ def cache_dir() -> Path:
     return Path(xdg) / "AppRestore" if xdg else Path.home() / "Library" / "Caches" / "AppRestore"
 
 
+def data_dir() -> Path:
+    """Persistent non-cache user data (known app IDs, etc.)."""
+    configured = os.environ.get("APPRESTORE_DATA_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    if platform.system() == "Windows":
+        root = os.environ.get("LOCALAPPDATA")
+        return (
+            Path(root) / "AppRestore"
+            if root
+            else Path.home() / "AppData" / "Local" / "AppRestore"
+        )
+    return (
+        Path.home()
+        / "Library"
+        / "Application Support"
+        / "AppRestore"
+    )
+
+
+def known_apps_path() -> Path:
+    configured = os.environ.get("APPRESTORE_KNOWN_APPS")
+    if configured:
+        return Path(configured).expanduser()
+    return data_dir() / "known-apps.json"
+
+
 def ipa_library_dir() -> Path:
     configured = os.environ.get("APPRESTORE_IPA_DIR")
     if configured:

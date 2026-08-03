@@ -352,7 +352,7 @@ def test_release_build_rejects_version_drift(tmp_path: Path) -> None:
     package_init = release_root / "apprestore_core" / "__init__.py"
     package_init.write_text(
         package_init.read_text(encoding="utf-8").replace(
-            '__version__ = "0.1.4"',
+            '__version__ = "0.1.5"',
             '__version__ = "9.9.9"',
         ),
         encoding="utf-8",
@@ -388,7 +388,7 @@ def test_release_build_is_deterministic_and_generates_bootstrap(
     )
     assert first.returncode == 0, first.stdout + first.stderr
 
-    archive = release_root / "dist" / "AppRestore-0.1.4-source.zip"
+    archive = release_root / "dist" / "AppRestore-0.1.5-source.zip"
     windows_bootstrap = release_root / "dist" / "install.ps1"
     macos_bootstrap = release_root / "dist" / "install.sh"
     checksums = release_root / "dist" / "SHA256SUMS.txt"
@@ -407,13 +407,13 @@ def test_release_build_is_deterministic_and_generates_bootstrap(
         in windows_bootstrap_text
     )
     assert (
-        "https://github.com/J3ckJ/AppRestore/releases/download/v0.1.4/"
-        "AppRestore-0.1.4-source.zip"
+        "https://github.com/J3ckJ/AppRestore/releases/download/v0.1.5/"
+        "AppRestore-0.1.5-source.zip"
     ) in windows_bootstrap_text
     assert f"EXPECTED_ARCHIVE_SHA256='{archive_digest}'" in macos_bootstrap_text
     assert (
-        "https://github.com/J3ckJ/AppRestore/releases/download/v0.1.4/"
-        "AppRestore-0.1.4-source.zip"
+        "https://github.com/J3ckJ/AppRestore/releases/download/v0.1.5/"
+        "AppRestore-0.1.5-source.zip"
     ) in macos_bootstrap_text
     assert checksums.read_text(encoding="utf-8") == (
         f"{archive_digest}  {archive.name}\n"
@@ -424,15 +424,15 @@ def test_release_build_is_deterministic_and_generates_bootstrap(
     with zipfile.ZipFile(archive) as release_zip:
         names = release_zip.namelist()
         macos_installer = release_zip.getinfo(
-            "AppRestore-0.1.4/install-macos.sh"
+            "AppRestore-0.1.5/install-macos.sh"
         )
-    assert "AppRestore-0.1.4/CONTRIBUTING.md" in names
-    assert "AppRestore-0.1.4/SECURITY.md" in names
-    assert "AppRestore-0.1.4/install-macos.sh" in names
-    assert "AppRestore-0.1.4/scripts/install.ps1.in" in names
-    assert "AppRestore-0.1.4/scripts/install.sh.in" in names
-    assert "AppRestore-0.1.4/dist/install.ps1" not in names
-    assert "AppRestore-0.1.4/dist/install.sh" not in names
+    assert "AppRestore-0.1.5/CONTRIBUTING.md" in names
+    assert "AppRestore-0.1.5/SECURITY.md" in names
+    assert "AppRestore-0.1.5/install-macos.sh" in names
+    assert "AppRestore-0.1.5/scripts/install.ps1.in" in names
+    assert "AppRestore-0.1.5/scripts/install.sh.in" in names
+    assert "AppRestore-0.1.5/dist/install.ps1" not in names
+    assert "AppRestore-0.1.5/dist/install.sh" not in names
     assert stat.S_ISREG(macos_installer.external_attr >> 16)
     assert (macos_installer.external_attr >> 16) & 0o777 == 0o755
 

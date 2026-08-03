@@ -89,7 +89,7 @@ class CliRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Телефон → сгруженные приложения", result.stdout)
+        self.assertIn("Телефон → сгруженные / удалённые", result.stdout)
 
     def test_header_renders_original_logo_without_ansi_when_redirected(self) -> None:
         stdout = io.StringIO()
@@ -99,7 +99,7 @@ class CliRegressionTests(unittest.TestCase):
         rendered = stdout.getvalue()
         self.assertIn("____", rendered)
         self.assertIn(r"/_/   \_\ .__/| .__/", rendered)
-        self.assertIn("Телефон → сгруженные приложения → скачать IPA → вернуть", rendered)
+        self.assertIn("Телефон → сгруженные / удалённые → скачать IPA → вернуть", rendered)
         self.assertNotIn("\033[", rendered)
 
     def test_header_colors_logo_only_when_terminal_supports_it(self) -> None:

@@ -62,6 +62,24 @@ class OffloadedApp:
 
 
 @dataclass(frozen=True)
+class MissingApp:
+    """App known from history/IPA but absent from the device (no placeholder)."""
+
+    bundle_id: str
+    name: str
+    version: str = "?"
+    store_id: str | None = None
+    store_match: str = "none"
+    local_ipa: Path | None = None
+    source: str = "unknown"
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["local_ipa"] = str(self.local_ipa) if self.local_ipa else None
+        return data
+
+
+@dataclass(frozen=True)
 class DoctorCheck:
     name: str
     ok: bool

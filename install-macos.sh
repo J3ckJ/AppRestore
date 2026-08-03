@@ -4,7 +4,7 @@
 set -euo pipefail
 umask 077
 
-APPRESTORE_VERSION="0.1.4"
+APPRESTORE_VERSION="0.1.5"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 APP_SUPPORT_DIR="$HOME/Library/Application Support/AppRestore"
 VENV_DIR="$APP_SUPPORT_DIR/venv"

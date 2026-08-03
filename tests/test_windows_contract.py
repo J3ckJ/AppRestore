@@ -18,7 +18,7 @@ from apprestore_core import cli
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "0.1.4"
+EXPECTED_VERSION = "0.1.5"
 
 
 def _python_assignment(path: Path, name: str) -> str:
@@ -985,7 +985,7 @@ class MenuStartupContractTests(unittest.TestCase):
             ),
         )
         self.assertIn(r"/_/   \_\ .__/| .__/", stdout.getvalue())
-        self.assertIn("Телефон → сгруженные приложения", stdout.getvalue())
+        self.assertIn("Телефон → сгруженные / удалённые", stdout.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
 
 

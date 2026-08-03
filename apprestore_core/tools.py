@@ -587,3 +587,75 @@ class AppRestoreTools:
         args.extend(["--output", str(output)])
         result = self.runner.run(args, capture=False)
         return result.returncode == 0
+
+    def search_apps(self, term: str, *, limit: int = 10) -> list[dict[str, str]]:
+        """Search App Store via ipatool; may prompt for keychain passphrase."""
+        query = term.strip()
+        if not query:
+            raise ValueError("search term is empty")
+        if limit < 1 or limit > 50:
+            raise ValueError("limit must be between 1 and 50")
+        result = self.runner.run(
+            self._ipatool_cmd(
+                "search",
+                query,
+                "--limit",
+                str(limit),
+                "--format",
+                "json",
+            ),
+            capture=True,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise ToolUnavailable(
+                detail or "ipatool search failed"
+            )
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise ToolUnavailable("ipatool search returned invalid JSON") from exc
+
+        rows: list[Any]
+        if isinstance(payload, list):
+            rows = payload
+        elif isinstance(payload, dict):
+            for key in ("apps", "results", "data"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    rows = value
+                    break
+            else:
+                rows = [payload]
+        else:
+            rows = []
+
+        apps: list[dict[str, str]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            store_id = (
+                row.get("id")
+                or row.get("appId")
+                or row.get("trackId")
+                or row.get("adamId")
+            )
+            bundle_id = (
+                row.get("bundleId")
+                or row.get("bundleIdentifier")
+                or row.get("bundleID")
+            )
+            name = row.get("name") or row.get("trackName") or row.get("title")
+            if store_id is None:
+                continue
+            store_text = str(store_id).strip()
+            if not store_text.isdigit():
+                continue
+            apps.append(
+                {
+                    "storeId": store_text,
+                    "bundleId": str(bundle_id).strip() if bundle_id else "",
+                    "name": str(name).strip() if name else store_text,
+                }
+            )
+        return apps
