@@ -18,7 +18,7 @@ from apprestore_core import cli
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "0.1.5"
+EXPECTED_VERSION = "0.1.6"
 
 
 def _python_assignment(path: Path, name: str) -> str:
@@ -981,11 +981,15 @@ class MenuStartupContractTests(unittest.TestCase):
             0,
             (
                 "opening `apprestore` must show the menu first; dependency "
-                "installation belongs to explicit `apprestore setup`/menu item 9"
+                "installation belongs to explicit `apprestore setup`/menu item B"
             ),
         )
-        self.assertIn(r"/_/   \_\ .__/| .__/", stdout.getvalue())
-        self.assertIn("Телефон → сгруженные / удалённые", stdout.getvalue())
+        menu_text = stdout.getvalue()
+        self.assertIn(r"/_/   \_\ .__/| .__/", menu_text)
+        self.assertIn("Телефон → сгруженные / удалённые", menu_text)
+        self.assertIn("Сгруженные — список и восстановление", menu_text)
+        self.assertIn("Локальные IPA — найти / скачать / установить", menu_text)
+        self.assertNotIn("Поиск приложения в App Store", menu_text)
         self.assertNotIn("Traceback", stderr.getvalue())
 
 

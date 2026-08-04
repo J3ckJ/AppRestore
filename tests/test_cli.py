@@ -23,10 +23,16 @@ class AuthenticatedTools:
 class JsonDownloadService:
     def __init__(self, **_kwargs: object) -> None:
         self.tools = AuthenticatedTools()
+        self.download_by_store_calls: list[str] = []
 
     def download(self, _bundle_id: str, _store_id: str | None) -> Path:
         print("download progress")
         return Path(r"C:\IPA\Example.ipa")
+
+    def download_by_store_id(self, store_id: str) -> Path:
+        self.download_by_store_calls.append(store_id)
+        print("download by store progress")
+        return Path(r"C:\IPA\Store.ipa")
 
 
 class RestoreRetryService:
@@ -131,6 +137,27 @@ class CliRegressionTests(unittest.TestCase):
         )
         self.assertIn("download progress", stderr.getvalue())
         self.assertNotIn("download progress", stdout.getvalue())
+
+    def test_download_positional_store_id_uses_store_path(self) -> None:
+        created: list[JsonDownloadService] = []
+
+        def make_service(**_kwargs: object) -> JsonDownloadService:
+            service = JsonDownloadService()
+            created.append(service)
+            return service
+
+        stdout = io.StringIO()
+        with (
+            patch("apprestore_core.cli.AppRestoreService", side_effect=make_service),
+            redirect_stdout(stdout),
+            redirect_stderr(io.StringIO()),
+        ):
+            returncode = cli.main(["download", "610003290"])
+
+        self.assertEqual(returncode, 0)
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0].download_by_store_calls, ["610003290"])
+        self.assertIn(r"C:\IPA\Store.ipa", stdout.getvalue())
 
     def test_auth_retry_does_not_request_device_redownload_twice(self) -> None:
         service = RestoreRetryService()

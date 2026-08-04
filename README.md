@@ -17,7 +17,7 @@
 **AppRestore** — локальный инструмент, который возвращает приложения на iPhone,
 когда App Store и сам телефон уже «забыли» удобный путь обратно.
 
-> **Статус:** beta. Версия 0.1.5.  
+> **Статус:** beta. Версия 0.1.6.  
 > Windows + macOS · USB · ваш Apple ID · без обхода DRM.  
 > Проект не связан с Apple Inc.
 
@@ -48,10 +48,11 @@ USB iPhone
 
 ---
 
-## Что умеет 0.1.5
+## Что умеет 0.1.6
 
-- интерактивное меню с ASCII-логотипом — можно не помнить CLI;
+- короткое меню `1`–`4` / `A` / `B` — сгруженные, удалённые, IPA, диагностика;
 - два класса restore: сгруженные и полностью удалённые;
+- в пункте `2` имя без `search` сразу идёт в поиск;
 - загрузка по **App Store ID / URL**, даже если bundle ID неизвестен;
 - поиск по имени: **iTunes + IPA Filezone + веб** (`apps.apple.com`);
 - память найденных ID в `%LOCALAPPDATA%\AppRestore\known-apps.json`;
@@ -82,7 +83,7 @@ Bootstrap скачивает versioned source ZIP, сверяет **SHA-256** и
 в user-scope. Перезапуск терминала обычно не нужен.
 
 Канонический релиз:
-[`v0.1.5`](https://github.com/J3ckJ/AppRestore/releases/tag/v0.1.5) ·
+[`v0.1.6`](https://github.com/J3ckJ/AppRestore/releases/tag/v0.1.6) ·
 [все релизы](https://github.com/J3ckJ/AppRestore/releases)
 
 ### Хотите прочитать установщик до запуска
@@ -118,18 +119,23 @@ apprestore
 
 1. Подключите разблокированный iPhone по USB, подтвердите «Доверять».
 2. Запустите `apprestore`.
-3. При необходимости: **A** — вход в Apple ID через `ipatool`.
-4. **1** — вернуть сгруженные.  
-   **2** — вернуть удалённые без ярлыка: номер из списка, `id…`, URL или `search Homuz`.  
-   **S** — найти App Store ID по имени (iTunes / архив / веб).
+3. При необходимости: **A** — Apple ID, **B** — зависимости.
 
-Примеры ввода в пункте `2`:
+| Пункт | Действие |
+|---|---|
+| `1` | Сгруженные — список и восстановление |
+| `2` | Удалённые — список, ID / URL / имя (поиск) и восстановление |
+| `3` | Локальные IPA — сканировать / скачать / установить |
+| `4` | Устройства и краткая диагностика |
+| `A` / `B` | Вход в Apple ID / настройка зависимостей |
+
+В пункте `2` можно ввести номер из списка, App Store ID/URL, bundle ID или просто имя:
 
 ```text
 6472732558
 id6472732558
 https://apps.apple.com/ru/app/homuz/id6472732558
-search домклик
+домклик
 com.example.app
 ```
 
@@ -312,7 +318,7 @@ python scripts\build-release.py
 `dist/` не коммитится. В релиз уходят:
 
 ```text
-AppRestore-0.1.5-source.zip
+AppRestore-0.1.6-source.zip
 install.ps1
 install.sh
 SHA256SUMS.txt
@@ -323,7 +329,7 @@ SHA256SUMS.txt
 ## Ссылки
 
 - [Releases](https://github.com/J3ckJ/AppRestore/releases)
-- [v0.1.5](https://github.com/J3ckJ/AppRestore/releases/tag/v0.1.5)
+- [v0.1.6](https://github.com/J3ckJ/AppRestore/releases/tag/v0.1.6)
 - [CHANGELOG](./CHANGELOG.md)
 - [SECURITY](./SECURITY.md)
 - [CONTRIBUTING](./CONTRIBUTING.md)

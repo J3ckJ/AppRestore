@@ -85,37 +85,50 @@ menu() {
   while true; do
     show_header
     cat <<'EOF'
-  1) Восстановить сгруженные приложения
-  2) Проверить зависимости
-  3) Показать подключённые устройства
-  4) Показать сгруженные приложения
-  5) Найти локальные IPA
-  6) Скачать IPA по bundle ID
-  7) Проверить и установить локальный IPA
-  8) Войти в Apple ID через ipatool
-  9) Установить/обновить зависимости
+  1) Сгруженные — список и восстановление
+  2) Удалённые — список, ID/URL/поиск и восстановление
+  3) Локальные IPA — найти / скачать / установить
+  4) Устройства и диагностика
+  A) Войти в Apple ID
+  B) Настроить зависимости
   0) Выход
 EOF
     printf '\n'
     read -r -p "Выбор: " choice || return 0
     case "$choice" in
       1) "$0" restore || true; pause_menu ;;
-      2) "$0" doctor || true; pause_menu ;;
-      3) "$0" devices || true; pause_menu ;;
-      4) "$0" offloaded || true; pause_menu ;;
-      5) "$0" scan || true; pause_menu ;;
-      6)
-        read -r -p "Bundle ID: " bundle_id
-        [[ -n "$bundle_id" ]] && "$0" download "$bundle_id" || true
+      2) "$0" restore-missing || true; pause_menu ;;
+      3)
+        cat <<'EOF'
+  1) Сканировать локальные IPA
+  2) Скачать IPA
+  3) Установить IPA
+  0) Назад
+EOF
+        read -r -p "Выбор: " ipa_choice || true
+        case "$ipa_choice" in
+          1) "$0" scan || true ;;
+          2)
+            read -r -p "Bundle ID или App Store ID/URL: " value
+            [[ -n "$value" ]] && "$0" download "$value" || true
+            ;;
+          3)
+            read -r -p "Путь к IPA: " ipa_path
+            [[ -n "$ipa_path" ]] && "$0" install "$ipa_path" || true
+            ;;
+          0) ;;
+          *) printf "%b\n" "${RED}Неверный пункт.${NC}" ;;
+        esac
         pause_menu
         ;;
-      7)
-        read -r -p "Путь к IPA: " ipa_path
-        [[ -n "$ipa_path" ]] && "$0" install "$ipa_path" || true
+      4)
+        "$0" devices || true
+        printf '%s\n' "Диагностика (кратко):"
+        "$0" doctor || true
         pause_menu
         ;;
-      8) "$0" auth || true; pause_menu ;;
-      9) "$0" setup || true; pause_menu ;;
+      [Aa]) "$0" auth || true; pause_menu ;;
+      [Bb]) "$0" setup || true; pause_menu ;;
       0) return 0 ;;
       *) printf "%b\n" "${RED}Неверный пункт.${NC}"; pause_menu ;;
     esac

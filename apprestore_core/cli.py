@@ -181,10 +181,7 @@ def _print_apps(apps: list[OffloadedApp]) -> None:
 
 def _print_missing_apps(apps: list[MissingApp]) -> None:
     if not apps:
-        print(
-            "Список пуст (iMazing / локальные IPA / known-apps). "
-            "Можно ввести App Store ID, URL или search <имя>."
-        )
+        print("Список пуст — введите ID, URL или имя для поиска.")
         return
     for index, app in enumerate(apps, 1):
         bits = [app.source]
@@ -331,7 +328,11 @@ def _command_restore(
         return 1
     _print_apps(apps)
 
-    raw = selection if selection is not None else input("Restore (1,3-5 or all): ")
+    raw = (
+        selection
+        if selection is not None
+        else input("Номер (1,3-5 / all): ")
+    )
     selected = _parse_selection(raw, len(apps))
     if not selected:
         print("Cancelled.")
@@ -392,12 +393,23 @@ def _command_missing(
         )
     else:
         print(f"Device: {device.name}, iOS {device.ios_version}")
-        print(
-            "Удалённые / отсутствующие: нет ярлыка и нет placeholder на iPhone."
-        )
-        print("Источники: iMazing Apps.plist и локальная библиотека IPA.")
         _print_missing_apps(apps)
     return 0 if apps else 1
+
+
+def _looks_like_store_id_input(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return False
+    lowered = text.casefold()
+    return bool(
+        parse_app_store_id(text)
+        and (
+            text.isdigit()
+            or lowered.startswith("id")
+            or "apps.apple.com" in lowered
+        )
+    )
 
 
 def _missing_from_store_id(store_id: str, *, name: str | None = None) -> MissingApp:
@@ -420,15 +432,12 @@ def _search_missing_targets(
     query = term.strip()
     if not query:
         raise AppRestoreError("пустой поисковый запрос")
-    print("Поиск: iTunes + архив IPA Filezone…")
+    print("Поиск…")
     results = service.search_apps(query)
     if not results:
-        print(
-            "Ничего не найдено. Для снятых с витрины приложений нужен "
-            "App Store ID / URL из покупок или истории."
-        )
+        print("Ничего не найдено. Нужен App Store ID или URL.")
         return []
-    print("\nРезультаты поиска:")
+    print("\nНайдено:")
     for index, row in enumerate(results, 1):
         bundle = row.get("bundleId") or "—"
         source = row.get("source") or "?"
@@ -437,7 +446,7 @@ def _search_missing_targets(
             f"(id{row.get('storeId')}, {bundle}) [{source}]"
         )
     try:
-        pick = input("Номер результата (Enter — отмена): ").strip()
+        pick = input("Номер (Enter — отмена): ").strip()
     except EOFError:
         return []
     if not pick:
@@ -506,11 +515,15 @@ def _resolve_missing_targets(
 
     try:
         bundle_id = validate_bundle_id(text)
-    except IpaError as exc:
-        raise AppRestoreError(
-            "укажите номер из списка, App Store ID/URL, bundle ID "
-            "или search <имя>"
-        ) from exc
+    except IpaError:
+        bundle_id = None
+    # Reverse-DNS bundle IDs contain a dot; a bare name is a search query.
+    if bundle_id is None or "." not in bundle_id:
+        if service is None:
+            raise AppRestoreError(
+                "укажите номер, App Store ID/URL, bundle ID или имя"
+            )
+        return _search_missing_targets(service, text, email=email)
     return [
         MissingApp(
             bundle_id=bundle_id,
@@ -531,10 +544,6 @@ def _command_restore_missing(
 ) -> int:
     device = _pick_device(service, udid)
     print(f"Device: {device.name}, iOS {device.ios_version}")
-    print(
-        "Сценарий: приложение было, но ярлык/placeholder уже удалён. "
-        "Штатный redownload с телефона недоступен."
-    )
 
     if store_id and not bundle_id:
         parsed = parse_app_store_id(store_id) or (
@@ -564,9 +573,7 @@ def _command_restore_missing(
         raw = (
             selection
             if selection is not None
-            else input(
-                "Restore: номер / App Store ID или URL / bundle ID / search <имя>: "
-            )
+            else input("Номер / ID / URL / имя: ")
         )
         targets = _resolve_missing_targets(
             raw,
@@ -635,7 +642,7 @@ def _command_search(
     json_output: bool = False,
 ) -> int:
     del email  # public catalogs; login needed only later for download
-    query = (term or "").strip() or input("Поиск (iTunes + IPA Filezone): ").strip()
+    query = (term or "").strip() or input("Поиск: ").strip()
     if not query:
         print("Cancelled.")
         return 0
@@ -686,6 +693,56 @@ def _clear_screen() -> None:
         os.system("clear")
 
 
+def _menu_local_ipa(service: AppRestoreService) -> None:
+    print(
+        """
+  1) Сканировать локальные IPA
+  2) Скачать IPA
+  3) Установить IPA
+  0) Назад
+""".rstrip()
+    )
+    try:
+        choice = input("Выбор: ").strip()
+    except EOFError:
+        return
+    if choice == "1":
+        _command_scan(service, json_output=False)
+    elif choice == "2":
+        value = input("Bundle ID или App Store ID/URL: ").strip()
+        if not value:
+            return
+        _ensure_auth(service, None)
+        if _looks_like_store_id_input(value):
+            parsed = parse_app_store_id(value)
+            if not parsed:
+                raise AppRestoreError("некорректный App Store ID")
+            path = service.download_by_store_id(parsed)
+        else:
+            path = service.download(value, None)
+        print(path)
+    elif choice == "3":
+        ipa_path = input("Путь к IPA: ").strip()
+        if not ipa_path:
+            return
+        device = _pick_device(service, None)
+        metadata = service.install(device.udid, Path(ipa_path))
+        print(f"Installed {metadata.name} {metadata.version}")
+    elif choice != "0":
+        print("Неверный пункт.")
+
+
+def _menu_devices_and_doctor(service: AppRestoreService) -> None:
+    _command_devices(service, json_output=False)
+    checks = service.tools.doctor()
+    ok = sum(1 for check in checks if check.ok)
+    fail = [check.name for check in checks if not check.ok]
+    if fail:
+        print(f"Диагностика: OK {ok}, FAIL {len(fail)} ({', '.join(fail)})")
+    else:
+        print(f"Диагностика: OK {ok}")
+
+
 def _run_menu(service: AppRestoreService) -> int:
     while True:
         _clear_screen()
@@ -695,18 +752,12 @@ def _run_menu(service: AppRestoreService) -> int:
             print(_MENU_RULE)
         print(
             """
-  1) Восстановить сгруженные приложения
-  2) Восстановить удалённые (нет ярлыка) — ID / URL / поиск
-  3) Проверить зависимости
-  4) Показать подключённые устройства
-  5) Показать сгруженные приложения
-  6) Показать удалённые / отсутствующие
-  7) Найти локальные IPA
-  8) Скачать IPA (bundle ID или App Store ID)
-  9) Проверить и установить локальный IPA
-  S) Поиск приложения в App Store
-  A) Войти в Apple ID через ipatool
-  B) Установить/обновить зависимости
+  1) Сгруженные — список и восстановление
+  2) Удалённые — список, ID/URL/поиск и восстановление
+  3) Локальные IPA — найти / скачать / установить
+  4) Устройства и диагностика
+  A) Войти в Apple ID
+  B) Настроить зависимости
   0) Выход
 """.rstrip()
         )
@@ -727,37 +778,9 @@ def _run_menu(service: AppRestoreService) -> int:
                     selection=None,
                 )
             elif choice == "3":
-                _command_doctor(service, json_output=False)
+                _menu_local_ipa(service)
             elif choice == "4":
-                _command_devices(service, json_output=False)
-            elif choice == "5":
-                _command_offloaded(service, None, json_output=False)
-            elif choice == "6":
-                _command_missing(service, None, json_output=False)
-            elif choice == "7":
-                _command_scan(service, json_output=False)
-            elif choice == "8":
-                value = input("Bundle ID или App Store ID/URL: ").strip()
-                if value:
-                    _ensure_auth(service, None)
-                    store_id = parse_app_store_id(value)
-                    if store_id and (
-                        value.strip().isdigit()
-                        or value.casefold().startswith("id")
-                        or "apps.apple.com" in value.casefold()
-                    ):
-                        path = service.download_by_store_id(store_id)
-                    else:
-                        path = service.download(value, None)
-                    print(path)
-            elif choice == "9":
-                ipa_path = input("Путь к IPA: ").strip()
-                if ipa_path:
-                    device = _pick_device(service, None)
-                    metadata = service.install(device.udid, Path(ipa_path))
-                    print(f"Installed {metadata.name} {metadata.version}")
-            elif choice.lower() == "s":
-                _command_search(service, None, email=None, json_output=False)
+                _menu_devices_and_doctor(service)
             elif choice.lower() == "a":
                 email = input("Apple ID email: ").strip()
                 if email:
@@ -890,7 +913,15 @@ def main(argv: list[str] | None = None) -> int:
             output_context = redirect_stdout(sys.stderr) if args.json else nullcontext()
             with output_context:
                 _ensure_auth(service, args.email)
-                path = service.download(args.bundle_id, args.store_id)
+                if args.store_id:
+                    path = service.download(args.bundle_id, args.store_id)
+                elif _looks_like_store_id_input(args.bundle_id):
+                    parsed = parse_app_store_id(args.bundle_id)
+                    if not parsed:
+                        raise AppRestoreError("некорректный App Store ID")
+                    path = service.download_by_store_id(parsed)
+                else:
+                    path = service.download(args.bundle_id, None)
             if args.json:
                 _json_dump({"path": str(path)})
             else:

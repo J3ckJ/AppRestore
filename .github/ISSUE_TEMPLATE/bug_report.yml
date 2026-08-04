@@ -24,7 +24,7 @@ body:
     attributes:
       label: Версия AppRestore
       description: Вывод `apprestore --version`.
-      placeholder: "0.1.5"
+      placeholder: "0.1.6"
     validations:
       required: true
 

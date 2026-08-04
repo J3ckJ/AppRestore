@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-VERSION = "0.1.5"
+VERSION = "0.1.6"
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 ARCHIVE = DIST / f"AppRestore-{VERSION}-source.zip"
@@ -16,7 +16,7 @@ WINDOWS_BOOTSTRAP = DIST / "install.ps1"
 MACOS_BOOTSTRAP = DIST / "install.sh"
 CHECKSUMS = DIST / "SHA256SUMS.txt"
 ARCHIVE_ROOT = f"AppRestore-{VERSION}"
-FIXED_TIME = (2026, 8, 3, 0, 0, 0)
+FIXED_TIME = (2026, 8, 4, 0, 0, 0)
 WINDOWS_BOOTSTRAP_TEMPLATE = ROOT / "scripts" / "install.ps1.in"
 MACOS_BOOTSTRAP_TEMPLATE = ROOT / "scripts" / "install.sh.in"
 ARCHIVE_URL_TEMPLATE = (

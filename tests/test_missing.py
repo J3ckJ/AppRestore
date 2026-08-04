@@ -110,6 +110,39 @@ class MissingCliHelpersTests(unittest.TestCase):
         by_store = _resolve_missing_targets("id6472732558", apps)
         self.assertEqual(by_store[0].store_id, "6472732558")
 
+    def test_bare_name_triggers_search(self) -> None:
+        service = mock.Mock()
+        service.search_apps.return_value = [
+            {
+                "storeId": "6472732558",
+                "bundleId": "com.example.homuz",
+                "name": "Homuz",
+                "source": "itunes",
+            }
+        ]
+        service.find_local.return_value = None
+        with (
+            mock.patch("apprestore_core.cli.remember_known_app"),
+            mock.patch("builtins.input", return_value="1"),
+        ):
+            targets = _resolve_missing_targets("Homuz", [], service=service)
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0].store_id, "6472732558")
+        self.assertEqual(targets[0].bundle_id, "com.example.homuz")
+        service.search_apps.assert_called_once_with("Homuz")
+
+    def test_search_prefix_still_works(self) -> None:
+        service = mock.Mock()
+        service.search_apps.return_value = []
+        with mock.patch("builtins.input", return_value=""):
+            targets = _resolve_missing_targets(
+                "search домклик",
+                [],
+                service=service,
+            )
+        self.assertEqual(targets, [])
+        service.search_apps.assert_called_once_with("домклик")
+
 
 class MissingServiceTests(unittest.TestCase):
     def test_restore_missing_skips_device_redownload(self) -> None:
