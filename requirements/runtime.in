@@ -1,0 +1,3 @@
+# Runtime dependency roots. Regenerate runtime.lock only through the documented
+# lock command; installers consume the hash-locked output, not this file.
+pymobiledevice3==10.1.0

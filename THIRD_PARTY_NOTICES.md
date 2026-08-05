@@ -9,7 +9,20 @@ AppRestore использует или устанавливает следующ
 - Лицензия upstream: GNU General Public License 3.0.
 - Текст лицензии: <https://github.com/doronz88/pymobiledevice3/blob/v10.1.0/LICENSE>
 
-Пакет устанавливается из Python Package Index как точная версия `pymobiledevice3==10.1.0`.
+Пакет и его транзитивные зависимости устанавливаются по hash-locked файлу
+`requirements/runtime.lock`.
+
+## hexdump 3.3
+
+- Назначение: транзитивная зависимость `pymobiledevice3`;
+- Проект: <https://bitbucket.org/techtonik/hexdump/>;
+- Лицензия upstream: Public Domain.
+
+PyPI публикует только source ZIP, поэтому репозиторий содержит его проверенную
+копию `requirements/sources/hexdump-3.3.zip` и воспроизводимо собранный
+universal wheel `requirements/wheels/hexdump-3.3-py3-none-any.whl`. Их SHA-256
+и рецепт зафиксированы в `requirements/README.md` и
+`requirements/runtime.lock`.
 
 ## ipatool 2.3.1
 

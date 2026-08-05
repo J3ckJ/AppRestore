@@ -14,16 +14,17 @@
 
 ## Локальная среда
 
-Требуется Python 3.10+.
+Требуется Python 3.10–3.13. Python 3.14 пока не поддерживается.
 
 ### Windows
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install --editable .
-python -m pip install pytest
+python -m pip install --require-hashes --only-binary=:all: --no-deps --find-links requirements\wheels -r requirements\build.lock
+python -m pip install --require-hashes --only-binary=:all: --no-deps --find-links requirements\wheels -r requirements\runtime.lock
+python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements\test.lock
+python -m pip install --editable . --no-deps --no-build-isolation
 ```
 
 ### macOS
@@ -31,9 +32,13 @@ python -m pip install pytest
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install --editable .
-python -m pip install pytest
+python -m pip install --require-hashes --only-binary=:all: --no-deps \
+  --find-links requirements/wheels -r requirements/build.lock
+python -m pip install --require-hashes --only-binary=:all: --no-deps \
+  --find-links requirements/wheels -r requirements/runtime.lock
+python -m pip install --require-hashes --only-binary=:all: --no-deps \
+  -r requirements/test.lock
+python -m pip install --editable . --no-deps --no-build-isolation
 ```
 
 Для реальной работы с устройством также нужны `ipatool` и системный
@@ -54,6 +59,17 @@ python -m compileall -q apprestore.py apprestore_core scripts tests
 ```powershell
 python scripts\build-release.py
 ```
+
+Если меняется vendored `hexdump` wheel, используйте отдельное окружение с
+CPython 3.12.13 и точный toolchain:
+
+```powershell
+python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements\wheel-build.lock
+python scripts\rebuild-vendored-wheel.py --check
+```
+
+`--write` допустим только для осознанного обновления wheel вместе с его hash в
+`requirements\runtime.lock`; подробности — в `requirements\README.md`.
 
 Проверьте, что:
 

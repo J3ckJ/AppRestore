@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 import plistlib
 import re
+import stat
 import zipfile
 from pathlib import Path, PurePosixPath
 
 from .models import IpaMetadata
+from .ipa_index import IpaIndex, IpaIndexError, IpaIndexRecord, normalize_ipa_path
 
 BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,253}[A-Za-z0-9])?$")
 MAX_PLIST_SIZE = 8 * 1024 * 1024
@@ -115,16 +117,49 @@ def read_ipa_metadata(path: str | Path) -> IpaMetadata:
     )
 
 
-def scan_ipas(roots: list[Path]) -> tuple[list[IpaMetadata], list[tuple[Path, str]]]:
+def scan_ipas(
+    roots: list[Path],
+    *,
+    index: IpaIndex | None = None,
+) -> tuple[list[IpaMetadata], list[tuple[Path, str]]]:
     metadata: list[IpaMetadata] = []
     errors: list[tuple[Path, str]] = []
     seen: set[str] = set()
+    observed_records: list[IpaIndexRecord] = []
+    completed_roots: list[Path] = []
+    modified_by_path: dict[str, int] = {}
+
+    cached_by_path: dict[str, IpaIndexRecord] = {}
+    active_index = index
+    scan_watermark: int | None = None
+    if active_index is not None:
+        try:
+            scan_watermark = active_index.snapshot_watermark()
+            cached_by_path = {
+                str(record.path): record
+                for record in active_index.records(existing_only=False)
+            }
+        except IpaIndexError:
+            # The index is only a performance cache.  Corruption/contention
+            # must never make local IPA discovery unavailable.
+            active_index = None
 
     for root in roots:
         root = root.expanduser()
         if not root.is_dir():
             continue
-        for current, directories, files in os.walk(root, followlinks=False):
+        walk_failed = False
+
+        def record_walk_error(error: OSError) -> None:
+            nonlocal walk_failed
+            walk_failed = True
+            errors.append((Path(error.filename or root), str(error)))
+
+        for current, directories, files in os.walk(
+            root,
+            followlinks=False,
+            onerror=record_walk_error,
+        ):
             current_path = Path(current)
             directories[:] = [
                 name for name in directories if not (current_path / name).is_symlink()
@@ -135,17 +170,69 @@ def scan_ipas(roots: list[Path]) -> tuple[list[IpaMetadata], list[tuple[Path, st
                 candidate = current_path / filename
                 if candidate.is_symlink():
                     continue
-                key = os.path.normcase(os.path.abspath(candidate))
+                key = normalize_ipa_path(candidate)
                 if key in seen:
                     continue
                 seen.add(key)
                 try:
-                    metadata.append(read_ipa_metadata(candidate))
+                    observed = candidate.lstat()
+                    if (
+                        not stat.S_ISREG(observed.st_mode)
+                        or bool(
+                            getattr(observed, "st_file_attributes", 0) & 0x400
+                        )
+                    ):
+                        continue
+                    # Zip metadata stores the canonical resolved path.  Resolve
+                    # here as well so Windows 8.3 aliases and long paths share
+                    # one cache key.
+                    normalized = normalize_ipa_path(candidate.resolve())
+                    cached = cached_by_path.get(normalized)
+                    entry = None
+                    if (
+                        cached is not None
+                        and cached.size == observed.st_size
+                        and cached.mtime_ns == observed.st_mtime_ns
+                    ):
+                        entry = cached.to_metadata()
+                    if entry is None:
+                        entry = read_ipa_metadata(candidate)
+                        if active_index is not None:
+                            try:
+                                cached = IpaIndexRecord.from_metadata(
+                                    entry,
+                                    mtime_ns=observed.st_mtime_ns,
+                                )
+                            except (TypeError, ValueError):
+                                # The index is an optimization. Metadata that
+                                # exceeds its conservative bounds must remain
+                                # visible to the user and installable.
+                                cached = None
+                    metadata.append(entry)
+                    if cached is not None:
+                        observed_records.append(cached)
+                    modified_by_path[normalize_ipa_path(entry.path)] = (
+                        observed.st_mtime_ns
+                    )
                 except IpaError as exc:
                     errors.append((candidate, str(exc)))
+                except OSError as exc:
+                    errors.append((candidate, str(exc)))
+        if not walk_failed:
+            completed_roots.append(root)
+
+    if active_index is not None:
+        try:
+            active_index.replace_snapshot(
+                observed_records,
+                roots=completed_roots,
+                scan_watermark=scan_watermark,
+            )
+        except IpaIndexError:
+            pass
 
     metadata.sort(
-        key=lambda item: item.path.stat().st_mtime if item.path.exists() else 0,
+        key=lambda item: modified_by_path.get(normalize_ipa_path(item.path), 0),
         reverse=True,
     )
     return metadata, errors

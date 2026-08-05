@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +31,21 @@ class ParseStoreIdTests(unittest.TestCase):
         )
         self.assertIsNone(parse_app_store_id("com.example.app"))
         self.assertIsNone(parse_app_store_id("123"))
+        self.assertIsNone(parse_app_store_id("00000000"))
+        self.assertIsNone(
+            parse_app_store_id(
+                "https://apps.apple.com/ru/app/example/id1234567890123"
+            )
+        )
+        self.assertIsNone(
+            parse_app_store_id(
+                "https://apps.apple.com.evil.example/app/id6472732558"
+            )
+        )
+        self.assertEqual(
+            parse_app_store_id("apps.apple.com/app/id6472732558"),
+            "6472732558",
+        )
 
 
 class KnownAppsMemoryTests(unittest.TestCase):

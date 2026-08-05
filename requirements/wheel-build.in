@@ -1,0 +1,4 @@
+# Toolchain used only by scripts/rebuild-vendored-wheel.py.
+# Keep this separate from the AppRestore local-project build backend.
+setuptools==83.0.0
+wheel==0.46.3

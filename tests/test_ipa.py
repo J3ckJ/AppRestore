@@ -5,6 +5,7 @@ import unittest
 import warnings
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from apprestore_core.ipa import (
     IpaError,
@@ -12,6 +13,7 @@ from apprestore_core.ipa import (
     scan_ipas,
     validate_bundle_id,
 )
+from apprestore_core.ipa_index import IpaIndex
 
 from tests.helpers import make_ipa
 
@@ -123,6 +125,36 @@ class IpaMetadataTests(unittest.TestCase):
         self.assertEqual([entry.path for entry in entries], [good.resolve()])
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0][0], bad)
+
+    def test_second_scan_reuses_persistent_metadata_index(self) -> None:
+        good = make_ipa(self.root / "good.ipa")
+        index = IpaIndex(self.root / "cache" / "ipas.sqlite3")
+
+        first, first_errors = scan_ipas([self.root], index=index)
+        with patch(
+            "apprestore_core.ipa.read_ipa_metadata",
+            side_effect=AssertionError("cached IPA was reopened"),
+        ):
+            second, second_errors = scan_ipas([self.root], index=index)
+
+        self.assertEqual(first_errors, [])
+        self.assertEqual(second_errors, [])
+        self.assertEqual(first, second)
+        self.assertEqual(second[0].path, good.resolve())
+
+    def test_index_bounds_never_hide_otherwise_valid_ipa(self) -> None:
+        good = make_ipa(
+            self.root / "long-name.ipa",
+            name="x" * 4_097,
+        )
+        index = IpaIndex(self.root / "cache" / "ipas.sqlite3")
+
+        entries, errors = scan_ipas([self.root], index=index)
+
+        self.assertEqual(errors, [])
+        self.assertEqual([entry.path for entry in entries], [good.resolve()])
+        self.assertEqual(entries[0].name, "x" * 4_097)
+        self.assertEqual(index.count(), 0)
 
 
 if __name__ == "__main__":

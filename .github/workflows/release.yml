@@ -1,0 +1,337 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate-tag:
+    name: Validate tag and source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12.13"
+
+      - name: Match tag, package and release-builder versions
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || {
+            echo "Release tag must use vMAJOR.MINOR.PATCH: $tag" >&2
+            exit 1
+          }
+          version="$(python apprestore.py --version)"
+          [[ "$tag" == "v${version}" ]] || {
+            echo "Tag $tag does not match AppRestore $version" >&2
+            exit 1
+          }
+          python scripts/build-release.py
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Require release commit to be on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "+refs/heads/main:refs/remotes/origin/main"
+          git merge-base --is-ancestor \
+            "$GITHUB_SHA" refs/remotes/origin/main || {
+              echo "The tagged commit is not reachable from origin/main" >&2
+              exit 1
+            }
+
+  windows-tests:
+    name: Windows gate / Python ${{ matrix.python-version }}
+    needs: validate-tag
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.10"
+          - "3.12.13"
+          - "3.13"
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements/runtime.lock
+            requirements/test.lock
+            requirements/wheel-build.lock
+
+      - name: Install project and tests
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements/build.lock
+          python -m pip install --require-hashes --only-binary=:all: --no-deps --find-links requirements/wheels -r requirements/runtime.lock
+          python -m pip install --no-deps --no-build-isolation --editable .
+          python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements/test.lock
+
+      - name: Run complete test suite
+        run: python -m pytest -q
+
+      - name: Rebuild vendored wheel byte-for-byte
+        if: matrix.python-version == '3.12.13'
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements/wheel-build.lock
+          python scripts/rebuild-vendored-wheel.py --check
+
+      - name: Compile Python sources
+        run: python -m compileall -q apprestore.py apprestore_core scripts tests
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          python scripts/build-release.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "release build failed"
+          }
+          $Files = @(
+            "apprestore.ps1",
+            "install-windows.ps1",
+            "uninstall-windows.ps1",
+            "dist/install.ps1"
+          )
+          foreach ($File in $Files) {
+            $ResolvedFile = (Resolve-Path -LiteralPath $File).Path
+            $Tokens = $null
+            $Errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $ResolvedFile,
+              [ref]$Tokens,
+              [ref]$Errors
+            )
+            if ($Errors.Count -ne 0) {
+              $Errors | ForEach-Object { Write-Error $_.Message }
+              throw "PowerShell syntax validation failed: $File"
+            }
+          }
+
+  macos-tests:
+    name: macOS gate
+    needs: validate-tag
+    runs-on: macos-latest
+    timeout-minutes: 25
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements/runtime.lock
+            requirements/test.lock
+            requirements/wheel-build.lock
+
+      - name: Install project and tests
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements/build.lock
+          python -m pip install --require-hashes --only-binary=:all: --no-deps --find-links requirements/wheels -r requirements/runtime.lock
+          python -m pip install --no-deps --no-build-isolation --editable .
+          python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements/test.lock
+
+      - name: Validate shell syntax
+        run: |
+          /bin/bash -n apprestore.sh
+          /bin/bash -n install-macos.sh
+          /bin/bash -n scripts/install.sh.in
+
+      - name: Run complete test suite
+        run: python -m pytest -q
+
+      - name: Rebuild vendored wheel byte-for-byte
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements/wheel-build.lock
+          python scripts/rebuild-vendored-wheel.py --check
+
+      - name: Compile Python sources
+        run: python -m compileall -q apprestore.py apprestore_core scripts tests
+
+  release-assets:
+    name: Reproducible release assets
+    needs:
+      - validate-tag
+      - windows-tests
+      - macos-tests
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12.13"
+
+      - name: Build twice and compare every byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.validate-tag.outputs.version }}"
+          archive="AppRestore-${version}-source.zip"
+          snapshot="${RUNNER_TEMP}/apprestore-first-build"
+          mkdir -p "$snapshot"
+
+          python scripts/build-release.py
+          for asset in "$archive" install.ps1 install.sh SHA256SUMS.txt; do
+            test -f "dist/$asset"
+            cp "dist/$asset" "$snapshot/$asset"
+          done
+
+          python scripts/build-release.py
+          for asset in "$archive" install.ps1 install.sh SHA256SUMS.txt; do
+            cmp "$snapshot/$asset" "dist/$asset"
+          done
+
+          (cd dist && shasum -a 256 -c SHA256SUMS.txt)
+          unzip -tq "dist/$archive"
+          /bin/bash -n dist/install.sh
+
+          source_rebuild="${RUNNER_TEMP}/apprestore-source-rebuild"
+          mkdir -p "$source_rebuild"
+          unzip -q "dist/$archive" -d "$source_rebuild"
+          source_root="$source_rebuild/AppRestore-${version}"
+          test -d "$source_root"
+          test ! -e "$source_root/.git"
+          (cd "$source_root" && python scripts/build-release.py)
+          for asset in "$archive" install.ps1 install.sh SHA256SUMS.txt; do
+            cmp "$snapshot/$asset" "$source_root/dist/$asset"
+          done
+
+      - name: Upload verified assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: apprestore-release-${{ needs.validate-tag.outputs.version }}
+          path: |
+            dist/AppRestore-${{ needs.validate-tag.outputs.version }}-source.zip
+            dist/install.ps1
+            dist/install.sh
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs:
+      - validate-tag
+      - release-assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified assets
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: apprestore-release-${{ needs.validate-tag.outputs.version }}
+          path: ${{ runner.temp }}/apprestore-release
+
+      - name: Create draft, upload assets, then publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_DIR: ${{ runner.temp }}/apprestore-release
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          archive="AppRestore-${VERSION}-source.zip"
+          for asset in "$archive" install.ps1 install.sh SHA256SUMS.txt; do
+            test -f "${ASSET_DIR}/${asset}"
+          done
+          [[ "$(find "$ASSET_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 4 ]]
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists; refusing to overwrite it" >&2
+            exit 1
+          fi
+
+          created_draft=false
+          cleanup_draft() {
+            status=$?
+            if [[ "$created_draft" == true ]]; then
+              draft_state=""
+              if draft_state="$(
+                gh release view "$tag" \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --json isDraft \
+                  --jq '.isDraft' 2>/dev/null
+              )" && [[ "$draft_state" == "true" ]]; then
+                gh release delete "$tag" \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --yes >/dev/null 2>&1 || true
+              else
+                echo "Release $tag is not confirmed as a draft; preserving it" >&2
+              fi
+            fi
+            exit "$status"
+          }
+          trap cleanup_draft EXIT
+
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --generate-notes \
+            --title "AppRestore ${VERSION}"
+          created_draft=true
+          gh release upload "$tag" \
+            "${ASSET_DIR}/${archive}" \
+            "${ASSET_DIR}/install.ps1" \
+            "${ASSET_DIR}/install.sh" \
+            "${ASSET_DIR}/SHA256SUMS.txt" \
+            --repo "$GITHUB_REPOSITORY"
+          gh release edit "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false
+          created_draft=false
+          trap - EXIT

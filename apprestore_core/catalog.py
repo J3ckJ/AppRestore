@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import copy
 import json
 import plistlib
 import re
+import threading
+import time
+from collections import OrderedDict
 from collections.abc import Iterable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
+from . import __version__
 from .ipa import IpaError, validate_bundle_id
 from .models import IpaMetadata, MissingApp, OffloadedApp
 
@@ -23,12 +29,143 @@ ADAM_ID_KEYS = {
 # Back-compat alias used by older imports/tests.
 STORE_ID_KEYS = ADAM_ID_KEYS
 MAX_JSON_OUTPUT = 32 * 1024 * 1024
-MAX_STORE_ID_DIGITS = 20
+MIN_STORE_ID_DIGITS = 8
+MAX_STORE_ID_DIGITS = 12
 UDID_RE = re.compile(r"^[A-Za-z0-9-]{8,128}$")
+
+_T = TypeVar("_T")
+_R = TypeVar("_R")
+_NETWORK_WORKERS = 6
+_ORCHESTRATION_WORKERS = 4
+_NETWORK_LIMIT = threading.BoundedSemaphore(_NETWORK_WORKERS)
+_NETWORK_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_NETWORK_WORKERS,
+    thread_name_prefix="apprestore-net",
+)
+_ORCHESTRATION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_ORCHESTRATION_WORKERS,
+    thread_name_prefix="apprestore-orchestrate",
+)
+_NETWORK_JSON_LIMIT = 4 * 1024 * 1024
+_HTTP_CACHE_TTL_SECONDS = 300.0
+_HTTP_NEGATIVE_CACHE_TTL_SECONDS = 5.0
+_HTTP_CACHE_MAX_ENTRIES = 256
+_PARALLEL_STOREFRONTS = 4
+_PARALLEL_SOURCES = 4
+_LOOKUP_DEADLINE_SECONDS = 10.0
+_ITUNES_SEARCH_DEADLINE_SECONDS = 12.0
+_CATALOG_SEARCH_DEADLINE_SECONDS = 24.0
+_CATALOG_SOURCE_STAGE_SECONDS = 12.0
 
 
 class CatalogError(ValueError):
     pass
+
+
+class _BoundedTtlCache:
+    """Small thread-safe LRU/TTL cache using a monotonic clock."""
+
+    def __init__(
+        self,
+        *,
+        max_entries: int,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        if max_entries < 1:
+            raise ValueError("max_entries must be positive")
+        self._max_entries = max_entries
+        self._clock = clock
+        self._entries: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _now(self) -> float:
+        return self._clock() if self._clock is not None else time.monotonic()
+
+    def get(self, key: str) -> tuple[bool, Any]:
+        now = self._now()
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return False, None
+            expires_at, value = entry
+            if expires_at <= now:
+                self._entries.pop(key, None)
+                return False, None
+            self._entries.move_to_end(key)
+            return True, value
+
+    def put(self, key: str, value: Any, *, ttl: float) -> None:
+        if ttl <= 0:
+            return
+        with self._lock:
+            self._entries[key] = (self._now() + ttl, value)
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+
+def _ordered_parallel_map(
+    function: Callable[[_T], _R],
+    values: Iterable[_T],
+    *,
+    max_workers: int,
+    timeout: float,
+    executor: ThreadPoolExecutor | None = None,
+) -> list[_R | None]:
+    """Return completed results in input order, bounded by workers and time."""
+
+    items = list(values)
+    if not items:
+        return []
+    if timeout <= 0:
+        return [None] * len(items)
+
+    call_limit = threading.BoundedSemaphore(
+        max(1, min(max_workers, len(items)))
+    )
+
+    def invoke(item: _T) -> _R:
+        with call_limit:
+            return function(item)
+
+    futures: list[Future[_R]] = []
+    try:
+        selected_executor = executor or _NETWORK_EXECUTOR
+        futures = [selected_executor.submit(invoke, item) for item in items]
+        completed, _pending = wait(futures, timeout=timeout)
+        results: list[_R | None] = []
+        for future in futures:
+            if future not in completed:
+                future.cancel()
+                results.append(None)
+                continue
+            try:
+                results.append(future.result())
+            except Exception:
+                # One storefront/archive adapter must not take down every
+                # independent provider. Cancellation and KeyboardInterrupt are
+                # deliberately not swallowed (they derive from BaseException).
+                results.append(None)
+        return results
+    finally:
+        for future in futures:
+            if not future.done():
+                future.cancel()
+        # The module-level executor caps all timed-out calls together. Running
+        # operations retain their own socket timeout; queued work is canceled.
+
+
+def _remaining(deadline: float, *, cap: float | None = None) -> float:
+    value = max(0.0, deadline - time.monotonic())
+    return min(value, cap) if cap is not None else value
 
 
 def parse_json_output(raw: str) -> Any:
@@ -92,13 +229,14 @@ def _normal_key(value: object) -> str:
 def _store_id_from_value(value: object) -> str | None:
     if isinstance(value, bool):
         return None
-    if isinstance(value, int) and value > 0:
-        return str(value)
+    if isinstance(value, int):
+        value = str(value)
     text = str(value).strip()
     return (
         text
         if text.isascii()
         and text.isdigit()
+        and len(text) >= MIN_STORE_ID_DIGITS
         and len(text) <= MAX_STORE_ID_DIGITS
         and int(text) > 0
         else None
@@ -257,7 +395,7 @@ def parse_missing_apps(
             continue
         record = imazing_records.get(bundle_id) or {}
         local = local_by_bundle.get(bundle_id)
-        store_id = record.get("store_id")
+        store_id = _store_id_from_value(record.get("store_id"))
         if store_id:
             store_match = "exact-imazing"
             source = "imazing"
@@ -295,44 +433,55 @@ def lookup_itunes_store_id(
     countries: tuple[str, ...] = ("", "ru", "us", "gb", "de"),
 ) -> str | None:
     """Resolve a numeric App Store ID via the public iTunes Lookup API."""
-    import urllib.error
     import urllib.parse
-    import urllib.request
 
-    expected = str(bundle_id).strip()
-    if not expected:
+    try:
+        expected = validate_bundle_id(bundle_id)
+    except (IpaError, TypeError):
         return None
 
+    urls: list[str] = []
     for country in countries:
         query: dict[str, str] = {"bundleId": expected}
         if country:
             query["country"] = country
-        url = "https://itunes.apple.com/lookup?" + urllib.parse.urlencode(query)
-        try:
-            with urllib.request.urlopen(url, timeout=20) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except (
-            TimeoutError,
-            urllib.error.URLError,
-            json.JSONDecodeError,
-            OSError,
-            ValueError,
-        ):
-            continue
-        if not isinstance(payload, Mapping):
-            continue
-        results = payload.get("results")
-        if not isinstance(results, list) or not results:
-            continue
-        first = results[0]
-        if not isinstance(first, Mapping):
-            continue
-        returned_bundle = first.get("bundleId")
-        if isinstance(returned_bundle, str) and returned_bundle != expected:
-            continue
-        store_id = _store_id_from_value(first.get("trackId"))
-        if store_id:
-            return store_id
+        urls.append(
+            "https://itunes.apple.com/lookup?" + urllib.parse.urlencode(query)
+        )
+
+    deadline = time.monotonic() + _LOOKUP_DEADLINE_SECONDS
+    for offset in range(0, len(urls), _PARALLEL_STOREFRONTS):
+        remaining = _remaining(deadline)
+        if remaining <= 0:
+            break
+        wave = urls[offset : offset + _PARALLEL_STOREFRONTS]
+        payloads = _ordered_parallel_map(
+            lambda url: _http_json(
+                url,
+                timeout=max(0.1, _remaining(deadline, cap=8.0)),
+            ),
+            wave,
+            max_workers=_PARALLEL_STOREFRONTS,
+            timeout=remaining,
+        )
+        # Completion timing never changes storefront precedence.
+        for payload in payloads:
+            if not isinstance(payload, Mapping):
+                continue
+            results = payload.get("results")
+            if not isinstance(results, list) or not results:
+                continue
+            for row in results:
+                if not isinstance(row, Mapping):
+                    continue
+                returned_bundle = row.get("bundleId")
+                if not isinstance(returned_bundle, str):
+                    continue
+                if returned_bundle.strip() != expected:
+                    continue
+                store_id = _store_id_from_value(row.get("trackId"))
+                if store_id:
+                    return store_id
     return None
 
 
@@ -346,25 +495,136 @@ _ITUNES_SEARCH_COUNTRIES: tuple[str, ...] = (
     "gb",
     "",
 )
-_HTTP_UA = "AppRestore/0.1 (+local; app discovery)"
+_HTTP_UA = f"AppRestore/{__version__} (+local; app discovery)"
+_HTTP_JSON_CACHE = _BoundedTtlCache(max_entries=_HTTP_CACHE_MAX_ENTRIES)
+
+
+def _json_payload_is_empty(payload: object) -> bool:
+    if payload is None or payload == [] or payload == {}:
+        return True
+    if isinstance(payload, Mapping):
+        results = payload.get("results")
+        if isinstance(results, list) and not results:
+            return True
+    return False
+
+
+def _response_header(response: object, name: str) -> str:
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        try:
+            value = headers.get(name)
+        except (AttributeError, KeyError, TypeError):
+            value = None
+        if value is not None:
+            return str(value).strip()
+    getter = getattr(response, "getheader", None)
+    if callable(getter):
+        try:
+            value = getter(name)
+        except (KeyError, TypeError, ValueError):
+            value = None
+        if value is not None:
+            return str(value).strip()
+    return ""
+
+
+def _response_media_type(response: object) -> str:
+    return _response_header(response, "Content-Type").split(";", 1)[0].strip().lower()
+
+
+def _read_bounded_response(response: object, *, max_bytes: int) -> bytes:
+    content_length = _response_header(response, "Content-Length")
+    if content_length:
+        try:
+            declared = int(content_length)
+        except ValueError:
+            declared = -1
+        if declared > max_bytes:
+            raise ValueError("HTTP response exceeds size limit")
+
+    reader = getattr(response, "read", None)
+    if not callable(reader):
+        raise ValueError("HTTP response is not readable")
+    try:
+        payload = reader(max_bytes + 1)
+    except TypeError:
+        # Compatibility with tiny response doubles and file-like wrappers that
+        # only expose read() without a size parameter.
+        payload = reader()
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+        raise ValueError("HTTP response is not bytes")
+    result = bytes(payload)
+    if len(result) > max_bytes:
+        raise ValueError("HTTP response exceeds size limit")
+    return result
 
 
 def _http_json(url: str, *, timeout: float = 20) -> Any | None:
     import urllib.error
     import urllib.request
 
+    cached, cached_value = _HTTP_JSON_CACHE.get(url)
+    if cached:
+        return copy.deepcopy(cached_value)
+
     request = urllib.request.Request(url, headers={"User-Agent": _HTTP_UA})
+    acquired = _NETWORK_LIMIT.acquire(timeout=max(0.05, float(timeout)))
+    if not acquired:
+        _HTTP_JSON_CACHE.put(
+            url,
+            None,
+            ttl=_HTTP_NEGATIVE_CACHE_TTL_SECONDS,
+        )
+        return None
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            media_type = _response_media_type(response)
+            if media_type and not (
+                media_type.endswith("+json")
+                or media_type
+                in {
+                    "application/json",
+                    "application/javascript",
+                    "text/json",
+                    "text/javascript",
+                }
+            ):
+                raise ValueError(f"unexpected JSON content type: {media_type}")
+            raw = _read_bounded_response(
+                response,
+                max_bytes=_NETWORK_JSON_LIMIT,
+            )
+            payload = parse_json_output(raw.decode("utf-8-sig"))
+            if not isinstance(payload, Mapping):
+                raise ValueError("JSON response root is not an object")
     except (
         TimeoutError,
         urllib.error.URLError,
-        json.JSONDecodeError,
+        CatalogError,
+        UnicodeDecodeError,
         OSError,
         ValueError,
     ):
+        _HTTP_JSON_CACHE.put(
+            url,
+            None,
+            ttl=_HTTP_NEGATIVE_CACHE_TTL_SECONDS,
+        )
         return None
+    finally:
+        _NETWORK_LIMIT.release()
+
+    _HTTP_JSON_CACHE.put(
+        url,
+        copy.deepcopy(payload),
+        ttl=(
+            _HTTP_NEGATIVE_CACHE_TTL_SECONDS
+            if _json_payload_is_empty(payload)
+            else _HTTP_CACHE_TTL_SECONDS
+        ),
+    )
+    return payload
 
 
 def search_itunes_apps(
@@ -386,8 +646,7 @@ def search_itunes_apps(
     if limit < 1 or limit > 50:
         raise ValueError("limit must be between 1 and 50")
 
-    seen: set[str] = set()
-    apps: list[dict[str, str]] = []
+    urls: list[str] = []
     for country in countries:
         params: dict[str, str] = {
             "term": query,
@@ -396,32 +655,58 @@ def search_itunes_apps(
         }
         if country:
             params["country"] = country
-        url = "https://itunes.apple.com/search?" + urllib.parse.urlencode(params)
-        payload = _http_json(url)
-        if not isinstance(payload, Mapping):
-            continue
-        results = payload.get("results")
-        if not isinstance(results, list):
-            continue
-        for row in results:
-            if not isinstance(row, Mapping):
+        urls.append(
+            "https://itunes.apple.com/search?" + urllib.parse.urlencode(params)
+        )
+
+    deadline = time.monotonic() + _ITUNES_SEARCH_DEADLINE_SECONDS
+    seen: set[str] = set()
+    apps: list[dict[str, str]] = []
+    for offset in range(0, len(urls), _PARALLEL_STOREFRONTS):
+        remaining = _remaining(deadline)
+        if remaining <= 0:
+            break
+        wave = urls[offset : offset + _PARALLEL_STOREFRONTS]
+        payloads = _ordered_parallel_map(
+            lambda url: _http_json(
+                url,
+                timeout=max(0.1, _remaining(deadline, cap=8.0)),
+            ),
+            wave,
+            max_workers=_PARALLEL_STOREFRONTS,
+            timeout=remaining,
+        )
+        for payload in payloads:
+            if not isinstance(payload, Mapping):
                 continue
-            store_id = _store_id_from_value(row.get("trackId"))
-            if not store_id or store_id in seen:
+            results = payload.get("results")
+            if not isinstance(results, list):
                 continue
-            bundle_id = row.get("bundleId")
-            name = row.get("trackName") or row.get("name")
-            seen.add(store_id)
-            apps.append(
-                {
-                    "storeId": store_id,
-                    "bundleId": str(bundle_id).strip() if bundle_id else "",
-                    "name": _clean_text(name, store_id),
-                    "source": "itunes",
-                }
-            )
-            if len(apps) >= limit:
-                return apps
+            for row in results:
+                if not isinstance(row, Mapping):
+                    continue
+                store_id = _store_id_from_value(row.get("trackId"))
+                if not store_id or store_id in seen:
+                    continue
+                bundle_id = row.get("bundleId")
+                if not isinstance(bundle_id, str):
+                    continue
+                try:
+                    validated_bundle_id = validate_bundle_id(bundle_id)
+                except IpaError:
+                    continue
+                name = row.get("trackName") or row.get("name")
+                seen.add(store_id)
+                apps.append(
+                    {
+                        "storeId": store_id,
+                        "bundleId": validated_bundle_id,
+                        "name": _clean_text(name, store_id),
+                        "source": "itunes",
+                    }
+                )
+                if len(apps) >= limit:
+                    return apps
     return apps
 
 
@@ -438,7 +723,7 @@ def search_ipafilezone_apps(term: str, *, limit: int = 10) -> list[dict[str, str
     params = urllib.parse.urlencode({"q": query, "per_page": str(limit)})
     payload = _http_json(
         "https://ipafilezone.com/api/search?" + params,
-        timeout=25,
+        timeout=10,
     )
     if not isinstance(payload, Mapping):
         return []
@@ -486,29 +771,56 @@ def lookup_itunes_app_by_store_id(
     resolved = _store_id_from_value(store_id)
     if not resolved:
         return None
+    urls: list[str] = []
     for country in countries:
         params: dict[str, str] = {"id": resolved}
         if country:
             params["country"] = country
-        url = "https://itunes.apple.com/lookup?" + urllib.parse.urlencode(params)
-        payload = _http_json(url, timeout=15)
-        if not isinstance(payload, Mapping):
-            continue
-        results = payload.get("results")
-        if not isinstance(results, list) or not results:
-            continue
-        first = results[0]
-        if not isinstance(first, Mapping):
-            continue
-        track_id = _store_id_from_value(first.get("trackId")) or resolved
-        bundle_id = first.get("bundleId")
-        name = first.get("trackName") or first.get("name")
-        return {
-            "storeId": track_id,
-            "bundleId": str(bundle_id).strip() if bundle_id else "",
-            "name": _clean_text(name, track_id),
-            "source": "itunes-lookup",
-        }
+        urls.append(
+            "https://itunes.apple.com/lookup?" + urllib.parse.urlencode(params)
+        )
+
+    deadline = time.monotonic() + _LOOKUP_DEADLINE_SECONDS
+    for offset in range(0, len(urls), _PARALLEL_STOREFRONTS):
+        remaining = _remaining(deadline)
+        if remaining <= 0:
+            break
+        wave = urls[offset : offset + _PARALLEL_STOREFRONTS]
+        payloads = _ordered_parallel_map(
+            lambda url: _http_json(
+                url,
+                timeout=max(0.1, _remaining(deadline, cap=8.0)),
+            ),
+            wave,
+            max_workers=_PARALLEL_STOREFRONTS,
+            timeout=remaining,
+        )
+        for payload in payloads:
+            if not isinstance(payload, Mapping):
+                continue
+            results = payload.get("results")
+            if not isinstance(results, list) or not results:
+                continue
+            for row in results:
+                if not isinstance(row, Mapping):
+                    continue
+                track_id = _store_id_from_value(row.get("trackId"))
+                if track_id != resolved:
+                    continue
+                bundle_id = row.get("bundleId")
+                if not isinstance(bundle_id, str):
+                    continue
+                try:
+                    validated_bundle_id = validate_bundle_id(bundle_id)
+                except IpaError:
+                    continue
+                name = row.get("trackName") or row.get("name")
+                return {
+                    "storeId": track_id,
+                    "bundleId": validated_bundle_id,
+                    "name": _clean_text(name, track_id),
+                    "source": "itunes-lookup",
+                }
     return None
 
 
@@ -661,12 +973,34 @@ def search_app_catalogs(term: str, *, limit: int = 10) -> list[dict[str, str]]:
     if limit < 1 or limit > 50:
         raise ValueError("limit must be between 1 and 50")
 
+    deadline = time.monotonic() + _CATALOG_SEARCH_DEADLINE_SECONDS
     variants = _search_query_variants(query)
     per_source = max(limit, min(20, limit * 2))
     rows: list[dict[str, str]] = []
+    source_tasks: list[tuple[str, str]] = []
     for variant in variants:
-        rows.extend(search_itunes_apps(variant, limit=per_source))
-        rows.extend(search_ipafilezone_apps(variant, limit=per_source))
+        source_tasks.append(("itunes", variant))
+        source_tasks.append(("ipafilezone", variant))
+
+    def _search_source(task: tuple[str, str]) -> list[dict[str, str]]:
+        source, variant = task
+        if source == "itunes":
+            return search_itunes_apps(variant, limit=per_source)
+        return search_ipafilezone_apps(variant, limit=per_source)
+
+    source_results = _ordered_parallel_map(
+        _search_source,
+        source_tasks,
+        max_workers=_PARALLEL_SOURCES,
+        timeout=min(
+            _CATALOG_SOURCE_STAGE_SECONDS,
+            _remaining(deadline),
+        ),
+        executor=_ORCHESTRATION_EXECUTOR,
+    )
+    for result in source_results:
+        if result:
+            rows.extend(result)
     for hint in _KNOWN_APP_HINTS.get(query.casefold(), ()):
         rows.append(dict(hint))
 
@@ -684,7 +1018,7 @@ def search_app_catalogs(term: str, *, limit: int = 10) -> list[dict[str, str]]:
         if "hint" in (row.get("source") or "").split("+"):
             strong_before_web = True
             break
-    if not strong_before_web:
+    if not strong_before_web and _remaining(deadline) > 1.0:
         import sys
 
         from .web_discovery import search_web_app_store_ids_safe
@@ -722,12 +1056,22 @@ def search_app_catalogs(term: str, *, limit: int = 10) -> list[dict[str, str]]:
 
     apps = [merged[store_id] for store_id in order]
     # Fill bundle IDs for archive-only hits while the listing still resolves.
-    for app in apps[: max(limit * 2, limit)]:
-        if app.get("bundleId"):
-            continue
-        looked = lookup_itunes_app_by_store_id(app["storeId"])
+    lookup_targets = [
+        (index, app["storeId"])
+        for index, app in enumerate(apps[: max(limit * 2, limit)])
+        if not app.get("bundleId")
+    ]
+    lookup_results = _ordered_parallel_map(
+        lambda target: lookup_itunes_app_by_store_id(target[1]),
+        lookup_targets,
+        max_workers=_PARALLEL_STOREFRONTS,
+        timeout=_remaining(deadline),
+        executor=_ORCHESTRATION_EXECUTOR,
+    )
+    for target, looked in zip(lookup_targets, lookup_results):
         if not looked:
             continue
+        app = apps[target[0]]
         if looked.get("bundleId"):
             app["bundleId"] = looked["bundleId"]
         if looked.get("name") and "itunes" not in (app.get("source") or ""):
@@ -794,7 +1138,7 @@ def _clean_text(value: object, fallback: str) -> str:
 
 def _safe_int(value: object) -> int:
     try:
-        number = int(value or 0)
+        number = int(str(value or 0))
         return max(number, 0)
     except (TypeError, ValueError):
         return 0
@@ -835,11 +1179,12 @@ def _app_records(payload: object) -> list[tuple[str, Mapping[str, Any]]]:
         for value in payload:
             if not isinstance(value, Mapping):
                 continue
-            bundle_id = value.get("CFBundleIdentifier")
-            if bundle_id is None:
+            raw_bundle_id = value.get("CFBundleIdentifier")
+            if raw_bundle_id is None:
                 continue
-            if not isinstance(bundle_id, str):
+            if not isinstance(raw_bundle_id, str):
                 raise CatalogError("application bundle identifier is not a string")
+            bundle_id = raw_bundle_id
             try:
                 validate_bundle_id(bundle_id)
             except IpaError as exc:
@@ -870,11 +1215,12 @@ def parse_offloaded_apps(
 
         enriched = enrich_app_record(info)
         direct_store_id = find_store_id(enriched)
+        store_id: str | None
         if direct_store_id:
             store_id = direct_store_id
             store_match = "device"
         else:
-            store_id = imazing_catalog.get(bundle_id)
+            store_id = _store_id_from_value(imazing_catalog.get(bundle_id))
             store_match = "exact-imazing" if store_id else "none"
 
         apps.append(

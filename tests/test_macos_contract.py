@@ -14,6 +14,7 @@ from tests.test_release_bootstrap import _copy_release_inputs, _serve_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "install-macos.sh"
+LAUNCHER = ROOT / "apprestore.sh"
 BOOTSTRAP_TEMPLATE = ROOT / "scripts" / "install.sh.in"
 README = ROOT / "README.md"
 
@@ -23,6 +24,18 @@ PRIMARY_COMMAND = (
     '| /bin/bash && export PATH="$HOME/.local/bin:$PATH"'
 )
 PATH_LINE = 'export PATH="$HOME/.local/bin:$PATH"'
+TEST_PYTHON_FUNCTION = """install_pinned_python() {
+  local destination="$1"
+  mkdir -p "$destination/bin"
+  cp "$(command -v python3.12)" "$destination/bin/python3.12"
+  cp "$(command -v python3.12)" "$destination/bin/python"
+  chmod 755 "$destination/bin/python3.12" "$destination/bin/python"
+}"""
+TEST_IPATOOL_FUNCTION = """install_pinned_ipatool() {
+  local destination="$2"
+  printf '%s\\n' '#!/usr/bin/env bash' 'exit 0' >"$destination"
+  chmod 700 "$destination"
+}"""
 
 
 def shlex_quote(value: str) -> str:
@@ -46,6 +59,14 @@ def _fake_macos_environment(
     fake_python.write_text(
         """#!/usr/bin/env bash
 set -eu
+isolated=false
+if [[ "${1:-}" == "-X" && "${2:-}" == "utf8" ]]; then
+  shift 2
+fi
+if [[ "${1:-}" == "-I" ]]; then
+  isolated=true
+  shift
+fi
 if [[ "${1:-}" == "-c" ]]; then
   exit 0
 fi
@@ -66,8 +87,14 @@ if [[ "${1:-}" == "-m" && "${2:-}" == "pip" ]]; then
   exit 0
 fi
 if [[ "${1:-}" == "-m" && "${2:-}" == "apprestore_core.cli" ]]; then
+  [[ "$isolated" == true ]] || exit 86
+  if [[ "${APPRESTORE_REQUIRE_SCRUB:-}" == "1" ]] &&
+    [[ -n "${PYTHONPATH:-}" || -n "${PYTHONHOME:-}" ||
+      -n "${PYTHONSTARTUP:-}" ]]; then
+    exit 87
+  fi
   if [[ "${3:-}" == "--version" ]]; then
-    printf '%s\\n' '0.1.6'
+    printf '%s\\n' '0.2.0'
   else
     printf '%s\\n' 'APPRESTORE_MENU_OK'
   fi
@@ -126,14 +153,68 @@ exec /bin/rm "$@"
             "HOME": str(home),
             "SHELL": "/bin/zsh",
             "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "APPRESTORE_TEST_BIN": str(fake_bin),
         }
     )
     return home, environment
 
 
+def _write_networkless_test_installer(
+    source: Path,
+    destination: Path,
+    *,
+    script_dir: Path | None = None,
+) -> None:
+    installer = source.read_text(encoding="utf-8")
+    safe_path = "PATH='/usr/bin:/bin:/usr/sbin:/sbin'\nexport PATH\n"
+    assert installer.count(safe_path) == 1
+    installer = installer.replace(
+        safe_path,
+        safe_path
+        + 'if [[ -n "${APPRESTORE_TEST_BIN:-}" ]]; then\n'
+        + '  PATH="$APPRESTORE_TEST_BIN:$PATH"\n'
+        + "  export PATH\n"
+        + "fi\n",
+        1,
+    )
+    installer, replacements = re.subn(
+        r"install_pinned_python\(\) \{.*?\n\}\n\n(?=validate_dependency_payload)",
+        TEST_PYTHON_FUNCTION + "\n\n",
+        installer,
+        count=1,
+        flags=re.DOTALL,
+    )
+    assert replacements == 1
+    installer, replacements = re.subn(
+        r"install_pinned_ipatool\(\) \{.*?\n\}\n\n(?=configure_future_path)",
+        TEST_IPATOOL_FUNCTION + "\n\n",
+        installer,
+        count=1,
+        flags=re.DOTALL,
+    )
+    assert replacements == 1
+    if script_dir is not None:
+        installer, replacements = re.subn(
+            r'^SCRIPT_DIR=".*?"$',
+            f"SCRIPT_DIR={shlex_quote(str(script_dir))}",
+            installer,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        assert replacements == 1
+    destination.write_text(installer, encoding="utf-8", newline="\n")
+    destination.chmod(0o755)
+
+
 def _run_payload(environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    test_installer = Path(environment["HOME"]).parent / "install-macos-test.sh"
+    _write_networkless_test_installer(
+        INSTALLER,
+        test_installer,
+        script_dir=ROOT,
+    )
     return subprocess.run(
-        ["/bin/bash", str(INSTALLER)],
+        ["/bin/bash", str(test_installer)],
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -153,14 +234,26 @@ def test_documented_macos_contract_is_two_commands() -> None:
     )
 
 
+def test_launcher_clears_only_an_interactive_terminal_without_exec() -> None:
+    launcher = LAUNCHER.read_text(encoding="utf-8")
+    assert "if [[ -t 1 ]]; then" in launcher
+    assert "printf '\\033[2J\\033[H'" in launcher
+    assert re.search(r"(?m)^\s*clear(?:\s|$)", launcher) is None
+    assert "unset PYTHONPATH PYTHONHOME PYTHONSTARTUP" in launcher
+    assert 'exec "$python" -X utf8 -I -m apprestore_core.cli' in launcher
+
+
 def test_payload_installer_is_user_space_and_transactional() -> None:
     installer = INSTALLER.read_text(encoding="utf-8")
 
+    safe_path = "PATH='/usr/bin:/bin:/usr/sbin:/sbin'\nexport PATH"
+    assert safe_path in installer
+    assert installer.index(safe_path) < installer.index('SCRIPT_DIR="$(cd ')
     assert '$HOME/Library/Application Support/AppRestore' in installer
     assert '$HOME/.local/bin' in installer
-    assert 'APPRESTORE_VERSION="0.1.6"' in installer
+    assert 'APPRESTORE_VERSION="0.2.0"' in installer
     assert f"path_line='{PATH_LINE}'" in installer
-    assert "-m venv --copies" in installer
+    assert "install_pinned_python \"$VENV_STAGING\"" in installer
     assert "VENV_STAGING" in installer
     assert "VENV_BACKUP" in installer
     assert "OLD_VENV_MOVED" in installer
@@ -168,8 +261,12 @@ def test_payload_installer_is_user_space_and_transactional() -> None:
     assert "rm -rf -- \"$VENV_DIR\"" in installer
     assert "mv \"$VENV_BACKUP/venv\" \"$VENV_DIR\"" in installer
     assert "prepare_install_directories" in installer
-    assert '"$VENV_DIR/bin/python" -m apprestore_core.cli --version' in installer
-    assert "exec %q -m apprestore_core.cli" in installer
+    assert (
+        'installed_version="$("$python" -X utf8 -I -m '
+        'apprestore_core.cli --version)"'
+    ) in installer
+    assert "exec %q -X utf8 -I -m apprestore_core.cli" in installer
+    assert "unset PYTHONPATH PYTHONHOME PYTHONSTARTUP" in installer
     assert "$VENV_DIR/bin/apprestore" not in installer
     assert 'VENV_MARKER_NAME=".apprestore-managed"' in installer
     assert "venv_is_managed" in installer
@@ -177,12 +274,59 @@ def test_payload_installer_is_user_space_and_transactional() -> None:
     assert "INSTALL_COMPLETE=true" in installer
     assert 'installed_version="$("$COMMAND_PATH" --version)"' in installer
     assert '[[ "$installed_version" == "$APPRESTORE_VERSION" ]]' in installer
+    assert 'IPATOOL_VERSION="2.3.1"' in installer
+    assert "43a4b0206af94fab2e4a4bf344ff16ac" in installer
+    assert "f2e58e9d3ece196654e7b9dfcc2748cf" in installer
+    assert "--require-hashes" in installer
+    assert "--only-binary=:all:" in installer
+    assert 'requirements/runtime.lock"' in installer
+    assert 'requirements/build.lock"' in installer
+    assert "--no-build-isolation" in installer
+    assert "--no-deps" in installer
+    assert "--proto '=https'" in installer
+    assert "member.name != expected_name or not member.isfile()" in installer
+    assert "os.O_EXCL" in installer
+    assert 'write_command_wrapper "$VENV_DIR/bin"' in installer
+    assert 'PYTHON_VERSION="3.12.13"' in installer
+    assert 'PYTHON_BUILD="20260804"' in installer
+    assert "b00971ee829e39965e2bda5585666dfd" in installer
+    assert "23c1069b954060a875cce80a2d98afe9" in installer
+    assert "python-build-standalone/releases/download" in installer
+    assert "Homebrew" not in installer
+    assert "recover_orphaned_backup" in installer
+    assert installer.index('"$python" -m pip install') < installer.index(
+        'mv "$VENV_STAGING" "$VENV_DIR"'
+    )
     assert re.search(r"^\s*sudo(?:\s|$)", installer, re.MULTILINE) is None
+
+
+@pytest.mark.parametrize("script", [INSTALLER, LAUNCHER])
+def test_python_support_contract_rejects_314_and_newer(script: Path) -> None:
+    contents = script.read_text(encoding="utf-8")
+    match = re.search(
+        r"python_is_supported\(\) \{\s*\n\s*"
+        r'"\$1" (?:-I )?-c \'([^\']+)\'',
+        contents,
+    )
+    assert match is not None
+    result = subprocess.run(
+        [sys.executable, "-c", match.group(1)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    expected = 0 if (3, 10) <= sys.version_info[:2] < (3, 14) else 1
+    assert result.returncode == expected
+    assert "Python 3.10+" not in contents
 
 
 def test_bootstrap_pins_archive_and_rejects_unsafe_zip_shapes() -> None:
     bootstrap = BOOTSTRAP_TEMPLATE.read_text(encoding="utf-8")
 
+    safe_path = "PATH='/usr/bin:/bin:/usr/sbin:/sbin'\nexport PATH"
+    assert safe_path in bootstrap
+    assert bootstrap.index(safe_path) < bootstrap.index("APPRESTORE_VERSION=")
     assert "@@APPRESTORE_ARCHIVE_URL_SH@@" in bootstrap
     assert "@@APPRESTORE_ARCHIVE_SHA256_SH@@" in bootstrap
     assert "APPRESTORE_BOOTSTRAP_ARCHIVE_URL" in bootstrap
@@ -194,6 +338,55 @@ def test_bootstrap_pins_archive_and_rejects_unsafe_zip_shapes() -> None:
     assert "symbolic links запрещены" in bootstrap
     assert "path traversal" in bootstrap
     assert "trap cleanup EXIT" in bootstrap
+    assert "SYSTEM_TEMP_PARENT=\"\"" in bootstrap
+    assert "getconf DARWIN_USER_TEMP_DIR" in bootstrap
+    assert "temp_root_is_safe_for_cleanup" in bootstrap
+    assert '[[ -d "$TEMP_ROOT" && ! -L "$TEMP_ROOT" ]]' in bootstrap
+    assert "AppRestore-bootstrap.????????*" in bootstrap
+    assert 'resolved_parent" == "$SYSTEM_TEMP_PARENT' in bootstrap
+    assert '/bin/rm -rf -- "$TEMP_ROOT"' in bootstrap
+    assert "небезопасный временный путь сохранён без удаления" in bootstrap
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="macOS bootstrap cleanup contract requires native Bash paths",
+)
+def test_bootstrap_cleanup_preserves_a_symlinked_temp_root(
+    tmp_path: Path,
+) -> None:
+    bootstrap = BOOTSTRAP_TEMPLATE.read_text(encoding="utf-8")
+    functions = bootstrap.split("\nsha256_file() {", 1)[0]
+    harness = tmp_path / "cleanup-contract.sh"
+    harness.write_text(
+        functions
+        + "\nSYSTEM_TEMP_PARENT=\"$1\"\n"
+        + "TEMP_ROOT=\"$2\"\n"
+        + "cleanup\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    harness.chmod(0o755)
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_text("preserve", encoding="utf-8")
+    linked = tmp_path / "AppRestore-bootstrap.abcdefgh"
+    linked.symlink_to(outside, target_is_directory=True)
+
+    result = subprocess.run(
+        ["/bin/bash", str(harness), str(tmp_path.resolve()), str(linked)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert linked.is_symlink()
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
+    assert "сохранён без удаления" in result.stderr
 
 
 @pytest.mark.skipif(
@@ -211,10 +404,25 @@ def test_payload_installs_apprestore_for_the_same_terminal_path(
     current_environment["PATH"] = (
         f"{home / '.local' / 'bin'}:{environment['PATH']}"
     )
+    shadow = tmp_path / "cwd-shadow"
+    (shadow / "apprestore_core").mkdir(parents=True)
+    (shadow / "apprestore_core" / "cli.py").write_text(
+        "raise SystemExit('cwd shadow executed')\n",
+        encoding="utf-8",
+    )
+    current_environment.update(
+        {
+            "APPRESTORE_REQUIRE_SCRUB": "1",
+            "PYTHONPATH": str(shadow),
+            "PYTHONHOME": str(shadow),
+            "PYTHONSTARTUP": str(shadow / "startup.py"),
+        }
+    )
     resolved = shutil.which("apprestore", path=current_environment["PATH"])
     assert resolved == str(home / ".local" / "bin" / "apprestore")
     launched = subprocess.run(
         ["apprestore", "--version"],
+        cwd=shadow,
         env=current_environment,
         capture_output=True,
         text=True,
@@ -222,7 +430,7 @@ def test_payload_installs_apprestore_for_the_same_terminal_path(
         check=False,
     )
     assert launched.returncode == 0, launched.stdout + launched.stderr
-    assert launched.stdout.strip() == "0.1.6"
+    assert launched.stdout.strip() == "0.2.0"
     assert PATH_LINE in (home / ".zprofile").read_text(encoding="utf-8").splitlines()
     assert not list(
         (home / "Library" / "Application Support" / "AppRestore").glob(
@@ -279,9 +487,46 @@ def test_failed_update_restores_previous_working_venv(
         check=False,
     )
     assert launched.returncode == 0, launched.stdout + launched.stderr
-    assert launched.stdout.strip() == "0.1.6"
+    assert launched.stdout.strip() == "0.2.0"
     app_support = home / "Library" / "Application Support" / "AppRestore"
     assert not list(app_support.glob(".venv-*"))
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="macOS installer E2E requires the native shell and filesystem",
+)
+def test_orphaned_backup_is_recovered_before_new_staging(
+    tmp_path: Path,
+) -> None:
+    home, environment = _fake_macos_environment(tmp_path)
+    first = _run_payload(environment)
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    app_support = home / "Library" / "Application Support" / "AppRestore"
+    live = app_support / "venv"
+    backup = app_support / ".venv-backup.interrupted"
+    backup.mkdir()
+    live.rename(backup / "venv")
+
+    environment["APPRESTORE_TEST_PIP_FAIL"] = "1"
+    failed_update = _run_payload(environment)
+    assert failed_update.returncode != 0
+    assert live.is_dir()
+    assert not (backup / "venv").exists()
+
+    launch_environment = environment.copy()
+    launch_environment.pop("APPRESTORE_TEST_PIP_FAIL")
+    launched = subprocess.run(
+        [str(home / ".local" / "bin" / "apprestore"), "--version"],
+        env=launch_environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert launched.returncode == 0, launched.stdout + launched.stderr
+    assert launched.stdout.strip() == "0.2.0"
 
 
 @pytest.mark.skipif(
@@ -357,7 +602,7 @@ def test_backup_cleanup_failure_keeps_successful_new_install(
         check=False,
     )
     assert launched.returncode == 0, launched.stdout + launched.stderr
-    assert launched.stdout.strip() == "0.1.6"
+    assert launched.stdout.strip() == "0.2.0"
     assert "старый venv сохранён" in update.stderr
 
 
@@ -402,8 +647,9 @@ def test_real_moved_venv_launches_through_final_python_module(
         (
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
+            "unset PYTHONPATH PYTHONHOME PYTHONSTARTUP\n"
             f"exec {shlex_quote(str(live / 'bin' / 'python'))} "
-            '-m apprestore_core.cli "$@"\n'
+            '-X utf8 -I -m apprestore_core.cli "$@"\n'
         ),
         encoding="utf-8",
         newline="\n",
@@ -417,7 +663,7 @@ def test_real_moved_venv_launches_through_final_python_module(
         check=False,
     )
     assert launched.returncode == 0, launched.stdout + launched.stderr
-    assert launched.stdout.strip() == "0.1.6"
+    assert launched.stdout.strip() == "0.2.0"
 
 
 @pytest.mark.skipif(
@@ -429,6 +675,8 @@ def test_generated_bootstrap_installs_then_command_launches(
 ) -> None:
     release_root = tmp_path / "release"
     _copy_release_inputs(release_root)
+    release_installer = release_root / "install-macos.sh"
+    _write_networkless_test_installer(release_installer, release_installer)
     build = subprocess.run(
         [sys.executable, str(release_root / "scripts" / "build-release.py")],
         cwd=release_root,
@@ -439,7 +687,7 @@ def test_generated_bootstrap_installs_then_command_launches(
     )
     assert build.returncode == 0, build.stdout + build.stderr
 
-    archive = release_root / "dist" / "AppRestore-0.1.6-source.zip"
+    archive = release_root / "dist" / "AppRestore-0.2.0-source.zip"
     bootstrap = release_root / "dist" / "install.sh"
     assert archive.is_file()
     assert bootstrap.is_file()
@@ -477,4 +725,4 @@ def test_generated_bootstrap_installs_then_command_launches(
         check=False,
     )
     assert launched.returncode == 0, launched.stdout + launched.stderr
-    assert launched.stdout.strip() == "0.1.6"
+    assert launched.stdout.strip() == "0.2.0"

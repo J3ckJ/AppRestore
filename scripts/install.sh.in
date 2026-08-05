@@ -1,25 +1,70 @@
 #!/usr/bin/env bash
-# Generated AppRestore bootstrap for macOS. Do not edit dist/install.sh.
+# Generated AppRestore bootstrap for macOS. Do not edit dist/install.sh directly.
 
 set -euo pipefail
 umask 077
+PATH='/usr/bin:/bin:/usr/sbin:/sbin'
+export PATH
 
 APPRESTORE_VERSION=@@APPRESTORE_VERSION_SH@@
 DEFAULT_ARCHIVE_URL=@@APPRESTORE_ARCHIVE_URL_SH@@
 EXPECTED_ARCHIVE_SHA256=@@APPRESTORE_ARCHIVE_SHA256_SH@@
 ARCHIVE_ROOT="AppRestore-$APPRESTORE_VERSION"
 TEMP_ROOT=""
+SYSTEM_TEMP_PARENT=""
 
 die() {
   printf '%s\n' "AppRestore bootstrap: $*" >&2
   exit 1
 }
 
+warn() {
+  printf '%s\n' "AppRestore bootstrap warning: $*" >&2
+}
+
+canonical_directory() {
+  local directory="$1"
+  [[ -d "$directory" && ! -L "$directory" ]] || return 1
+  (cd -P -- "$directory" 2>/dev/null && pwd -P)
+}
+
+system_temp_parent() {
+  local configured resolved
+  configured="$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null)" || die \
+    "не удалось определить системный временный каталог macOS"
+  configured="${configured%/}"
+  resolved="$(canonical_directory "$configured")" || die \
+    "системный временный каталог macOS небезопасен"
+  [[ "$resolved" != "/" ]] || die \
+    "корень файловой системы нельзя использовать как временный каталог"
+  printf '%s\n' "$resolved"
+}
+
+temp_root_is_safe_for_cleanup() {
+  local leaf resolved_root resolved_parent
+  [[ -n "$TEMP_ROOT" && -n "$SYSTEM_TEMP_PARENT" ]] || return 1
+  [[ -d "$TEMP_ROOT" && ! -L "$TEMP_ROOT" ]] || return 1
+  leaf="${TEMP_ROOT##*/}"
+  case "$leaf" in
+    AppRestore-bootstrap.????????*) ;;
+    *) return 1 ;;
+  esac
+  resolved_root="$(canonical_directory "$TEMP_ROOT")" || return 1
+  resolved_parent="${resolved_root%/*}"
+  [[ "$resolved_parent" == "$SYSTEM_TEMP_PARENT" ]] || return 1
+  [[ "$resolved_root" == "$SYSTEM_TEMP_PARENT/$leaf" ]] || return 1
+}
+
 cleanup() {
   local status=$?
   trap - EXIT HUP INT TERM
-  if [[ -n "$TEMP_ROOT" && -d "$TEMP_ROOT" ]]; then
-    rm -rf -- "$TEMP_ROOT"
+  if [[ -n "$TEMP_ROOT" ]]; then
+    if temp_root_is_safe_for_cleanup; then
+      /bin/rm -rf -- "$TEMP_ROOT" || warn \
+        "не удалось удалить временный каталог; он сохранён: $TEMP_ROOT"
+    else
+      warn "небезопасный временный путь сохранён без удаления: $TEMP_ROOT"
+    fi
   fi
   exit "$status"
 }
@@ -126,11 +171,14 @@ main() {
     *) die "release URL должен использовать HTTPS" ;;
   esac
 
-  TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/AppRestore-bootstrap.XXXXXXXX")"
+  SYSTEM_TEMP_PARENT="$(system_temp_parent)"
+  TEMP_ROOT="$(mktemp -d "$SYSTEM_TEMP_PARENT/AppRestore-bootstrap.XXXXXXXX")"
   trap cleanup EXIT
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  temp_root_is_safe_for_cleanup || die \
+    "mktemp вернул небезопасный временный каталог"
   archive="$TEMP_ROOT/AppRestore-$APPRESTORE_VERSION-source.zip"
 
   curl \

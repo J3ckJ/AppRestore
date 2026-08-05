@@ -9,6 +9,7 @@ APP_SUPPORT_DIR="$HOME/Library/Application Support/AppRestore"
 VENV_DIR="$APP_SUPPORT_DIR/venv"
 export APPRESTORE_IPA_DIR="${APPRESTORE_IPA_DIR:-$APP_SUPPORT_DIR/ipas}"
 export APPRESTORE_CACHE_DIR="${APPRESTORE_CACHE_DIR:-$HOME/Library/Caches/AppRestore}"
+unset PYTHONPATH PYTHONHOME PYTHONSTARTUP
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -23,7 +24,7 @@ die() {
 }
 
 python_is_supported() {
-  "$1" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' \
+  "$1" -I -c 'import sys; raise SystemExit(not ((3, 10) <= sys.version_info[:2] < (3, 14)))' \
     >/dev/null 2>&1
 }
 
@@ -45,12 +46,15 @@ find_python() {
 run_core() {
   local python
   python=$(find_python) || die \
-    "нужен Python 3.10+. Запусти: $(basename "$0") setup"
+    "нужен Python 3.10–3.13. Запусти: $(basename "$0") setup"
   mkdir -p "$APPRESTORE_IPA_DIR" "$APPRESTORE_CACHE_DIR"
   chmod 700 "$APP_SUPPORT_DIR" "$APPRESTORE_IPA_DIR" \
     "$APPRESTORE_CACHE_DIR" 2>/dev/null || true
   if [[ -d "$VENV_DIR/bin" ]]; then
     export PATH="$VENV_DIR/bin:$PATH"
+  fi
+  if [[ "$python" == "$VENV_DIR/bin/python" ]]; then
+    exec "$python" -X utf8 -I -m apprestore_core.cli "$@"
   fi
   exec "$python" "$SCRIPT_DIR/apprestore.py" "$@"
 }
@@ -62,7 +66,9 @@ setup() {
 }
 
 show_header() {
-  clear 2>/dev/null || true
+  if [[ -t 1 ]]; then
+    printf '\033[2J\033[H'
+  fi
   printf "%b" "${BOLD}${CYAN}"
   cat <<'EOF'
      _                ____           _
@@ -144,6 +150,9 @@ case "${1:-}" in
     ;;
   -h|--help|help)
     if python=$(find_python); then
+      if [[ "$python" == "$VENV_DIR/bin/python" ]]; then
+        exec "$python" -X utf8 -I -m apprestore_core.cli --help
+      fi
       exec "$python" "$SCRIPT_DIR/apprestore.py" --help
     fi
     cat <<EOF
@@ -153,7 +162,7 @@ AppRestore
   $(basename "$0") restore     мастер восстановления
   $(basename "$0") doctor      проверить окружение
 
-Для остальных команд нужен Python 3.10+.
+Для остальных команд нужен Python 3.10–3.13.
 EOF
     ;;
   *) run_core "$@" ;;

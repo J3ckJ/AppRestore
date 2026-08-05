@@ -76,12 +76,15 @@ class PlaceholderParsingTests(unittest.TestCase):
         apps = parse_offloaded_apps(
             payload,
             [self.local],
-            {"com.example.alpha": "123456", "com.example.normal": "999"},
+            {
+                "com.example.alpha": "123456789",
+                "com.example.normal": "987654321",
+            },
         )
         self.assertEqual(len(apps), 1)
         self.assertEqual(apps[0].bundle_id, "com.example.alpha")
         self.assertEqual(apps[0].local_ipa, self.local.path)
-        self.assertEqual(apps[0].store_id, "123456")
+        self.assertEqual(apps[0].store_id, "123456789")
         self.assertEqual(apps[0].store_match, "exact-imazing")
         self.assertEqual(apps[0].static_size + apps[0].dynamic_size, 120)
 
@@ -90,15 +93,15 @@ class PlaceholderParsingTests(unittest.TestCase):
             {
                 "CFBundleIdentifier": "com.example.alpha",
                 "IsDemotedApp": True,
-                "iTunesMetadata": {"itemId": 321},
+                "iTunesMetadata": {"itemId": 321654987},
             }
         ]
         apps = parse_offloaded_apps(
             payload,
             [],
-            {"com.example.alpha": "123"},
+            {"com.example.alpha": "123456789"},
         )
-        self.assertEqual(apps[0].store_id, "321")
+        self.assertEqual(apps[0].store_id, "321654987")
         self.assertEqual(apps[0].store_match, "device")
 
     def test_never_matches_by_display_name(self) -> None:
@@ -153,7 +156,7 @@ class PlaceholderParsingTests(unittest.TestCase):
             def read(self) -> bytes:
                 return (
                     b'{"resultCount":1,"results":[{"bundleId":'
-                    b'"com.example.alpha","trackId":424242}]}'
+                    b'"com.example.alpha","trackId":42424242}]}'
                 )
 
         with mock.patch(
@@ -162,7 +165,7 @@ class PlaceholderParsingTests(unittest.TestCase):
         ):
             self.assertEqual(
                 lookup_itunes_store_id("com.example.alpha", countries=("",)),
-                "424242",
+                "42424242",
             )
 
     def test_find_store_id_decodes_binary_itunes_metadata(self) -> None:
@@ -170,8 +173,8 @@ class PlaceholderParsingTests(unittest.TestCase):
 
         from apprestore_core.catalog import find_store_id
 
-        blob = plistlib.dumps({"itemId": 998877, "playlistName": "x"})
-        self.assertEqual(find_store_id({"iTunesMetadata": blob}), "998877")
+        blob = plistlib.dumps({"itemId": 99887766, "playlistName": "x"})
+        self.assertEqual(find_store_id({"iTunesMetadata": blob}), "99887766")
 
 
 if __name__ == "__main__":
