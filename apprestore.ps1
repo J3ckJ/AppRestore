@@ -8,6 +8,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+foreach ($PythonEnvironmentName in @(
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP"
+)) {
+    Remove-Item `
+        -LiteralPath "Env:$PythonEnvironmentName" `
+        -ErrorAction SilentlyContinue
+}
+
 # В установленной версии ipatool лежит рядом, в каталоге bin.
 $BundledBin = Join-Path $PSScriptRoot "bin"
 if (Test-Path -LiteralPath $BundledBin -PathType Container) {
@@ -72,28 +82,31 @@ if (-not (Test-Path -LiteralPath $SourceEntryPoint -PathType Leaf)) {
     throw "Не найден AppRestore: ни установленная команда, ни apprestore.py."
 }
 
+$SupportedPythonCheck = (
+    "import sys; raise SystemExit(0 if " +
+    "(3, 10) <= sys.version_info < (3, 14) else 1)"
+)
 $PythonLauncher = Get-Command "py.exe" -ErrorAction SilentlyContinue
 if ($null -ne $PythonLauncher) {
-    & $PythonLauncher.Source -3 -c `
-        "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" `
-        *> $null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Нужен Python 3.10 или новее."
+    foreach ($Selector in @("-3.13", "-3.12", "-3.11", "-3.10")) {
+        & $PythonLauncher.Source $Selector -c $SupportedPythonCheck *> $null
+        if ($LASTEXITCODE -eq 0) {
+            & $PythonLauncher.Source `
+                $Selector `
+                $SourceEntryPoint `
+                @AppRestoreArguments
+            exit $LASTEXITCODE
+        }
     }
-    & $PythonLauncher.Source -3 $SourceEntryPoint @AppRestoreArguments
-    exit $LASTEXITCODE
 }
 
 $Python = Get-Command "python.exe" -ErrorAction SilentlyContinue
 if ($null -ne $Python) {
-    & $Python.Source -c `
-        "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" `
-        *> $null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Нужен Python 3.10 или новее."
+    & $Python.Source -c $SupportedPythonCheck *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & $Python.Source $SourceEntryPoint @AppRestoreArguments
+        exit $LASTEXITCODE
     }
-    & $Python.Source $SourceEntryPoint @AppRestoreArguments
-    exit $LASTEXITCODE
 }
 
-throw "Нужен Python 3.10 или новее. Установите Python и повторите запуск."
+throw "Нужен Python версии 3.10–3.13. Установите Python и повторите запуск."

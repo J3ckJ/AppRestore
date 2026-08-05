@@ -4,7 +4,11 @@
 *.py text eol=lf
 *.ps1 text eol=lf
 *.sh text eol=lf
+*.ps1.in text eol=lf
+*.sh.in text eol=lf
 *.toml text eol=lf
+*.in text eol=lf
+*.lock text eol=lf
 *.md text eol=lf
 *.txt text eol=lf
 *.yml text eol=lf
@@ -13,3 +17,4 @@ LICENSE text eol=lf
 
 *.zip binary
 *.ipa binary
+*.whl binary

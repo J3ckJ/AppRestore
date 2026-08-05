@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 from contextlib import nullcontext, redirect_stdout
 import json
 import os
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from . import __version__
 from .catalog import CatalogError
@@ -31,6 +32,17 @@ _MENU_RULE = "──────────────────────
 _ANSI_BOLD_CYAN = "\033[1;36m"
 _ANSI_DIM = "\033[2m"
 _ANSI_RESET = "\033[0m"
+
+
+class CliUsageError(ValueError):
+    def __init__(self, parser: argparse.ArgumentParser, message: str) -> None:
+        super().__init__(message)
+        self.parser = parser
+
+
+class AppRestoreArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise CliUsageError(self, message)
 
 
 def _enable_windows_ansi() -> bool:
@@ -101,7 +113,12 @@ def _bytes_human(value: int) -> str:
     return f"{number:.1f} {unit}"
 
 
-def _pick_device(service: AppRestoreService, requested: str | None) -> Device:
+def _pick_device(
+    service: AppRestoreService,
+    requested: str | None,
+    *,
+    noninteractive: bool = False,
+) -> Device:
     if requested:
         devices = service.devices()
         for device in devices:
@@ -116,6 +133,11 @@ def _pick_device(service: AppRestoreService, requested: str | None) -> Device:
         )
     if len(devices) == 1:
         return devices[0]
+
+    if noninteractive:
+        raise AppRestoreError(
+            "multiple iPhones are connected; pass --udid in machine-readable mode"
+        )
 
     print("Choose a device:")
     for index, device in enumerate(devices, 1):
@@ -148,7 +170,7 @@ def _parse_selection(raw: str, count: int) -> list[int]:
             start, end = (int(piece) for piece in pieces)
             if start > end:
                 raise AppRestoreError(f"descending range is not allowed: {token}")
-            values = range(start, end + 1)
+            values: Iterable[int] = range(start, end + 1)
         elif re.fullmatch(r"[0-9]+", token):
             values = [int(token)]
         else:
@@ -198,11 +220,20 @@ def _json_dump(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
-def _ensure_auth(service: AppRestoreService, email: str | None) -> None:
+def _ensure_auth(
+    service: AppRestoreService,
+    email: str | None,
+    *,
+    noninteractive: bool = False,
+) -> None:
     print("Проверка входа ipatool…")
     if service.tools.ipatool_authenticated():
         print("ipatool: вход уже выполнен.")
         return
+    if not email and noninteractive:
+        raise AppRestoreError(
+            "ipatool is not authenticated; authenticate first or pass --email"
+        )
     if not email:
         email = input("Apple ID email: ").strip()
     print("Вход в Apple ID через ipatool (пароль/2FA/passphrase — в его запросах)…")
@@ -216,7 +247,7 @@ def _command_doctor(service: AppRestoreService, json_output: bool) -> int:
         _json_dump([check.to_dict() for check in checks])
     else:
         for check in checks:
-            mark = "OK" if check.ok else "FAIL"
+            mark = "OK" if check.ok else ("FAIL" if check.required else "WARN")
             print(f"[{mark}] {check.name}: {check.detail}")
         if sys.platform == "win32" and any(
             (check.name.startswith("Apple") and not check.ok) for check in checks
@@ -249,7 +280,7 @@ def _command_setup(service: AppRestoreService, json_output: bool) -> int:
             print(note)
         print()
         for check in checks:
-            mark = "OK" if check.ok else "FAIL"
+            mark = "OK" if check.ok else ("FAIL" if check.required else "WARN")
             print(f"[{mark}] {check.name}: {check.detail}")
         if sys.platform == "win32" and not service.tools.windows_bridge_ready():
             print(
@@ -272,7 +303,7 @@ def _command_devices(service: AppRestoreService, json_output: bool) -> int:
 
 
 def _command_scan(service: AppRestoreService, json_output: bool) -> int:
-    entries, errors = service.scan_local()
+    entries, errors = service.scan_local(refresh=True)
     if json_output:
         _json_dump(
             {
@@ -298,7 +329,7 @@ def _command_offloaded(
     udid: str | None,
     json_output: bool,
 ) -> int:
-    device = _pick_device(service, udid)
+    device = _pick_device(service, udid, noninteractive=json_output)
     apps = service.offloaded(device.udid)
     if json_output:
         _json_dump(
@@ -319,8 +350,11 @@ def _command_restore(
     udid: str | None,
     email: str | None,
     selection: str | None,
+    acquire_license: bool = False,
+    try_device_redownload: bool = True,
+    noninteractive: bool = False,
 ) -> int:
-    device = _pick_device(service, udid)
+    device = _pick_device(service, udid, noninteractive=noninteractive)
     print(f"Device: {device.name}, iOS {device.ios_version}")
     apps = service.offloaded(device.udid)
     if not apps:
@@ -335,6 +369,10 @@ def _command_restore(
     )
     selected = _parse_selection(raw, len(apps))
     if not selected:
+        if noninteractive:
+            raise AppRestoreError(
+                "selection cannot be empty in machine-readable restore"
+            )
         print("Cancelled.")
         return 0
 
@@ -344,17 +382,29 @@ def _command_restore(
         app = apps[index]
         print(f"\n→ {app.name} ({app.bundle_id})")
         try:
-            status = service.restore_offloaded(device.udid, app)
+            restore_options = (
+                {"acquire_license": True} if acquire_license else {}
+            )
+            if not try_device_redownload:
+                restore_options["try_device_redownload"] = False
+            status = service.restore_offloaded(
+                device.udid,
+                app,
+                **restore_options,
+            )
             print(f"  done: {status}")
             ok += 1
         except AppRestoreError as exc:
             if "not authenticated" in str(exc).lower():
-                _ensure_auth(service, email)
+                _ensure_auth(service, email, noninteractive=noninteractive)
                 try:
+                    retry_options: dict[str, bool] = {
+                        "try_device_redownload": False,
+                    }
+                    if acquire_license:
+                        retry_options["acquire_license"] = True
                     status = service.restore_offloaded(
-                        device.udid,
-                        app,
-                        try_device_redownload=False,
+                        device.udid, app, **retry_options
                     )
                     print(f"  done: {status}")
                     ok += 1
@@ -382,7 +432,7 @@ def _command_missing(
     udid: str | None,
     json_output: bool,
 ) -> int:
-    device = _pick_device(service, udid)
+    device = _pick_device(service, udid, noninteractive=json_output)
     apps = service.missing(device.udid)
     if json_output:
         _json_dump(
@@ -403,12 +453,9 @@ def _looks_like_store_id_input(value: str) -> bool:
         return False
     lowered = text.casefold()
     return bool(
-        parse_app_store_id(text)
-        and (
-            text.isdigit()
-            or lowered.startswith("id")
-            or "apps.apple.com" in lowered
-        )
+        text.isdigit()
+        or re.fullmatch(r"id[0-9]*", lowered)
+        or re.search(r"(?:^|://)apps\.apple\.com/", lowered)
     )
 
 
@@ -465,6 +512,8 @@ def _search_missing_targets(
         store_id=store_id,
         bundle_id=bundle_id or None,
         name=name,
+        provenance="search-selection",
+        status="confirmed",
     )
     if bundle_id:
         return [
@@ -486,6 +535,7 @@ def _resolve_missing_targets(
     *,
     service: AppRestoreService | None = None,
     email: str | None = None,
+    noninteractive: bool = False,
 ) -> list[MissingApp]:
     text = raw.strip()
     if not text:
@@ -496,6 +546,11 @@ def _resolve_missing_targets(
         if lowered.startswith(prefix):
             if service is None:
                 raise AppRestoreError("поиск недоступен в этом контексте")
+            if noninteractive:
+                raise AppRestoreError(
+                    "machine-readable restore cannot choose a search result; "
+                    "pass --store-id or --bundle-id"
+                )
             return _search_missing_targets(
                 service,
                 text[len(prefix) :],
@@ -523,6 +578,11 @@ def _resolve_missing_targets(
             raise AppRestoreError(
                 "укажите номер, App Store ID/URL, bundle ID или имя"
             )
+        if noninteractive:
+            raise AppRestoreError(
+                "machine-readable restore cannot choose a search result; "
+                "pass --store-id or --bundle-id"
+            )
         return _search_missing_targets(service, text, email=email)
     return [
         MissingApp(
@@ -541,17 +601,19 @@ def _command_restore_missing(
     selection: str | None,
     bundle_id: str | None = None,
     store_id: str | None = None,
+    acquire_license: bool = False,
+    noninteractive: bool = False,
 ) -> int:
-    device = _pick_device(service, udid)
+    device = _pick_device(service, udid, noninteractive=noninteractive)
     print(f"Device: {device.name}, iOS {device.ios_version}")
 
-    if store_id and not bundle_id:
-        parsed = parse_app_store_id(store_id) or (
-            store_id.strip() if store_id.strip().isdigit() else None
-        )
-        if not parsed:
+    parsed_store_id: str | None = None
+    if store_id is not None:
+        parsed_store_id = parse_app_store_id(store_id)
+        if not parsed_store_id:
             raise AppRestoreError("некорректный --store-id")
-        targets = [_missing_from_store_id(parsed)]
+    if parsed_store_id and not bundle_id:
+        targets = [_missing_from_store_id(parsed_store_id)]
     elif bundle_id:
         try:
             normalized = validate_bundle_id(bundle_id)
@@ -561,8 +623,8 @@ def _command_restore_missing(
             MissingApp(
                 bundle_id=normalized,
                 name=normalized,
-                store_id=store_id,
-                store_match="manual" if store_id else "none",
+                store_id=parsed_store_id,
+                store_match="manual" if parsed_store_id else "none",
                 local_ipa=service.find_local(normalized),
                 source="manual",
             )
@@ -580,6 +642,7 @@ def _command_restore_missing(
             apps,
             service=service,
             email=email,
+            noninteractive=noninteractive,
         )
         if store_id and len(targets) == 1 and targets[0].store_id is None:
             targets = [
@@ -595,6 +658,10 @@ def _command_restore_missing(
             ]
 
     if not targets:
+        if noninteractive:
+            raise AppRestoreError(
+                "selection cannot be empty in machine-readable restore-missing"
+            )
         print("Cancelled.")
         return 0
 
@@ -604,14 +671,25 @@ def _command_restore_missing(
         identity = app.bundle_id or (f"id{app.store_id}" if app.store_id else "?")
         print(f"\n→ {app.name} ({identity})")
         try:
-            status = service.restore_missing(device.udid, app)
+            restore_options = (
+                {"acquire_license": True} if acquire_license else {}
+            )
+            status = service.restore_missing(
+                device.udid,
+                app,
+                **restore_options,
+            )
             print(f"  done: {status}")
             ok += 1
         except AppRestoreError as exc:
             if "not authenticated" in str(exc).lower():
-                _ensure_auth(service, email)
+                _ensure_auth(service, email, noninteractive=noninteractive)
                 try:
-                    status = service.restore_missing(device.udid, app)
+                    status = service.restore_missing(
+                        device.udid,
+                        app,
+                        **restore_options,
+                    )
                     print(f"  done: {status}")
                     ok += 1
                     continue
@@ -642,19 +720,16 @@ def _command_search(
     json_output: bool = False,
 ) -> int:
     del email  # public catalogs; login needed only later for download
-    query = (term or "").strip() or input("Поиск: ").strip()
+    query = (term or "").strip()
+    if not query and json_output:
+        raise AppRestoreError("search term is required with --json")
+    query = query or input("Поиск: ").strip()
     if not query:
         print("Cancelled.")
         return 0
     if not json_output:
         print("Поиск: iTunes + IPA Filezone + веб (если нужно)…")
     results = service.search_apps(query, limit=limit)
-    for row in results:
-        remember_known_app(
-            store_id=row["storeId"],
-            bundle_id=row.get("bundleId") or None,
-            name=row.get("name"),
-        )
     if json_output:
         _json_dump({"term": query, "apps": results})
     else:
@@ -672,10 +747,7 @@ def _command_search(
                 f"{index:>3}) {row.get('name') or '?'} "
                 f"(id{row.get('storeId')}, {bundle}) [{source}]"
             )
-        print(
-            "ID сохранены в known-apps.json. "
-            "Дальше: меню 2 → вставить id… / URL или выбрать из списка."
-        )
+        print("Дальше: меню 2 → вставить id… / URL или выбрать из списка.")
     return 0 if results else 1
 
 
@@ -687,10 +759,10 @@ def _pause_menu() -> None:
 
 
 def _clear_screen() -> None:
-    if sys.platform == "win32":
-        os.system("cls")
-    else:
-        os.system("clear")
+    # Clearing is cosmetic.  Avoid launching a PATH-resolved shell command;
+    # when output is redirected, leaving earlier output intact is preferable.
+    if _supports_ansi(sys.stdout):
+        print("\033[2J\033[H", end="")
 
 
 def _menu_local_ipa(service: AppRestoreService) -> None:
@@ -808,7 +880,7 @@ def _run_menu(service: AppRestoreService) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = AppRestoreArgumentParser(
         prog="apprestore",
         description="Restore offloaded iOS applications from macOS or Windows.",
     )
@@ -843,6 +915,11 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("bundle_id")
     download.add_argument("--store-id")
     download.add_argument("--email")
+    download.add_argument(
+        "--acquire-license",
+        action="store_true",
+        help="explicitly allow ipatool --purchase after read-only attempts fail",
+    )
 
     install = subparsers.add_parser("install", help="verify and install a local IPA")
     install.add_argument("ipa", type=Path)
@@ -856,6 +933,12 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("--udid")
     restore.add_argument("--email")
     restore.add_argument("--select", dest="selection")
+    restore.add_argument("--acquire-license", action="store_true")
+    restore.add_argument(
+        "--skip-device-redownload",
+        action="store_true",
+        help="skip native iOS restore after confirming no download is active",
+    )
 
     restore_missing = subparsers.add_parser(
         "restore-missing",
@@ -869,10 +952,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--store-id",
         help="App Store numeric ID or apps.apple.com URL (bundle ID optional)",
     )
+    restore_missing.add_argument("--acquire-license", action="store_true")
 
     search = subparsers.add_parser(
         "search",
-        help="search App Store via ipatool and remember found IDs",
+        help="search public catalogs without changing restore history",
     )
     search.add_argument("term", nargs="?")
     search.add_argument("--email")
@@ -881,14 +965,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    args = parser.parse_args(argv)
-    service = AppRestoreService(library=args.ipa_dir, cache=args.cache_dir)
+    try:
+        args = parser.parse_args(raw_argv)
+    except CliUsageError as exc:
+        if "--json" in raw_argv:
+            _json_dump({"error": str(exc)})
+        else:
+            exc.parser.print_usage(sys.stderr)
+            print(f"{exc.parser.prog}: error: {exc}", file=sys.stderr)
+        return 2
 
     try:
+        service = AppRestoreService(
+            library=args.ipa_dir,
+            cache=args.cache_dir,
+            json_output=args.json,
+        )
         if not args.command:
             if args.json:
-                parser.error("interactive menu does not support --json")
+                raise AppRestoreError("interactive menu does not support --json")
             return _run_menu(service)
         if args.command == "doctor":
             return _command_doctor(service, args.json)
@@ -905,30 +1002,63 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "auth":
             if args.revoke:
                 service.tools.ipatool_revoke()
+                if args.json:
+                    _json_dump({"revoked": True})
                 return 0
+            if args.json and not args.email:
+                raise AppRestoreError("--email is required with --json auth")
             email = args.email or input("Apple ID email: ").strip()
             service.authenticate(email)
+            if args.json:
+                _json_dump({"authenticated": True, "email": email})
             return 0
         if args.command == "download":
             output_context = redirect_stdout(sys.stderr) if args.json else nullcontext()
             with output_context:
-                _ensure_auth(service, args.email)
-                if args.store_id:
-                    path = service.download(args.bundle_id, args.store_id)
+                _ensure_auth(service, args.email, noninteractive=args.json)
+                if args.store_id is not None:
+                    parsed_store_id = parse_app_store_id(args.store_id)
+                    if not parsed_store_id:
+                        raise AppRestoreError("некорректный --store-id")
+                    if args.acquire_license:
+                        path = service.download(
+                            args.bundle_id,
+                            parsed_store_id,
+                            acquire_license=True,
+                        )
+                    else:
+                        path = service.download(args.bundle_id, parsed_store_id)
                 elif _looks_like_store_id_input(args.bundle_id):
                     parsed = parse_app_store_id(args.bundle_id)
                     if not parsed:
                         raise AppRestoreError("некорректный App Store ID")
-                    path = service.download_by_store_id(parsed)
+                    if args.acquire_license:
+                        path = service.download_by_store_id(
+                            parsed,
+                            acquire_license=True,
+                        )
+                    else:
+                        path = service.download_by_store_id(parsed)
                 else:
-                    path = service.download(args.bundle_id, None)
+                    if args.acquire_license:
+                        path = service.download(
+                            args.bundle_id,
+                            None,
+                            acquire_license=True,
+                        )
+                    else:
+                        path = service.download(args.bundle_id, None)
             if args.json:
                 _json_dump({"path": str(path)})
             else:
                 print(path)
             return 0
         if args.command == "install":
-            device = _pick_device(service, args.udid)
+            device = _pick_device(
+                service,
+                args.udid,
+                noninteractive=args.json,
+            )
             metadata = service.install(
                 device.udid,
                 args.ipa,
@@ -940,21 +1070,52 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Installed {metadata.name} {metadata.version}")
             return 0
         if args.command == "restore":
-            return _command_restore(
-                service,
-                udid=args.udid,
-                email=args.email,
-                selection=args.selection,
+            if args.json and args.selection is None:
+                raise AppRestoreError("--select is required with --json restore")
+            restore_context = (
+                redirect_stdout(sys.stderr) if args.json else nullcontext()
             )
+            with restore_context:
+                result = _command_restore(
+                    service,
+                    udid=args.udid,
+                    email=args.email,
+                    selection=args.selection,
+                    acquire_license=args.acquire_license,
+                    try_device_redownload=not args.skip_device_redownload,
+                    noninteractive=args.json,
+                )
+            if args.json:
+                _json_dump({"success": result == 0, "exitCode": result})
+            return result
         if args.command == "restore-missing":
-            return _command_restore_missing(
-                service,
-                udid=args.udid,
-                email=args.email,
-                selection=args.selection,
-                bundle_id=args.bundle_id,
-                store_id=args.store_id,
+            if (
+                args.json
+                and args.selection is None
+                and args.bundle_id is None
+                and args.store_id is None
+            ):
+                raise AppRestoreError(
+                    "--select, --bundle-id, or --store-id is required with "
+                    "--json restore-missing"
+                )
+            restore_context = (
+                redirect_stdout(sys.stderr) if args.json else nullcontext()
             )
+            with restore_context:
+                result = _command_restore_missing(
+                    service,
+                    udid=args.udid,
+                    email=args.email,
+                    selection=args.selection,
+                    bundle_id=args.bundle_id,
+                    store_id=args.store_id,
+                    acquire_license=args.acquire_license,
+                    noninteractive=args.json,
+                )
+            if args.json:
+                _json_dump({"success": result == 0, "exitCode": result})
+            return result
         if args.command == "search":
             return _command_search(
                 service,
@@ -970,6 +1131,7 @@ def main(argv: list[str] | None = None) -> int:
         IpaError,
         ToolUnavailable,
         ValueError,
+        OSError,
     ) as exc:
         if args.json:
             _json_dump({"error": str(exc)})

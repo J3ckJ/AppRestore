@@ -38,13 +38,13 @@ class MissingCatalogTests(unittest.TestCase):
                 "bundle_id": "com.example.still",
                 "name": "Still",
                 "version": "2.0",
-                "store_id": "111",
+                "store_id": "11111111",
             },
             "com.example.history": {
                 "bundle_id": "com.example.history",
                 "name": "History",
                 "version": "1.2",
-                "store_id": "222",
+                "store_id": "22222222",
             },
         }
         apps = parse_missing_apps(
@@ -55,7 +55,7 @@ class MissingCatalogTests(unittest.TestCase):
         bundle_ids = {app.bundle_id for app in apps}
         self.assertEqual(bundle_ids, {"com.example.history", "com.example.gone"})
         history = next(app for app in apps if app.bundle_id == "com.example.history")
-        self.assertEqual(history.store_id, "222")
+        self.assertEqual(history.store_id, "22222222")
         self.assertEqual(history.source, "imazing")
         gone = next(app for app in apps if app.bundle_id == "com.example.gone")
         self.assertEqual(gone.source, "local-ipa")
@@ -86,14 +86,17 @@ class MissingCatalogTests(unittest.TestCase):
                         "CFBundleIdentifier": "com.example.alpha",
                         "CFBundleDisplayName": "Alpha",
                         "CFBundleShortVersionString": "3.1",
-                        "itemId": 555,
+                        "itemId": 123456789,
                     }
                 },
                 handle,
             )
         records = load_imazing_app_records([plist_path])
         self.assertEqual(records["com.example.alpha"]["name"], "Alpha")
-        self.assertEqual(records["com.example.alpha"]["store_id"], "555")
+        self.assertEqual(
+            records["com.example.alpha"]["store_id"],
+            "123456789",
+        )
 
 
 class MissingCliHelpersTests(unittest.TestCase):
@@ -155,7 +158,7 @@ class MissingServiceTests(unittest.TestCase):
         metadata.name = "App"
         metadata.version = "1.0"
         service.install = mock.Mock(return_value=metadata)  # type: ignore[method-assign]
-        service.resolve_missing_store_id = mock.Mock(return_value="999")  # type: ignore[method-assign]
+        service.resolve_missing_store_id = mock.Mock(return_value="99999999")  # type: ignore[method-assign]
 
         with tempfile.TemporaryDirectory() as temporary:
             known_path = Path(temporary) / "known-apps.json"
@@ -166,14 +169,19 @@ class MissingServiceTests(unittest.TestCase):
                     **kwargs,
                 ),
             ):
-                app = MissingApp("com.example.x", "X", store_id="999", source="manual")
+                app = MissingApp(
+                    "com.example.x",
+                    "X",
+                    store_id="99999999",
+                    source="manual",
+                )
                 status = AppRestoreService.restore_missing(service, "UDID", app)
 
         self.assertIn("installed", status)
         service.tools.device_request_redownload.assert_not_called()
         service.download.assert_called_once_with(
             "com.example.x",
-            "999",
+            "99999999",
             lookup_store_id=False,
         )
 

@@ -4,7 +4,17 @@ from __future__ import annotations
 
 import html as html_lib
 import re
+import time
 import urllib.parse
+
+from .catalog import (
+    _BoundedTtlCache,
+    _NETWORK_LIMIT,
+    _ORCHESTRATION_EXECUTOR,
+    _ordered_parallel_map,
+    _read_bounded_response,
+    _response_media_type,
+)
 
 _APP_STORE_ID_RE = re.compile(
     r"apps\.apple\.com/[^\"'\s<>\\]*?/id(\d{8,12})",
@@ -18,6 +28,18 @@ _HTTP_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
+)
+_NETWORK_TEXT_LIMIT = 2 * 1024 * 1024
+_TEXT_CACHE_TTL_SECONDS = 120.0
+_NEGATIVE_CACHE_TTL_SECONDS = 5.0
+_WEB_CACHE_TTL_SECONDS = 600.0
+_CACHE_MAX_ENTRIES = 128
+_WEB_PAGE_WORKERS = 3
+_WEB_LOOKUP_WORKERS = 3
+_WEB_SEARCH_DEADLINE_SECONDS = 10.0
+_TEXT_CACHE = _BoundedTtlCache(
+    max_entries=_CACHE_MAX_ENTRIES,
+    clock=lambda: time.monotonic(),
 )
 
 # Enough for slug matching (spasibo / sberbank / domclick).
@@ -68,23 +90,53 @@ def _http_text(url: str, *, timeout: float = 20) -> str | None:
     import urllib.error
     import urllib.request
 
+    cached, cached_value = _TEXT_CACHE.get(url)
+    if cached:
+        return cached_value
+
     request = urllib.request.Request(url, headers={"User-Agent": _HTTP_UA})
+    acquired = _NETWORK_LIMIT.acquire(timeout=max(0.05, float(timeout)))
+    if not acquired:
+        _TEXT_CACHE.put(url, None, ttl=_NEGATIVE_CACHE_TTL_SECONDS)
+        return None
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read().decode("utf-8", "replace")
+            media_type = _response_media_type(response)
+            if media_type and media_type not in {
+                "application/xhtml+xml",
+                "text/html",
+                "text/plain",
+            }:
+                raise ValueError(f"unexpected HTML content type: {media_type}")
+            raw = _read_bounded_response(
+                response,
+                max_bytes=_NETWORK_TEXT_LIMIT,
+            )
+            body = raw.decode("utf-8", "replace")
+            if not body.strip():
+                raise ValueError("empty HTML response")
     except (
         TimeoutError,
         urllib.error.URLError,
         OSError,
         ValueError,
     ):
+        _TEXT_CACHE.put(url, None, ttl=_NEGATIVE_CACHE_TTL_SECONDS)
         return None
+    finally:
+        _NETWORK_LIMIT.release()
+
+    _TEXT_CACHE.put(url, body, ttl=_TEXT_CACHE_TTL_SECONDS)
+    return body
 
 
 def _decode_duckduckgo_redirect(url: str) -> str:
     try:
         parsed = urllib.parse.urlparse(url)
-        if "duckduckgo.com" not in (parsed.netloc or ""):
+        hostname = (parsed.hostname or "").casefold().rstrip(".")
+        if hostname != "duckduckgo.com" and not hostname.endswith(
+            ".duckduckgo.com"
+        ):
             return url
         query = urllib.parse.parse_qs(parsed.query)
         for key in ("uddg", "u"):
@@ -159,10 +211,13 @@ def _candidate_ids_from_html(body: str, term: str) -> list[tuple[int, str]]:
     )
 
 
-def _search_pages(term: str) -> list[str]:
+def _search_pages(term: str, *, deadline: float | None = None) -> list[str]:
     query = term.strip()
     if not query:
         return []
+    resolved_deadline = deadline or (
+        time.monotonic() + _WEB_SEARCH_DEADLINE_SECONDS
+    )
     variants = (
         f"{query} site:apps.apple.com",
         f"{query} apps.apple.com",
@@ -182,19 +237,33 @@ def _search_pages(term: str) -> list[str]:
 
     pages: list[str] = []
     strong_hit = False
-    for url in urls:
-        if strong_hit:
+    for offset in range(0, len(urls), _WEB_PAGE_WORKERS):
+        remaining = max(0.0, resolved_deadline - time.monotonic())
+        if strong_hit or remaining <= 0:
             break
-        body = _http_text(url, timeout=18)
-        if not body:
-            continue
-        lowered = body.casefold()
-        if "apps.apple.com" not in lowered and "/id" not in lowered:
-            continue
-        pages.append(body)
-        top = _candidate_ids_from_html(body, query)
-        if top and top[0][0] >= 10:
-            strong_hit = True
+        wave = urls[offset : offset + _WEB_PAGE_WORKERS]
+        bodies = _ordered_parallel_map(
+            lambda url: _http_text(
+                url,
+                timeout=max(
+                    0.1,
+                    min(6.0, resolved_deadline - time.monotonic()),
+                ),
+            ),
+            wave,
+            max_workers=_WEB_PAGE_WORKERS,
+            timeout=remaining,
+        )
+        for body in bodies:
+            if not body:
+                continue
+            lowered = body.casefold()
+            if "apps.apple.com" not in lowered and "/id" not in lowered:
+                continue
+            pages.append(body)
+            top = _candidate_ids_from_html(body, query)
+            if top and top[0][0] >= 10:
+                strong_hit = True
     return pages
 
 
@@ -228,8 +297,9 @@ def search_web_app_store_ids(term: str, *, limit: int = 5) -> list[dict[str, str
     if limit < 1 or limit > 20:
         raise ValueError("limit must be between 1 and 20")
 
+    deadline = time.monotonic() + _WEB_SEARCH_DEADLINE_SECONDS
     ranked: dict[str, int] = {}
-    for page in _search_pages(query):
+    for page in _search_pages(query, deadline=deadline):
         for score, store_id in _candidate_ids_from_html(page, query):
             ranked[store_id] = max(ranked.get(store_id, 0), score)
 
@@ -239,53 +309,74 @@ def search_web_app_store_ids(term: str, *, limit: int = 5) -> list[dict[str, str
     from .catalog import _clean_text, lookup_itunes_app_by_store_id
 
     ordered = sorted(ranked.items(), key=lambda item: (-item[1], item[0]))
+    candidates = [item for item in ordered if item[1] >= 6][
+        : max(20, limit * 4)
+    ]
     apps: list[dict[str, str]] = []
-    for store_id, score in ordered:
-        if score < 6:
-            continue
-        looked = lookup_itunes_app_by_store_id(store_id)
-        if looked:
-            # Live listings must still look like the queried app.
-            if not _names_related(query, looked.get("name") or ""):
-                continue
-            apps.append(
-                {
-                    "storeId": looked["storeId"],
-                    "bundleId": looked.get("bundleId") or "",
-                    "name": looked.get("name") or query,
-                    "source": "web+itunes-lookup",
-                }
+    for offset in range(0, len(candidates), _WEB_LOOKUP_WORKERS):
+        wave = candidates[offset : offset + _WEB_LOOKUP_WORKERS]
+        remaining = max(0.0, deadline - time.monotonic())
+        if remaining > 0:
+            looked_up = _ordered_parallel_map(
+                lookup_itunes_app_by_store_id,
+                (store_id for store_id, _score in wave),
+                max_workers=_WEB_LOOKUP_WORKERS,
+                timeout=remaining,
+                executor=_ORCHESTRATION_EXECUTOR,
             )
         else:
-            # Delisted apps often have no iTunes lookup; keep web hit.
-            apps.append(
-                {
-                    "storeId": store_id,
-                    "bundleId": "",
-                    "name": _clean_text(query, store_id),
-                    "source": "web",
-                }
-            )
-        if len(apps) >= limit:
-            break
+            looked_up = [None] * len(wave)
+        for (store_id, _score), looked in zip(wave, looked_up):
+            if looked:
+                # Live listings must still look like the queried app.
+                if not _names_related(query, looked.get("name") or ""):
+                    continue
+                apps.append(
+                    {
+                        "storeId": looked["storeId"],
+                        "bundleId": looked.get("bundleId") or "",
+                        "name": looked.get("name") or query,
+                        "source": "web+itunes-lookup",
+                    }
+                )
+            else:
+                # Delisted apps often have no iTunes lookup; keep web hit.
+                apps.append(
+                    {
+                        "storeId": store_id,
+                        "bundleId": "",
+                        "name": _clean_text(query, store_id),
+                        "source": "web",
+                    }
+                )
+            if len(apps) >= limit:
+                return apps
     return apps
 
 
-_WEB_CACHE: dict[str, list[dict[str, str]]] = {}
+_WEB_CACHE = _BoundedTtlCache(
+    max_entries=_CACHE_MAX_ENTRIES,
+    clock=lambda: time.monotonic(),
+)
 
 
 def search_web_app_store_ids_safe(term: str, *, limit: int = 5) -> list[dict[str, str]]:
     """Same as search_web_app_store_ids, but never raises for network/parse issues."""
     key = f"{str(term or '').strip().casefold()}|{limit}"
-    cached = _WEB_CACHE.get(key)
-    if cached is not None:
-        return [dict(item) for item in cached]
+    cached, cached_value = _WEB_CACHE.get(key)
+    if cached:
+        return [dict(item) for item in cached_value]
     try:
         result = search_web_app_store_ids(term, limit=limit)
-        if not result:
-            # One retry helps when the first backend page is a captcha interstitial.
-            result = search_web_app_store_ids(term, limit=limit)
     except Exception:
         result = []
-    _WEB_CACHE[key] = [dict(item) for item in result]
+    _WEB_CACHE.put(
+        key,
+        [dict(item) for item in result],
+        ttl=(
+            _WEB_CACHE_TTL_SECONDS
+            if result
+            else _NEGATIVE_CACHE_TTL_SECONDS
+        ),
+    )
     return [dict(item) for item in result]

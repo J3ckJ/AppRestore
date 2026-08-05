@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,24 @@ class VerifiedIpa:
     metadata: IpaMetadata
     sha256: str
     modified_ns: int
+
+
+class DeviceAppState(str, Enum):
+    """Observed installation state for one bundle on a connected device."""
+
+    OFFLOADED = "offloaded"
+    DOWNLOADING = "downloading"
+    INSTALLED = "installed"
+    ABSENT = "absent"
+    UNKNOWN = "unknown"
+
+
+class RedownloadRequestState(str, Enum):
+    """How certain AppRestore is that iOS received a restore request."""
+
+    COMPLETED = "completed"
+    FAILED_BEFORE_REQUEST = "failed-before-request"
+    INDETERMINATE = "indeterminate"
 
 
 @dataclass(frozen=True)

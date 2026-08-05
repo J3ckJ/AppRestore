@@ -1,3 +1,4 @@
+# Generated AppRestore bootstrap for Windows. Do not edit dist/install.ps1.
 & {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = "Stop"
@@ -386,18 +387,59 @@
             $ExpectedLeafPrefix = "AppRestore-bootstrap-"
             $TempLeaf = [System.IO.Path]::GetFileName($ResolvedTempRoot)
             $TempParent = [System.IO.Path]::GetDirectoryName($ResolvedTempRoot)
-            if (
-                [string]::Equals(
-                    $TempParent,
-                    $SystemTempRoot,
-                    [System.StringComparison]::OrdinalIgnoreCase
-                ) -and
-                $TempLeaf.StartsWith(
-                    $ExpectedLeafPrefix,
-                    [System.StringComparison]::Ordinal
+            $TempSuffix = ""
+            if ($TempLeaf.StartsWith(
+                $ExpectedLeafPrefix,
+                [System.StringComparison]::Ordinal
+            )) {
+                $TempSuffix = $TempLeaf.Substring($ExpectedLeafPrefix.Length)
+            }
+            try {
+                $TempItem = Get-Item -LiteralPath $ResolvedTempRoot -Force
+                $NestedTempReparse = $null
+                if ($TempItem.PSIsContainer) {
+                    $NestedTempReparse = Get-ChildItem `
+                        -LiteralPath $ResolvedTempRoot `
+                        -Force `
+                        -Recurse `
+                        -ErrorAction Stop |
+                        Where-Object {
+                            ($_.Attributes -band
+                                [System.IO.FileAttributes]::ReparsePoint) -ne 0
+                        } |
+                        Select-Object -First 1
+                }
+                if (
+                    $TempItem.PSIsContainer -and
+                    ($TempItem.Attributes -band
+                        [System.IO.FileAttributes]::ReparsePoint) -eq 0 -and
+                    $null -eq $NestedTempReparse -and
+                    [string]::Equals(
+                        $TempParent,
+                        $SystemTempRoot,
+                        [System.StringComparison]::OrdinalIgnoreCase
+                    ) -and
+                    $TempLeaf.StartsWith(
+                        $ExpectedLeafPrefix,
+                        [System.StringComparison]::Ordinal
+                    ) -and
+                    $TempSuffix -match "^[0-9a-fA-F]{32}$"
+                ) {
+                    Remove-Item -LiteralPath $ResolvedTempRoot -Recurse -Force
+                }
+                else {
+                    Write-Warning (
+                        "Unsafe bootstrap temp directory was preserved: " +
+                        $ResolvedTempRoot
+                    )
+                }
+            }
+            catch {
+                Write-Warning (
+                    "Bootstrap temp directory was preserved after safe " +
+                    "inspection failed: $ResolvedTempRoot. " +
+                    $_.Exception.Message
                 )
-            ) {
-                Remove-Item -LiteralPath $ResolvedTempRoot -Recurse -Force
             }
         }
     }

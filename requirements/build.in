@@ -1,0 +1,4 @@
+# Build backend used only to install the trusted local AppRestore source after
+# the hash-locked runtime has been installed.
+setuptools==82.0.1
+wheel==0.46.3

@@ -1,24 +1,36 @@
 from __future__ import annotations
 
 import asyncio
+from importlib import metadata as package_metadata
 import importlib.util
 import json
 import platform
+import re
 import socket
 import sys
 import time
 import uuid
+from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
 from .catalog import CatalogError, parse_json_output, parse_udids
 from .command import CommandError, Runner
-from .models import Device, DoctorCheck
-from .paths import resolve_tool
+from . import __version__
+from .models import Device, DeviceAppState, DoctorCheck, RedownloadRequestState
+from .paths import resolve_tool, resolve_windows_system_tool
 
 
 class ToolUnavailable(RuntimeError):
     pass
+
+
+class InstallRequestState(str, Enum):
+    """How certain AppRestore is that iOS received an IPA install request."""
+
+    COMPLETED = "completed"
+    FAILED_BEFORE_REQUEST = "failed-before-request"
+    INDETERMINATE = "indeterminate"
 
 
 IPATOOL_VERSION = "2.3.1"
@@ -30,10 +42,42 @@ IPATOOL_WINDOWS_AMD64_ARCHIVE_SHA256 = (
 # Обратная совместимость со старым именем константы.
 IPATOOL_WINDOWS_AMD64_SHA256 = IPATOOL_WINDOWS_AMD64_ARCHIVE_SHA256
 
+_ANSI_ESCAPE_RE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
+)
+_ACTIVE_INSTALL_STATES = frozenset(
+    {
+        "download",
+        "downloadpending",
+        "downloadqueued",
+        "downloading",
+        "downloadinprogress",
+        "install",
+        "installpending",
+        "installqueued",
+        "installing",
+        "installationinprogress",
+        "installinprogress",
+        "pendingdownload",
+        "pendinginstall",
+        "progress",
+        "queued",
+        "waiting",
+        "waitingfordownload",
+        "waitingforinstall",
+    }
+)
+
 
 class AppRestoreTools:
-    def __init__(self, runner: Runner | None = None) -> None:
+    def __init__(
+        self,
+        runner: Runner | None = None,
+        *,
+        json_output: bool = False,
+    ) -> None:
         self.runner = runner or Runner()
+        self.json_output = json_output
         # После успешного login не запускаем лишний процесс `auth info`:
         # официальный ipatool хранит passphrase только в памяти одного
         # процесса и на Windows спросил бы его снова.
@@ -65,7 +109,7 @@ class AppRestoreTools:
             # The Windows installer prepares its venv in a sibling staging
             # directory and then moves it into place, so invoke the relocatable
             # interpreter and module instead.
-            return [sys.executable, "-m", "pymobiledevice3", *parts]
+            return [sys.executable, "-I", "-m", "pymobiledevice3", *parts]
         return [self._tool("pymobiledevice3"), *parts]
 
     def doctor(self) -> list[DoctorCheck]:
@@ -81,6 +125,14 @@ class AppRestoreTools:
         ipatool_ok, ipatool_detail = self._ipatool_check(ipatool)
         checks = [
             DoctorCheck(
+                "Python runtime",
+                (3, 10) <= sys.version_info[:2] < (3, 14),
+                (
+                    f"{platform.python_version()} at "
+                    f"{Path(sys.executable).resolve()} (supported: 3.10-3.13)"
+                ),
+            ),
+            DoctorCheck(
                 "pymobiledevice3",
                 pymobiledevice3_ok,
                 pymobiledevice3_detail,
@@ -91,6 +143,7 @@ class AppRestoreTools:
                 ipatool_detail,
             ),
         ]
+        checks.append(self._runtime_provenance_check())
         if platform.system() == "Windows":
             service_ok, service_detail = self._apple_mobile_device_service()
             checks.append(
@@ -104,15 +157,70 @@ class AppRestoreTools:
             checks.append(DoctorCheck("Apple usbmux (127.0.0.1:27015)", port_ok, port_detail))
         return checks
 
+    @staticmethod
+    def _runtime_provenance_check() -> DoctorCheck:
+        runtime_path = Path(__file__).resolve().parent
+        try:
+            distribution = package_metadata.distribution("apprestore")
+            installed_version = distribution.version
+            direct_url_text = distribution.read_text("direct_url.json")
+        except package_metadata.PackageNotFoundError:
+            return DoctorCheck(
+                "AppRestore runtime",
+                False,
+                f"package metadata missing; runtime={__version__} at {runtime_path}",
+                required=False,
+            )
+
+        editable = False
+        source = ""
+        if direct_url_text:
+            try:
+                direct_url = json.loads(direct_url_text)
+                editable = bool(
+                    direct_url.get("dir_info", {}).get("editable")
+                )
+                source = str(direct_url.get("url") or "")
+            except (AttributeError, json.JSONDecodeError):
+                source = "invalid direct_url.json"
+
+        matches = installed_version == __version__
+        detail = (
+            f"runtime={__version__}; metadata={installed_version}; "
+            f"python={Path(sys.executable).resolve()}; package={runtime_path}"
+        )
+        if editable:
+            detail += f"; editable source={source or 'unknown'}"
+        return DoctorCheck(
+            "AppRestore runtime",
+            matches and not editable,
+            detail,
+            # A source checkout is useful for development, but a managed user
+            # installation must never silently run an editable checkout.
+            required=not editable,
+        )
+
     def _ipatool_check(self, executable: str | None) -> tuple[bool, str]:
         if not executable:
             return False, "not found"
         path = Path(executable)
-        result = self.runner.run([executable, "--version"])
+        try:
+            result = self.runner.run([executable, "--version"], timeout=30)
+        except CommandError:
+            return False, f"{path} (version check timed out or failed)"
         version_text = f"{result.stdout} {result.stderr}".strip()
         if result.returncode != 0:
             return False, f"{path} (version check failed)"
-        if IPATOOL_VERSION not in version_text:
+        version_tokens = {
+            match.group("version")
+            for match in re.finditer(
+                r"(?<![\w.])v?(?P<version>\d+\.\d+\.\d+)"
+                r"(?![\w.+-])",
+                version_text,
+                flags=re.IGNORECASE,
+            )
+        }
+        if IPATOOL_VERSION not in version_tokens:
             return False, (
                 f"{path} ({version_text or 'version unknown'}; "
                 f"expected {IPATOOL_VERSION})"
@@ -120,15 +228,21 @@ class AppRestoreTools:
         return True, f"{path} ({version_text})"
 
     def _apple_mobile_device_service(self) -> tuple[bool, str]:
-        sc = resolve_tool("sc") or "sc.exe"
+        sc = resolve_windows_system_tool("sc")
+        if not sc:
+            return False, "trusted System32 sc.exe is unavailable"
         for service_name in ("Apple Mobile Device Service", "Apple Mobile Device"):
             try:
-                result = self.runner.run([sc, "query", service_name], capture=True)
+                result = self.runner.run(
+                    [sc, "query", service_name],
+                    capture=True,
+                    timeout=15,
+                )
             except CommandError:
                 continue
             combined = f"{result.stdout}\n{result.stderr}"
             if result.returncode == 0:
-                if "RUNNING" in combined.upper():
+                if re.search(r"(?m):\s*4\s+\S+", combined):
                     return True, f"{service_name}: running"
                 return False, f"{service_name}: installed but not running"
         return (
@@ -159,26 +273,34 @@ class AppRestoreTools:
             notes.append("Apple USB bridge already available")
             return notes
 
-        sc = resolve_tool("sc") or "sc.exe"
-        for service_name in ("Apple Mobile Device Service", "Apple Mobile Device"):
-            try:
-                queried = self.runner.run([sc, "query", service_name], capture=True)
-            except CommandError:
-                continue
-            if queried.returncode != 0:
-                continue
-            notes.append(f"Starting {service_name}…")
-            try:
-                self.runner.run([sc, "start", service_name], capture=True)
-            except CommandError:
-                pass
-            if self._wait_usbmux(timeout_sec=20):
-                notes.append("Apple usbmux is listening on 127.0.0.1:27015")
-                return notes
+        sc = resolve_windows_system_tool("sc")
+        if sc:
+            for service_name in ("Apple Mobile Device Service", "Apple Mobile Device"):
+                try:
+                    queried = self.runner.run(
+                        [sc, "query", service_name],
+                        capture=True,
+                        timeout=15,
+                    )
+                except CommandError:
+                    continue
+                if queried.returncode != 0:
+                    continue
+                notes.append(f"Starting {service_name}…")
+                try:
+                    self.runner.run(
+                        [sc, "start", service_name],
+                        capture=True,
+                        timeout=30,
+                    )
+                except CommandError:
+                    pass
+                if self._wait_usbmux(timeout_sec=20):
+                    notes.append("Apple usbmux is listening on 127.0.0.1:27015")
+                    return notes
 
         notes.append(
-            "Installing Apple Mobile Device Support via winget "
-            "(UAC may appear)…"
+            "Installing Apple Mobile Device Support via verified Microsoft winget…"
         )
         install_ok = self._winget_install_apple_bridge()
         if not install_ok:
@@ -188,11 +310,16 @@ class AppRestoreTools:
             )
             return notes
 
-        for service_name in ("Apple Mobile Device Service", "Apple Mobile Device"):
-            try:
-                self.runner.run([sc, "start", service_name], capture=True)
-            except CommandError:
-                continue
+        if sc:
+            for service_name in ("Apple Mobile Device Service", "Apple Mobile Device"):
+                try:
+                    self.runner.run(
+                        [sc, "start", service_name],
+                        capture=True,
+                        timeout=30,
+                    )
+                except CommandError:
+                    continue
 
         if self._wait_usbmux(timeout_sec=45):
             notes.append("Apple USB bridge is ready")
@@ -215,7 +342,7 @@ class AppRestoreTools:
         return False
 
     def _winget_install_apple_bridge(self) -> bool:
-        winget = resolve_tool("winget")
+        winget = resolve_windows_system_tool("winget")
         if not winget:
             return False
 
@@ -241,37 +368,9 @@ class AppRestoreTools:
         try:
             result = self.runner.run(args, capture=True, timeout=600)
         except CommandError:
-            result = None
-        if result is not None:
-            if succeeded(result.returncode):
-                return True
-            combined = f"{result.stdout}\n{result.stderr}".lower()
-            if "already installed" in combined:
-                return True
-
-        # Retry elevated via PowerShell if winget needs admin.
-        ps = resolve_tool("powershell") or "powershell.exe"
-        winget_literal = winget.replace("'", "''")
-        elevated = [
-            ps,
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            (
-                f"$process = Start-Process -FilePath '{winget_literal}' -ArgumentList "
-                "'install','-e','--id','Apple.AppleMobileDeviceSupport',"
-                "'--accept-package-agreements','--accept-source-agreements',"
-                "'--disable-interactivity' "
-                "-Verb RunAs -Wait -PassThru; exit $process.ExitCode"
-            ),
-        ]
-        try:
-            elevated_result = self.runner.run(elevated, capture=True, timeout=700)
-        except CommandError:
             return False
-        return succeeded(elevated_result.returncode) or "already installed" in (
-            elevated_result.stdout + elevated_result.stderr
+        return succeeded(result.returncode) or "already installed" in (
+            result.stdout + result.stderr
         ).lower()
 
     def list_udids(self) -> list[str]:
@@ -281,8 +380,26 @@ class AppRestoreTools:
             "--simple",
             "--usb",
         )
-        result = self.runner.run(command, check=True)
+        result = self.runner.run(command, check=True, timeout=60)
         return parse_udids(result.stdout)
+
+    @staticmethod
+    def _terminal_text(
+        value: object,
+        *,
+        fallback: str,
+        max_length: int,
+    ) -> str:
+        """Collapse untrusted device text into one terminal-safe line."""
+
+        text = _ANSI_ESCAPE_RE.sub("", str(value or ""))
+        printable = "".join(
+            " " if character.isspace() else character
+            for character in text
+            if character.isspace() or character.isprintable()
+        )
+        collapsed = " ".join(printable.split())
+        return collapsed[:max_length] or fallback
 
     def device_info(self, udid: str) -> Device:
         result = self.runner.run(
@@ -293,14 +410,23 @@ class AppRestoreTools:
                 udid,
             ),
             check=True,
+            timeout=60,
         )
         payload = parse_json_output(result.stdout)
         if not isinstance(payload, dict):
             raise CatalogError("unexpected lockdown info format")
         return Device(
             udid=udid,
-            name=str(payload.get("DeviceName") or "iPhone"),
-            ios_version=str(payload.get("ProductVersion") or "?"),
+            name=self._terminal_text(
+                payload.get("DeviceName"),
+                fallback="iPhone",
+                max_length=128,
+            ),
+            ios_version=self._terminal_text(
+                payload.get("ProductVersion"),
+                fallback="?",
+                max_length=64,
+            ),
         )
 
     def list_apps(self, udid: str) -> Any:
@@ -324,7 +450,14 @@ class AppRestoreTools:
             )
             return parse_json_output(result.stdout)
 
-    def _list_apps_with_metadata(self, udid: str) -> Any:
+    def _list_apps_with_metadata(
+        self,
+        udid: str,
+        *,
+        timeout: float = 120,
+        bundle_id: str | None = None,
+        include_store_metadata: bool = True,
+    ) -> Any:
         async def _run() -> dict[str, Any]:
             from pymobiledevice3.lockdown import create_using_usbmux
             from pymobiledevice3.services.installation_proxy import (
@@ -338,58 +471,71 @@ class AppRestoreTools:
                 ) as lockdown,
                 InstallationProxyService(lockdown) as proxy,
             ):
+                return_attributes = [
+                    "CFBundleIdentifier",
+                    "CFBundleDisplayName",
+                    "CFBundleName",
+                    "CFBundleShortVersionString",
+                    "CFBundleVersion",
+                    "StaticDiskUsage",
+                    "DynamicDiskUsage",
+                    "ApplicationType",
+                    "IsPlaceholder",
+                    "IsDemotedApp",
+                    "DownloadState",
+                    "InstallState",
+                    "ApplicationState",
+                    "PlaceholderState",
+                    "IsInstalling",
+                    "IsDownloading",
+                ]
+                if include_store_metadata:
+                    return_attributes.extend(["iTunesMetadata", "ApplicationSINF"])
                 options: dict[str, Any] = {
                     "ApplicationType": "User",
                     "ShowPlaceholders": True,
-                    "ReturnAttributes": [
-                        "CFBundleIdentifier",
-                        "CFBundleDisplayName",
-                        "CFBundleName",
-                        "CFBundleShortVersionString",
-                        "CFBundleVersion",
-                        "StaticDiskUsage",
-                        "DynamicDiskUsage",
-                        "ApplicationType",
-                        "IsPlaceholder",
-                        "IsDemotedApp",
-                        "iTunesMetadata",
-                        "ApplicationSINF",
-                    ],
+                    "ReturnAttributes": return_attributes,
                 }
+                if bundle_id is not None:
+                    # InstallationProxy accepts BundleIDs as a ClientOptions
+                    # filter, avoiding a full application inventory on every
+                    # post-install poll.
+                    options["BundleIDs"] = [bundle_id]
                 result = await proxy.lookup(options)
                 if not isinstance(result, dict):
                     raise CatalogError("unexpected apps list format")
                 return result
 
-        return asyncio.run(_run())
+        return asyncio.run(asyncio.wait_for(_run(), timeout=max(timeout, 0.1)))
 
     def lookup_store_id_on_device(self, udid: str, bundle_id: str) -> str | None:
         from .catalog import enrich_app_record, find_store_id
 
         try:
-            payload = self._list_apps_with_metadata(udid)
+            payload = self._list_apps_with_metadata(udid, timeout=15)
         except Exception:
             return None
         if not isinstance(payload, dict):
             return None
-        info = payload.get(bundle_id)
-        if not isinstance(info, Mapping):
-            # Some firmwares nest inconsistently; scan values.
-            for value in payload.values():
-                if (
-                    isinstance(value, Mapping)
-                    and value.get("CFBundleIdentifier") == bundle_id
-                ):
-                    info = value
-                    break
+        try:
+            info = self._app_record(payload, bundle_id)
+        except CatalogError:
+            return None
         if not isinstance(info, Mapping):
             return None
         return find_store_id(enrich_app_record(info))
 
-    def device_request_redownload(self, udid: str, bundle_id: str) -> bool:
-        """Ask the phone to restore/redownload an offloaded app (best-effort)."""
+    def device_request_redownload(
+        self,
+        udid: str,
+        bundle_id: str,
+    ) -> RedownloadRequestState:
+        """Ask iOS to restore an offloaded app without guessing after a timeout."""
+
+        request_started = False
 
         async def _run() -> None:
+            nonlocal request_started
             from pymobiledevice3.lockdown import create_using_usbmux
             from pymobiledevice3.services.installation_proxy import (
                 InstallationProxyService,
@@ -402,37 +548,117 @@ class AppRestoreTools:
                 ) as lockdown,
                 InstallationProxyService(lockdown) as proxy,
             ):
+                # In pymobiledevice3 10.1.0 restore() waits for the terminal
+                # protocol status.  From this point on, any timeout/transport
+                # error is ambiguous: iOS may already be downloading.
+                request_started = True
                 await proxy.restore(bundle_id)
 
         try:
-            asyncio.run(_run())
-            return True
+            asyncio.run(asyncio.wait_for(_run(), timeout=60))
+            return RedownloadRequestState.COMPLETED
         except Exception:
-            return False
+            return (
+                RedownloadRequestState.INDETERMINATE
+                if request_started
+                else RedownloadRequestState.FAILED_BEFORE_REQUEST
+            )
 
-    def app_still_offloaded(self, udid: str, bundle_id: str) -> bool:
-        try:
-            payload = self._list_apps_with_metadata(udid)
-        except Exception:
-            return True
+    @staticmethod
+    def _app_record(payload: object, bundle_id: str) -> Mapping[str, Any] | None:
         if not isinstance(payload, dict):
-            return True
+            return None
         info = payload.get(bundle_id)
-        if not isinstance(info, Mapping):
-            for value in payload.values():
-                if isinstance(value, Mapping) and value.get("CFBundleIdentifier") == bundle_id:
-                    info = value
-                    break
-        if not isinstance(info, Mapping):
-            # App disappeared from placeholders — treat as restored/removed.
-            return False
-        return bool(
+        if isinstance(info, Mapping):
+            embedded_bundle_id = info.get("CFBundleIdentifier")
+            if embedded_bundle_id is not None and embedded_bundle_id != bundle_id:
+                raise CatalogError(
+                    "device app lookup returned conflicting bundle identifiers"
+                )
+            return info
+        for value in payload.values():
+            if (
+                isinstance(value, Mapping)
+                and value.get("CFBundleIdentifier") == bundle_id
+            ):
+                return value
+        return None
+
+    @staticmethod
+    def _app_state_from_record(info: Mapping[str, Any]) -> DeviceAppState:
+        semantic_states = {
+            re.sub(r"[^a-z0-9]+", "", str(info.get(key) or "").casefold())
+            for key in (
+                "DownloadState",
+                "InstallState",
+                "ApplicationState",
+                "PlaceholderState",
+            )
+        }
+        if (
+            info.get("IsInstalling") is True
+            or info.get("IsDownloading") is True
+            or bool(semantic_states & _ACTIVE_INSTALL_STATES)
+        ):
+            return DeviceAppState.DOWNLOADING
+
+        placeholder = bool(
             info.get("IsPlaceholder") is True
             or info.get("IsDemotedApp") is True
-            or "placeholder" in str(info.get("ApplicationType") or "").lower()
+            or "placeholder" in str(info.get("ApplicationType") or "").casefold()
         )
+        if placeholder:
+            return DeviceAppState.OFFLOADED
+        return DeviceAppState.INSTALLED
 
-    def install_ipa(self, udid: str, ipa: Path) -> None:
+    def device_app_snapshot(
+        self,
+        udid: str,
+        bundle_id: str,
+    ) -> tuple[DeviceAppState, str | None]:
+        """Read one bundle's state and visible version with a small lookup."""
+
+        try:
+            payload = self._list_apps_with_metadata(
+                udid,
+                timeout=15,
+                bundle_id=bundle_id,
+                include_store_metadata=False,
+            )
+            if not isinstance(payload, dict):
+                return DeviceAppState.UNKNOWN, None
+            info = self._app_record(payload, bundle_id)
+        except Exception:
+            return DeviceAppState.UNKNOWN, None
+        if info is None:
+            return DeviceAppState.ABSENT, None
+
+        version: str | None = None
+        for key in ("CFBundleShortVersionString", "CFBundleVersion"):
+            candidate = self._terminal_text(
+                info.get(key),
+                fallback="",
+                max_length=128,
+            )
+            if candidate:
+                version = candidate
+                break
+        return self._app_state_from_record(info), version
+
+    def device_app_state(self, udid: str, bundle_id: str) -> DeviceAppState:
+        """Return an explicit state; transport failures are never success."""
+
+        state, _version = self.device_app_snapshot(udid, bundle_id)
+        return state
+
+    def app_still_offloaded(self, udid: str, bundle_id: str) -> bool:
+        """Compatibility wrapper; absence/unknown can no longer mean success."""
+
+        return self.device_app_state(udid, bundle_id) is not DeviceAppState.INSTALLED
+
+    def install_ipa(self, udid: str, ipa: Path) -> InstallRequestState:
+        """Install an IPA without turning an ambiguous transport loss into a retry."""
+
         try:
             from pymobiledevice3.lockdown import create_using_usbmux
             from pymobiledevice3.services.afc import AfcService
@@ -451,17 +677,27 @@ class AppRestoreTools:
             except ToolUnavailable:
                 pass
             else:
-                result = self.runner.run(
-                    pymobile_command,
-                    capture=False,
-                )
-                if result.returncode == 0:
-                    return
-                raise ToolUnavailable(
-                    "pymobiledevice3 failed to install the verified IPA"
-                )
+                try:
+                    result = self.runner.run(
+                        pymobile_command,
+                        capture=False,
+                        output_to_stderr=self.json_output,
+                        timeout=1800,
+                    )
+                except CommandError as exc:
+                    # FileNotFoundError is known to happen before a child can
+                    # submit the request. A timeout is ambiguous.
+                    if exc.result.returncode != 127:
+                        return InstallRequestState.INDETERMINATE
+                else:
+                    if result.returncode == 0:
+                        return InstallRequestState.COMPLETED
+                    return InstallRequestState.INDETERMINATE
         else:
+            request_started = False
+
             async def install_streaming() -> None:
+                nonlocal request_started
                 remote_dir = "/PublicStaging/AppRestore"
                 remote_path = f"{remote_dir}/{uuid.uuid4().hex}.ipa"
                 async with (
@@ -477,8 +713,14 @@ class AppRestoreTools:
                         await afc.push(
                             str(ipa),
                             remote_path,
-                            progress_bar=True,
+                            # Keep stdout reserved for the CLI's single JSON
+                            # document in machine-readable mode.
+                            progress_bar=not self.json_output,
                         )
+                        # send_package waits for the terminal protocol status.
+                        # From this line onward, a timeout or USB loss cannot
+                        # prove whether iOS accepted the request.
+                        request_started = True
                         await installation_proxy.send_package(
                             "Install",
                             {},
@@ -492,28 +734,36 @@ class AppRestoreTools:
                             pass
 
             try:
-                asyncio.run(install_streaming())
-                return
-            except Exception as exc:
-                raise ToolUnavailable(
-                    f"pymobiledevice3 failed to install the verified IPA: {exc}"
-                ) from exc
+                asyncio.run(asyncio.wait_for(install_streaming(), timeout=1800))
+                return InstallRequestState.COMPLETED
+            except Exception:
+                return (
+                    InstallRequestState.INDETERMINATE
+                    if request_started
+                    else InstallRequestState.FAILED_BEFORE_REQUEST
+                )
 
         ideviceinstaller = resolve_tool("ideviceinstaller")
         if ideviceinstaller:
-            result = self.runner.run(
-                [ideviceinstaller, "-u", udid, "install", str(ipa)],
-                capture=False,
+            try:
+                result = self.runner.run(
+                    [ideviceinstaller, "-u", udid, "install", str(ipa)],
+                    capture=False,
+                    output_to_stderr=self.json_output,
+                    timeout=1800,
+                )
+            except CommandError as exc:
+                return (
+                    InstallRequestState.FAILED_BEFORE_REQUEST
+                    if exc.result.returncode == 127
+                    else InstallRequestState.INDETERMINATE
+                )
+            return (
+                InstallRequestState.COMPLETED
+                if result.returncode == 0
+                else InstallRequestState.INDETERMINATE
             )
-            if result.returncode == 0:
-                return
-            result = self.runner.run(
-                [ideviceinstaller, "-u", udid, "-i", str(ipa)],
-                capture=False,
-            )
-            if result.returncode == 0:
-                return
-        raise ToolUnavailable("IPA installation failed")
+        return InstallRequestState.FAILED_BEFORE_REQUEST
 
     def ipatool_authenticated(self) -> bool:
         if self._ipatool_session_authenticated:
@@ -521,7 +771,12 @@ class AppRestoreTools:
         ipatool = resolve_tool("ipatool")
         if not ipatool:
             return False
-        result = self.runner.run(self._ipatool_cmd("auth", "info"), capture=False)
+        result = self.runner.run(
+            self._ipatool_cmd("auth", "info"),
+            capture=False,
+            output_to_stderr=self.json_output,
+            timeout=60,
+        )
         if result.returncode == 0:
             self._ipatool_session_authenticated = True
             return True
@@ -536,20 +791,35 @@ class AppRestoreTools:
             # stdout нужен вызывающему коду как JSON. Runner перенаправляет
             # только stdout/stderr; stdin остаётся унаследованным.
             capture=True,
+            timeout=60,
         )
         if result.returncode != 0:
             return None
-        self._ipatool_session_authenticated = True
         try:
-            payload = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return {"authenticated": True}
-        return payload if isinstance(payload, dict) else {"authenticated": True}
+            payload = parse_json_output(result.stdout)
+        except CatalogError:
+            return None
+        if not isinstance(payload, dict) or not payload:
+            return None
+        explicitly_authenticated = payload.get("authenticated") is True
+        successful = payload.get("success") is True
+        has_identity = any(
+            isinstance(payload.get(key), str) and bool(payload[key].strip())
+            for key in ("account", "appleId", "appleID", "email")
+        )
+        if not (explicitly_authenticated or successful or has_identity):
+            return None
+        if payload.get("authenticated") is False or payload.get("success") is False:
+            return None
+        self._ipatool_session_authenticated = True
+        return payload
 
     def ipatool_login(self, email: str) -> None:
         result = self.runner.run(
             self._ipatool_cmd("auth", "login", "--email", email),
             capture=False,
+            output_to_stderr=self.json_output,
+            timeout=600,
         )
         if result.returncode != 0:
             self._ipatool_session_authenticated = False
@@ -560,6 +830,8 @@ class AppRestoreTools:
         result = self.runner.run(
             self._ipatool_cmd("auth", "revoke"),
             capture=False,
+            output_to_stderr=self.json_output,
+            timeout=60,
         )
         self._ipatool_session_authenticated = False
         if result.returncode != 0:
@@ -585,7 +857,12 @@ class AppRestoreTools:
         if purchase:
             args.append("--purchase")
         args.extend(["--output", str(output)])
-        result = self.runner.run(args, capture=False)
+        result = self.runner.run(
+            args,
+            capture=False,
+            output_to_stderr=self.json_output,
+            timeout=1800,
+        )
         return result.returncode == 0
 
     def search_apps(self, term: str, *, limit: int = 10) -> list[dict[str, str]]:
@@ -605,6 +882,7 @@ class AppRestoreTools:
                 "json",
             ),
             capture=True,
+            timeout=120,
         )
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip()

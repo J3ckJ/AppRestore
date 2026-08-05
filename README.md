@@ -17,7 +17,7 @@
 **AppRestore** — локальный инструмент, который возвращает приложения на iPhone,
 когда App Store и сам телефон уже «забыли» удобный путь обратно.
 
-> **Статус:** beta. Версия 0.1.6.  
+> **Статус:** beta · Версия 0.2.0. Проверяйте актуальный релиз в GitHub Releases.
 > Windows + macOS · USB · ваш Apple ID · без обхода DRM.  
 > Проект не связан с Apple Inc.
 
@@ -33,7 +33,7 @@ AppRestore закрывает оба сценария из одного меню
 
 | Сценарий | Что на телефоне | Как возвращаем |
 |---|---|---|
-| **Сгруженные** | placeholder-ярлык | local IPA → redownload → `ipatool` → установка |
+| **Сгруженные** | placeholder-ярлык | local IPA / штатный redownload / `ipatool` fallback |
 | **Удалённые без ярлыка** | ничего | история / ID / поиск → IPA → установка |
 
 ```text
@@ -48,16 +48,19 @@ USB iPhone
 
 ---
 
-## Что умеет 0.1.6
+## Что умеет текущая beta
 
 - короткое меню `1`–`4` / `A` / `B` — сгруженные, удалённые, IPA, диагностика;
 - два класса restore: сгруженные и полностью удалённые;
 - в пункте `2` имя без `search` сразу идёт в поиск;
 - загрузка по **App Store ID / URL**, даже если bundle ID неизвестен;
 - поиск по имени: **iTunes + IPA Filezone + веб** (`apps.apple.com`);
-- память найденных ID в `%LOCALAPPDATA%\AppRestore\known-apps.json`;
+- локальная история подтверждённых приложений и App Store ID;
 - алиасы для переименованных приложений (Домклик → ДКлик, Сбер → исторический ID);
 - структурная проверка IPA до установки;
+- приватная staging-копия IPA и подтверждение результата самим iPhone;
+- SQLite-индекс локальной библиотеки: повторный scan не открывает неизменённые IPA;
+- `--purchase` только после явного `--acquire-license`;
 - JSON для диагностики и автоматизации.
 
 ---
@@ -74,17 +77,16 @@ apprestore
 ### macOS
 
 ```bash
-curl -fsSL https://github.com/J3ckJ/AppRestore/releases/latest/download/install.sh | /bin/bash
-export PATH="$HOME/.local/bin:$PATH"
+curl -fsSL https://github.com/J3ckJ/AppRestore/releases/latest/download/install.sh | /bin/bash && export PATH="$HOME/.local/bin:$PATH"
 apprestore
 ```
 
 Bootstrap скачивает versioned source ZIP, сверяет **SHA-256** и ставит AppRestore
-в user-scope. Перезапуск терминала обычно не нужен.
+в user-scope. Первая строка устанавливает программу, вторая запускает её;
+перезапуск терминала обычно не нужен.
 
-Канонический релиз:
-[`v0.1.6`](https://github.com/J3ckJ/AppRestore/releases/tag/v0.1.6) ·
-[все релизы](https://github.com/J3ckJ/AppRestore/releases)
+Канонический источник установщиков — только
+[GitHub Releases](https://github.com/J3ckJ/AppRestore/releases/latest).
 
 ### Хотите прочитать установщик до запуска
 
@@ -108,10 +110,16 @@ apprestore
 ```
 
 ```bash
-./install-macos.sh
-export PATH="$HOME/.local/bin:$PATH"
+./install-macos.sh && export PATH="$HOME/.local/bin:$PATH"
 apprestore
 ```
+
+### Обновление и повторная установка
+
+Повторите ту же bootstrap-команду из «Быстрого старта». Установщик сначала
+полностью собирает и проверяет новую managed-версию в staging, затем заменяет
+текущую. Если загрузка или установка оборвётся, предыдущая рабочая версия
+останется доступной либо будет восстановлена при следующем запуске installer.
 
 ---
 
@@ -171,7 +179,7 @@ Apple ID осталась лицензия. Это не гарантия и за
    ├─ IPA Filezone (архивный каталог)
    └─ веб-поиск ссылок apps.apple.com   ← как «нагуглить id вручную»
             │
-            └─ known-apps.json → следующий раз уже в списке
+            └─ выбранное приложение → known-apps.json → следующий раз в списке
 ```
 
 Команда:
@@ -179,6 +187,11 @@ Apple ID осталась лицензия. Это не гарантия и за
 ```powershell
 apprestore search "СберСпасибо"
 ```
+
+Поисковый запрос может отправляться в Apple iTunes Search, IPA Filezone и
+веб-поиск. Локальные IPA при поиске никуда не загружаются. Простой просмотр
+результатов не меняет историю: запись появляется только после вашего выбора
+или подтверждённого download/restore.
 
 ---
 
@@ -205,13 +218,25 @@ apprestore --json devices
 apprestore restore-missing --store-id 6472732558
 apprestore search домклик
 apprestore download com.example.app --store-id 123456789
+apprestore download com.example.app --acquire-license  # только с явного согласия
+apprestore restore --select 1 --skip-device-redownload
 ```
+
+`--skip-device-redownload` нужен только после неудачного штатного redownload:
+сначала убедитесь на iPhone, что прежняя загрузка действительно остановилась.
+Флаг сразу переходит к IPA-пути и не запускает второй запрос iOS параллельно.
+
+В JSON-режиме глобальный `--json` ставится перед командой; интерактивный ввод
+отключён, поэтому для restore обязательно передавайте `--select`, `--bundle-id`
+или `--store-id`. Любая ошибка возвращается одним JSON-документом и ненулевым
+кодом процесса.
 
 ---
 
 ## Требования
 
 - Windows 10/11 x64 или macOS;
+- Python 3.10–3.13 (установщик при необходимости подготовит Python 3.12);
 - разблокированный iPhone по USB + «Доверять этому компьютеру»;
 - на Windows: Apple Mobile Device Support / Apple Devices / iTunes;
 - интернет для bootstrap, поиска и `ipatool`;
@@ -230,13 +255,16 @@ AppRestore **не** обходит DRM, подпись и региональны
 - качает только pinned source ZIP;
 - сверяет SHA-256 до установки;
 - режет path traversal / symlink / слишком большие архивы.
+- ставит Python-зависимости только из hash-locked набора.
 
 Перед установкой IPA:
 
 - только `.ipa`, без symlink;
 - ровно один `Payload/*.app/Info.plist`;
 - `CFBundleIdentifier` из plist, не из имени файла;
-- SHA-256 + повторная проверка перед install.
+- копирование через no-follow в приватный staging с SHA-256 за один проход;
+- backend получает только staging-снимок, а не исходный изменяемый путь;
+- успех возвращается только после того, как iPhone подтвердил установленный bundle ID.
 
 Пароль Apple ID / 2FA / keychain passphrase **не** проходят через argv AppRestore —
 их спрашивает сам `ipatool` в терминале.
@@ -253,10 +281,11 @@ AppRestore **не** обходит DRM, подпись и региональны
 |---|---|---|
 | Программа | `%LOCALAPPDATA%\Programs\AppRestore` | `~/Library/Application Support/AppRestore/venv` |
 | IPA | `%USERPROFILE%\AppRestore\ipas` | `~/Library/Application Support/AppRestore/ipas` |
-| Кэш / known-apps | `%LOCALAPPDATA%\AppRestore` | `~/Library/Caches` / Application Support |
+| Кэш + IPA-индекс | `%LOCALAPPDATA%\AppRestore` | `~/Library/Caches/AppRestore` |
+| История | `%LOCALAPPDATA%\AppRestore\known-apps.json` | `~/Library/Application Support/AppRestore/known-apps.json` |
 | Авторизация | хранилище `ipatool` | хранилище `ipatool` |
 
-Переменные: `APPRESTORE_IPA_DIR`, `APPRESTORE_CACHE_DIR`,
+Переменные: `APPRESTORE_IPA_DIR`, `APPRESTORE_CACHE_DIR`, `APPRESTORE_DATA_DIR`,
 `APPRESTORE_EXTRA_IPA_DIRS`, `APPRESTORE_IMAZING_PLIST`, `APPRESTORE_KNOWN_APPS`.
 
 ---
@@ -277,8 +306,9 @@ $localData = [Environment]::GetFolderPath(
 
 ### macOS
 
-Отдельного uninstaller пока нет — удалите venv/IPA/кэш вручную, если нужно.
-Homebrew-пакеты других программ не трогаем.
+Отдельного uninstaller пока нет. Управляемый runtime находится в
+`~/Library/Application Support/AppRestore/venv`; установщик не ставит Homebrew
+и не изменяет системный Python.
 
 ---
 
@@ -303,33 +333,37 @@ apprestore scan
 
 ## Разработка
 
-Python 3.10+.
+Python 3.10–3.13.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e .
-python -m pip install pytest
-python -m unittest discover -s tests -v
+python -m pip install --require-hashes --only-binary=:all: --no-deps --find-links requirements\wheels -r requirements\build.lock
+python -m pip install --require-hashes --only-binary=:all: --no-deps --find-links requirements\wheels -r requirements\runtime.lock
+python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements\test.lock
+python -m pip install --editable . --no-deps --no-build-isolation
+python -m pytest -q
 python scripts\build-release.py
 ```
 
 `dist/` не коммитится. В релиз уходят:
 
 ```text
-AppRestore-0.1.6-source.zip
+AppRestore-<version>-source.zip
 install.ps1
 install.sh
 SHA256SUMS.txt
 ```
+
+Публикация выполняется только tag-workflow после Windows/macOS тестов,
+проверки соответствия tag ↔ version и повторяемой сборки. Пошаговый процесс:
+[docs/RELEASING.md](./docs/RELEASING.md).
 
 ---
 
 ## Ссылки
 
 - [Releases](https://github.com/J3ckJ/AppRestore/releases)
-- [v0.1.6](https://github.com/J3ckJ/AppRestore/releases/tag/v0.1.6)
 - [CHANGELOG](./CHANGELOG.md)
 - [SECURITY](./SECURITY.md)
 - [CONTRIBUTING](./CONTRIBUTING.md)

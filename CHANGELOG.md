@@ -2,6 +2,74 @@
 
 Все заметные изменения проекта документируются в этом файле.
 
+## Не выпущено
+
+Пока нет изменений.
+
+## 0.2.0 — 2026-08-05
+
+### Добавлено
+
+- явные состояния приложения на iPhone: `offloaded`, `downloading`, `installed`,
+  `absent`, `unknown`, с bounded polling вместо фиксированной паузы;
+- обязательная проверка postcondition после IPA install: успех только когда
+  устройство подтверждает установленный bundle ID;
+- приватный staging-снимок IPA с no-follow/open identity checks и SHA-256 за
+  один проход, закрывающий подмену исходного пути между verify и install;
+- SQLite WAL-индекс IPA по `path + size + mtime_ns`, безопасный для нескольких
+  процессов и ускоряющий повторные сканирования;
+- schema v3 для `known-apps.json`: bundle-only история, provenance,
+  монотонный статус, транзитивный identity merge, миграция v1/v2,
+  межпроцессная блокировка и durable atomic replace;
+- hash-locked Python-зависимости и воспроизводимый vendored wheel для пакета,
+  который не публикует готовый wheel;
+- release gate: Windows/macOS matrix, tag/version/main checks, двойная
+  побайтовая сборка и публикация только проверенных assets.
+
+### Изменено
+
+- сетевые источники, storefront lookup и web discovery выполняются параллельно
+  с общим лимитом соединений, дедлайнами, early stop и детерминированным merge;
+- добавлены bounded LRU/TTL-кэши, MIME-проверки и лимиты ответа 4 MiB (JSON) /
+  2 MiB (HTML); пустые ответы и ошибки живут только 5 секунд;
+- поиск больше не записывает все результаты в историю: только явный выбор или
+  подтверждённый download/restore;
+- `ipatool --purchase` запускается только с явным `--acquire-license`;
+- macOS quick start закреплён как две команды: установка и запуск;
+- macOS installer больше не требует Homebrew: он проверяет и ставит отдельный
+  pinned CPython 3.12, готовит runtime целиком в staging и восстанавливает
+  предыдущую managed-версию после прерванного обновления;
+- поддерживаемый Python ограничен проверенным диапазоном 3.10–3.13;
+- machine-readable команды сохраняют stdout только для одного JSON-документа,
+  включая ошибки CLI, не открывают скрытые prompts, а прогресс дочерних
+  процессов направляют в stderr;
+- ответы App Store принимаются только при точном совпадении store ID и bundle
+  ID; некорректные идентификаторы, redirect-домены и записи кэша отбрасываются;
+- повторная установка выполняется той же bootstrap-командой и явно описана в
+  README вместе с безопасным применением `--skip-device-redownload`.
+
+### Безопасность
+
+- Windows bootstrap проверяет package identity, publisher и Authenticode
+  Microsoft Desktop App Installer; PATH-resolved `winget`/`sc.exe` и UAC retry
+  полностью удалены;
+- Windows update сериализован per-user mutex, восстанавливает единственный
+  валидный backup до Python/сети и не оставляет live-установку наполовину
+  заменённой;
+- повреждённая, слишком большая или более новая версия локальной истории
+  больше не перезаписывается; пользовательская операция завершается с
+  предупреждением, а исходный документ сохраняется;
+- загрузка и установка получили phase timeouts и cleanup при отмене;
+- `doctor` выявляет несовпадение runtime/metadata, editable checkout и
+  неподдерживаемый Python вместо молчаливого запуска чужой версии;
+- managed launchers очищают Python environment и запускают runtime с `-I`;
+  дочерние команды не используют shell, ограничивают stdout/stderr и при
+  timeout завершают всё дерево процессов;
+- IPA commit и staging перепроверяют SHA-256 и identity на границах операции,
+  включая подмены с прежними размером и timestamp;
+- сторонние GitHub Actions закреплены полными commit SHA, а существующий
+  GitHub Release нельзя молча перезаписать.
+
 ## 0.1.6 — 2026-08-04
 
 ### Изменено

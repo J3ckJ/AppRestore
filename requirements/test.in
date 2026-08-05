@@ -1,0 +1,2 @@
+# Test runner used by CI and local release validation.
+pytest==9.0.3
