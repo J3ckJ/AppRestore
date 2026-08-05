@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+WHEEL_REPRODUCER = ROOT / "scripts" / "verify-vendored-wheel-macos.sh"
 
 
 def _workflow() -> str:
@@ -82,7 +83,16 @@ def test_ci_verifies_the_deterministic_vendored_wheel_recipe() -> None:
     for path in (CI_WORKFLOW, WORKFLOW):
         workflow = path.read_text(encoding="utf-8")
         assert "requirements/wheel-build.lock" in workflow
-        assert "scripts/rebuild-vendored-wheel.py --check" in workflow
+        assert "/bin/bash scripts/verify-vendored-wheel-macos.sh" in workflow
+
+    reproducer = WHEEL_REPRODUCER.read_text(encoding="utf-8")
+    assert 'PYTHON_VERSION="3.12.13"' in reproducer
+    assert 'PYTHON_BUILD="20260804"' in reproducer
+    assert "23c1069b954060a875cce80a2d98afe9" in reproducer
+    assert "b00971ee829e39965e2bda5585666dfd" in reproducer
+    assert "--proto '=https'" in reproducer
+    assert "requirements/wheel-build.lock" in reproducer
+    assert 'scripts/rebuild-vendored-wheel.py" --check' in reproducer
 
 
 def test_publish_only_consumes_verified_artifact_and_never_overwrites() -> None:
