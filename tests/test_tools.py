@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 from apprestore_core import __version__
 from apprestore_core.command import CommandError, Runner
 from apprestore_core.models import CommandResult, DeviceAppState
-from apprestore_core.tools import AppRestoreTools, InstallRequestState
+from apprestore_core.tools import IPATOOL_VERSION, AppRestoreTools, InstallRequestState
 
 
 class RecordingRunner:
@@ -176,13 +176,17 @@ class ToolArgumentTests(unittest.TestCase):
                 self.assertFalse(self.tools._ipatool_session_authenticated)
 
     def test_ipatool_version_requires_an_exact_version_token(self) -> None:
-        for output in ("ipatool 12.3.10", "ipatool 2.3.10", "ipatool 2.3.1-beta"):
+        for output in (
+            "ipatool 12.3.10",
+            "ipatool 2.3.10",
+            f"ipatool {IPATOOL_VERSION}-beta",
+        ):
             with self.subTest(output=output):
                 self.runner.stdout = output
                 ok, _detail = self.tools._ipatool_check("ipatool")
                 self.assertFalse(ok)
 
-        self.runner.stdout = "ipatool v2.3.1"
+        self.runner.stdout = f"ipatool v{IPATOOL_VERSION}"
         ok, _detail = self.tools._ipatool_check("ipatool")
         self.assertTrue(ok)
 

@@ -33,11 +33,11 @@ class InstallRequestState(str, Enum):
     INDETERMINATE = "indeterminate"
 
 
-IPATOOL_VERSION = "2.3.1"
+IPATOOL_VERSION = "2.3.2"
 # Хеш официального windows-amd64.tar.gz (проверяется установщиком до распаковки).
 # Не использовать для сверки извлечённого ipatool.exe — это разные файлы.
 IPATOOL_WINDOWS_AMD64_ARCHIVE_SHA256 = (
-    "8e986ed9320f205bcd1fd24640ec46a5b92ff346425aff28d1103e57d2fdcadb"
+    "6352441f6f91df7947aaa203b19cb7d3c9d77920fc466dd784ff9cae88db5c92"
 )
 # Обратная совместимость со старым именем константы.
 IPATOOL_WINDOWS_AMD64_SHA256 = IPATOOL_WINDOWS_AMD64_ARCHIVE_SHA256
