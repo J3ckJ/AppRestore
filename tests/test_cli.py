@@ -400,6 +400,66 @@ class CliRegressionTests(unittest.TestCase):
             service.restore_offloaded.call_args.kwargs["try_device_redownload"]
         )
 
+    def test_redownload_race_confirmed_retries_without_device_redownload(
+        self,
+    ) -> None:
+        service = RestoreRetryService()
+        service.restore_calls.clear()
+        service.restore_offloaded = Mock(  # type: ignore[method-assign]
+            side_effect=[
+                AppRestoreError(
+                    "could not safely determine whether native redownload "
+                    "started (last state: offloaded); refusing a competing "
+                    "IPA install. After confirming that iPhone is not "
+                    "downloading, retry with --skip-device-redownload"
+                ),
+                "installed Example 1.0",
+            ]
+        )
+        with (
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+            patch("builtins.input", side_effect=["1", "y"]),
+        ):
+            returncode = cli._command_restore(
+                service,  # type: ignore[arg-type]
+                udid=None,
+                email=None,
+                selection=None,
+            )
+
+        self.assertEqual(returncode, 0)
+        self.assertEqual(service.restore_offloaded.call_count, 2)
+        self.assertFalse(
+            service.restore_offloaded.call_args.kwargs["try_device_redownload"]
+        )
+
+    def test_redownload_race_declined_stays_failed(self) -> None:
+        service = RestoreRetryService()
+        service.restore_calls.clear()
+        service.restore_offloaded = Mock(  # type: ignore[method-assign]
+            side_effect=AppRestoreError(
+                "iPhone did not finish downloading com.example.alpha "
+                "(last state: downloading); refusing a competing IPA "
+                "install. After confirming that iPhone is no longer "
+                "downloading, retry with --skip-device-redownload"
+            )
+        )
+        with (
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+            patch("builtins.input", side_effect=["1", "n"]),
+        ):
+            returncode = cli._command_restore(
+                service,  # type: ignore[arg-type]
+                udid=None,
+                email=None,
+                selection=None,
+            )
+
+        self.assertEqual(returncode, 2)
+        service.restore_offloaded.assert_called_once()
+
     def test_search_results_do_not_change_restore_history(self) -> None:
         service = Mock()
         service.search_apps.return_value = [

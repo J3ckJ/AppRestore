@@ -418,6 +418,41 @@ def _command_restore(
                     print(f"  failed: {retry_exc}", file=sys.stderr)
                     failed += 1
                     continue
+            if not noninteractive and "refusing a competing ipa install" in str(
+                exc
+            ).lower():
+                print(f"  failed: {exc}", file=sys.stderr)
+                confirmed = (
+                    input(
+                        "  iPhone точно не докачивает это приложение сейчас? "
+                        "(y/N): "
+                    )
+                    .strip()
+                    .lower()
+                    in {"y", "yes", "д", "да"}
+                )
+                if confirmed:
+                    try:
+                        retry_options = {"try_device_redownload": False}
+                        if acquire_license:
+                            retry_options["acquire_license"] = True
+                        status = service.restore_offloaded(
+                            device.udid, app, **retry_options
+                        )
+                        print(f"  done: {status}")
+                        ok += 1
+                        continue
+                    except (
+                        AppRestoreError,
+                        IpaError,
+                        ToolUnavailable,
+                        CommandError,
+                    ) as retry_exc:
+                        print(f"  failed: {retry_exc}", file=sys.stderr)
+                        failed += 1
+                        continue
+                failed += 1
+                continue
             print(f"  failed: {exc}", file=sys.stderr)
             failed += 1
         except (IpaError, ToolUnavailable, CommandError) as exc:
