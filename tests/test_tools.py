@@ -279,6 +279,36 @@ class ToolArgumentTests(unittest.TestCase):
         )
         self.assertEqual(self.runner.calls[-1][1].get("timeout"), 60)
 
+    @patch("apprestore_core.tools.importlib.util.find_spec", return_value=object())
+    @patch("apprestore_core.tools.platform.system", return_value="Darwin")
+    def test_macos_uses_isolated_relocatable_pymobiledevice_command(
+        self,
+        _platform_system: object,
+        _find_spec: object,
+    ) -> None:
+        # install-macos.sh installs into a sibling ".venv-staging.*" directory
+        # and moves it into place afterwards, which leaves the pip console
+        # launcher pointing at the now-gone staging path. Invoking the
+        # interpreter with -m sidesteps that broken launcher, same as Windows.
+        self.runner.stdout = '["00008020-test"]\n'
+
+        self.assertEqual(self.tools.list_udids(), ["00008020-test"])
+
+        self.assertEqual(
+            self.runner.calls[-1][0],
+            (
+                sys.executable,
+                "-I",
+                "-m",
+                "pymobiledevice3",
+                "usbmux",
+                "list",
+                "--simple",
+                "--usb",
+            ),
+        )
+        self.assertEqual(self.runner.calls[-1][1].get("timeout"), 60)
+
     def test_device_info_removes_terminal_controls_and_newlines(self) -> None:
         self.runner.stdout = (
             '{"DeviceName":"\\u001b[31mWork\\nPhone\\u001b[0m",'
@@ -688,6 +718,43 @@ class IpatoolProxyEnvironmentTests(unittest.TestCase):
     def test_reachable_system_proxy_reaches_ipatool(
         self,
         system_proxy: Mock,
+        _reachable: Mock,
+    ) -> None:
+        system_proxy.return_value = ("http://127.0.0.1:10809", "localhost,::1")
+        with _without_proxy_environment():
+            resolved = self.tools._resolve_ipatool_proxy_env()
+
+        self.assertEqual(
+            resolved,
+            {
+                "HTTP_PROXY": "http://127.0.0.1:10809",
+                "HTTPS_PROXY": "http://127.0.0.1:10809",
+                "NO_PROXY": "localhost,::1",
+            },
+        )
+
+    @patch("apprestore_core.tools.proxy_is_reachable", return_value=False)
+    @patch("apprestore_core.tools.windows_system_proxy", return_value=None)
+    @patch("apprestore_core.tools.macos_system_proxy")
+    def test_unreachable_macos_system_proxy_is_not_injected(
+        self,
+        system_proxy: Mock,
+        _windows_system_proxy: Mock,
+        _reachable: Mock,
+    ) -> None:
+        # Системный прокси в Network preferences часто указывает на
+        # выключенный VPN-клиент.
+        system_proxy.return_value = ("http://127.0.0.1:10809", "localhost")
+        with _without_proxy_environment():
+            self.assertEqual(self.tools._resolve_ipatool_proxy_env(), {})
+
+    @patch("apprestore_core.tools.proxy_is_reachable", return_value=True)
+    @patch("apprestore_core.tools.windows_system_proxy", return_value=None)
+    @patch("apprestore_core.tools.macos_system_proxy")
+    def test_reachable_macos_system_proxy_reaches_ipatool(
+        self,
+        system_proxy: Mock,
+        _windows_system_proxy: Mock,
         _reachable: Mock,
     ) -> None:
         system_proxy.return_value = ("http://127.0.0.1:10809", "localhost,::1")

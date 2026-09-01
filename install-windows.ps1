@@ -9,7 +9,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$AppRestoreVersion = "0.2.2"
+$AppRestoreVersion = "0.2.3"
 $ManagedInstallMarkerName = ".apprestore-managed"
 $ManagedInstallMarkerValue = "AppRestore managed installation v1"
 $IpaToolVersion = "2.5.0"

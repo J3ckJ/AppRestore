@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 ARCHIVE = DIST / f"AppRestore-{VERSION}-source.zip"

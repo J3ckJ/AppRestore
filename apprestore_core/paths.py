@@ -126,6 +126,84 @@ def _normalize_windows_proxy_bypass(override: str) -> str:
     return ",".join(hosts)
 
 
+def macos_system_proxy() -> tuple[str, str] | None:
+    """HTTPS proxy from macOS Network preferences, if enabled and configured.
+
+    ipatool is a Go binary and only reads HTTP_PROXY/HTTPS_PROXY -- it never
+    consults the System Configuration framework macOS uses for the Network
+    pane's proxy settings. Where DPI interferes with the direct path to
+    Apple, a proxy configured there would otherwise never reach ipatool.
+    """
+    if platform.system() != "Darwin":
+        return None
+    scutil = shutil.which("scutil")
+    if not scutil:
+        return None
+    try:
+        result = subprocess.run(
+            [scutil, "--proxy"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+
+    settings = _parse_scutil_proxy(result.stdout)
+    if settings.get("HTTPSEnable") != "1":
+        return None
+    host = settings.get("HTTPSProxy", "").strip()
+    if not host:
+        return None
+    port = settings.get("HTTPSPort", "").strip()
+    url = f"http://{host}:{port}" if port else f"http://{host}"
+    return url, _normalize_macos_proxy_bypass(settings.get("ExceptionsList"))
+
+
+def _parse_scutil_proxy(output: str) -> dict[str, str]:
+    """Parse the flat `key : value` dictionary `scutil --proxy` prints.
+
+    `ExceptionsList` is the one nested `<array> { N : value ... }` scutil
+    emits for this command; its entries are folded into one comma-separated
+    value under the same key so callers can treat every entry uniformly.
+    """
+    settings: dict[str, str] = {}
+    exceptions: list[str] = []
+    in_exceptions = False
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if in_exceptions:
+            if line.startswith("}"):
+                in_exceptions = False
+                continue
+            match = re.match(r"^\d+\s*:\s*(.+)$", line)
+            if match:
+                exceptions.append(match.group(1).strip())
+            continue
+        if line.startswith("ExceptionsList"):
+            in_exceptions = True
+            continue
+        match = re.match(r"^(\w+)\s*:\s*(.+)$", line)
+        if match:
+            settings[match.group(1)] = match.group(2).strip()
+    if exceptions:
+        settings["ExceptionsList"] = ",".join(exceptions)
+    return settings
+
+
+def _normalize_macos_proxy_bypass(exceptions: str | None) -> str:
+    """Translate scutil's ExceptionsList into ipatool's NO_PROXY format."""
+    hosts = ["localhost", "127.0.0.1", "::1"]
+    for entry in (exceptions or "").split(","):
+        entry = entry.strip()
+        if entry and entry not in hosts:
+            hosts.append(entry)
+    return ",".join(hosts)
+
+
 def proxy_is_reachable(url: str, timeout: float = 1.0) -> bool:
     """Проверить, что прокси реально слушает.
 

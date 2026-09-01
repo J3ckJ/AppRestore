@@ -382,7 +382,7 @@ def test_release_build_rejects_version_drift(tmp_path: Path) -> None:
     package_init = release_root / "apprestore_core" / "__init__.py"
     package_init.write_text(
         package_init.read_text(encoding="utf-8").replace(
-            '__version__ = "0.2.2"',
+            '__version__ = "0.2.3"',
             '__version__ = "9.9.9"',
         ),
         encoding="utf-8",
@@ -442,7 +442,7 @@ def test_release_build_is_deterministic_and_generates_bootstrap(
     )
     assert first.returncode == 0, first.stdout + first.stderr
 
-    archive = release_root / "dist" / "AppRestore-0.2.2-source.zip"
+    archive = release_root / "dist" / "AppRestore-0.2.3-source.zip"
     windows_bootstrap = release_root / "dist" / "install.ps1"
     macos_bootstrap = release_root / "dist" / "install.sh"
     checksums = release_root / "dist" / "SHA256SUMS.txt"
@@ -461,13 +461,13 @@ def test_release_build_is_deterministic_and_generates_bootstrap(
         in windows_bootstrap_text
     )
     assert (
-        "https://github.com/J3ckJ/AppRestore/releases/download/v0.2.2/"
-        "AppRestore-0.2.2-source.zip"
+        "https://github.com/J3ckJ/AppRestore/releases/download/v0.2.3/"
+        "AppRestore-0.2.3-source.zip"
     ) in windows_bootstrap_text
     assert f"EXPECTED_ARCHIVE_SHA256='{archive_digest}'" in macos_bootstrap_text
     assert (
-        "https://github.com/J3ckJ/AppRestore/releases/download/v0.2.2/"
-        "AppRestore-0.2.2-source.zip"
+        "https://github.com/J3ckJ/AppRestore/releases/download/v0.2.3/"
+        "AppRestore-0.2.3-source.zip"
     ) in macos_bootstrap_text
     assert checksums.read_text(encoding="utf-8") == (
         f"{archive_digest}  {archive.name}\n"
@@ -482,29 +482,29 @@ def test_release_build_is_deterministic_and_generates_bootstrap(
             for info in release_zip.infolist()
         )
         macos_installer = release_zip.getinfo(
-            "AppRestore-0.2.2/install-macos.sh"
+            "AppRestore-0.2.3/install-macos.sh"
         )
-    assert "AppRestore-0.2.2/CONTRIBUTING.md" in names
-    assert "AppRestore-0.2.2/.gitattributes" in names
-    assert "AppRestore-0.2.2/.github/workflows/ci.yml" in names
-    assert "AppRestore-0.2.2/.github/workflows/release.yml" in names
-    assert "AppRestore-0.2.2/docs/RELEASING.md" in names
-    assert "AppRestore-0.2.2/SECURITY.md" in names
-    assert "AppRestore-0.2.2/install-macos.sh" in names
-    assert "AppRestore-0.2.2/scripts/install.ps1.in" in names
-    assert "AppRestore-0.2.2/scripts/install.sh.in" in names
-    assert "AppRestore-0.2.2/requirements/runtime.lock" in names
-    assert "AppRestore-0.2.2/requirements/build.lock" in names
-    assert "AppRestore-0.2.2/requirements/test.lock" in names
-    assert "AppRestore-0.2.2/requirements/wheel-build.lock" in names
-    assert "AppRestore-0.2.2/requirements/sources/hexdump-3.3.zip" in names
-    assert "AppRestore-0.2.2/scripts/rebuild-vendored-wheel.py" in names
+    assert "AppRestore-0.2.3/CONTRIBUTING.md" in names
+    assert "AppRestore-0.2.3/.gitattributes" in names
+    assert "AppRestore-0.2.3/.github/workflows/ci.yml" in names
+    assert "AppRestore-0.2.3/.github/workflows/release.yml" in names
+    assert "AppRestore-0.2.3/docs/RELEASING.md" in names
+    assert "AppRestore-0.2.3/SECURITY.md" in names
+    assert "AppRestore-0.2.3/install-macos.sh" in names
+    assert "AppRestore-0.2.3/scripts/install.ps1.in" in names
+    assert "AppRestore-0.2.3/scripts/install.sh.in" in names
+    assert "AppRestore-0.2.3/requirements/runtime.lock" in names
+    assert "AppRestore-0.2.3/requirements/build.lock" in names
+    assert "AppRestore-0.2.3/requirements/test.lock" in names
+    assert "AppRestore-0.2.3/requirements/wheel-build.lock" in names
+    assert "AppRestore-0.2.3/requirements/sources/hexdump-3.3.zip" in names
+    assert "AppRestore-0.2.3/scripts/rebuild-vendored-wheel.py" in names
     assert (
-        "AppRestore-0.2.2/requirements/wheels/"
+        "AppRestore-0.2.3/requirements/wheels/"
         "hexdump-3.3-py3-none-any.whl"
     ) in names
-    assert "AppRestore-0.2.2/dist/install.ps1" not in names
-    assert "AppRestore-0.2.2/dist/install.sh" not in names
+    assert "AppRestore-0.2.3/dist/install.ps1" not in names
+    assert "AppRestore-0.2.3/dist/install.sh" not in names
     assert stat.S_ISREG(macos_installer.external_attr >> 16)
     assert (macos_installer.external_attr >> 16) & 0o777 == 0o755
 
@@ -531,7 +531,7 @@ def test_release_build_is_deterministic_and_generates_bootstrap(
     unpacked = tmp_path / "unpacked"
     with zipfile.ZipFile(archive) as release_zip:
         release_zip.extractall(unpacked)
-    unpacked_root = unpacked / "AppRestore-0.2.2"
+    unpacked_root = unpacked / "AppRestore-0.2.3"
     assert not (unpacked_root / ".git").exists()
     rebuilt = subprocess.run(
         [sys.executable, str(unpacked_root / "scripts" / "build-release.py")],
@@ -543,7 +543,7 @@ def test_release_build_is_deterministic_and_generates_bootstrap(
     )
     assert rebuilt.returncode == 0, rebuilt.stdout + rebuilt.stderr
     assert _sha256(
-        unpacked_root / "dist" / "AppRestore-0.2.2-source.zip"
+        unpacked_root / "dist" / "AppRestore-0.2.3-source.zip"
     ) == first_hashes[0]
 
     if (3, 10) <= sys.version_info[:2] < (3, 14):
