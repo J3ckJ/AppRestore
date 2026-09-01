@@ -21,7 +21,7 @@ from apprestore_core import cli
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "0.2.1"
+EXPECTED_VERSION = "0.2.2"
 
 # Exact bytes from the immutable v0.1.3 release, compressed so the release
 # source archive can verify and exercise the one-time legacy upgrade without
@@ -585,6 +585,27 @@ class InstallerDependencyContractTests(unittest.TestCase):
         )[1].split("\n}", 1)[0]
 
         self.assertIn("(3, 10) <= sys.version_info < (3, 14)", compatible)
+
+    def test_inline_python_snippets_survive_powershell_51_quote_stripping(
+        self,
+    ) -> None:
+        # Windows PowerShell 5.1 вырезает двойные кавычки из аргументов
+        # native-команд, поэтому `python -c` получает уже сломанный исходник.
+        # Inline-сниппеты установщика обязаны обходиться одинарными.
+        installer = (ROOT / "install-windows.ps1").read_text(encoding="utf-8")
+        snippets = [
+            block.split("\n'@", 1)[0]
+            for block in installer.split("= @'\n")[1:]
+        ]
+        python_snippets = [
+            snippet
+            for snippet in snippets
+            if "\nimport " in "\n" + snippet
+        ]
+        self.assertTrue(python_snippets, "no inline python snippet was found")
+        for snippet in python_snippets:
+            with self.subTest(snippet=snippet.splitlines()[0]):
+                self.assertNotIn('"', snippet)
 
     def test_source_launcher_supports_only_python_310_through_313(self) -> None:
         launcher = (ROOT / "apprestore.ps1").read_text(encoding="utf-8")

@@ -220,6 +220,18 @@ def _json_dump(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
+def _print_login_notice() -> None:
+    """Предупредить о том, что вход теперь может быть долгим.
+
+    ipatool 2.4+ подписывает авторизацию App Store через SAP: перед вопросом
+    про пароль он поднимает SAP-подписчик и на первом входе докачивает его
+    рантайм. Без этой строки пауза выглядит как зависание.
+    """
+    print("Вход в Apple ID через ipatool (пароль/2FA/passphrase — в его запросах)…")
+    print("Первый вход дольше обычного: ipatool готовит SAP-подписчик и качает")
+    print("его рантайм. Не прерывайте — это может занять несколько минут.")
+
+
 def _ensure_auth(
     service: AppRestoreService,
     email: str | None,
@@ -236,7 +248,7 @@ def _ensure_auth(
         )
     if not email:
         email = input("Apple ID email: ").strip()
-    print("Вход в Apple ID через ipatool (пароль/2FA/passphrase — в его запросах)…")
+    _print_login_notice()
     service.authenticate(email)
     print("ipatool: вход выполнен.")
 
@@ -891,6 +903,7 @@ def _run_menu(service: AppRestoreService) -> int:
             elif choice.lower() == "a":
                 email = input("Apple ID email: ").strip()
                 if email:
+                    _print_login_notice()
                     service.authenticate(email)
             elif choice.lower() == "b":
                 _command_setup(service, json_output=False)
@@ -1043,6 +1056,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.json and not args.email:
                 raise AppRestoreError("--email is required with --json auth")
             email = args.email or input("Apple ID email: ").strip()
+            if not args.json:
+                _print_login_notice()
             service.authenticate(email)
             if args.json:
                 _json_dump({"authenticated": True, "email": email})

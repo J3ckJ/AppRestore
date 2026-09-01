@@ -405,9 +405,11 @@ class AppRestoreService:
         detail = "; ".join(errors) if errors else "ipatool did not produce an IPA"
         raise AppRestoreError(
             f"could not download {expected} ({detail}). "
-            "Typical causes: app removed from the App Store, unavailable for this "
-            "Apple ID region, or no purchase/license. To explicitly acquire a "
-            "license, retry with --acquire-license. If you already have the IPA "
+            "Typical causes: a network failure reaching Apple (a TLS handshake "
+            "timeout means ipatool could not connect - check `apprestore doctor`), "
+            "app removed from the App Store, unavailable for this Apple ID "
+            "region, or no purchase/license. To explicitly acquire a license, "
+            "retry with --acquire-license. If you already have the IPA "
             "(e.g. from iMazing), put it in the AppRestore library and retry."
         )
 
@@ -996,9 +998,12 @@ class AppRestoreService:
                 detail = "; ".join(errors) if errors else "ipatool did not produce an IPA"
                 raise AppRestoreError(
                     f"could not download App Store ID {resolved} ({detail}). "
-                    "Typical causes: app removed from the App Store, unavailable "
-                    "for this Apple ID region, or no purchase/license. To "
-                    "explicitly acquire a license, retry with --acquire-license."
+                    "Typical causes: a network failure reaching Apple (a TLS "
+                    "handshake timeout means ipatool could not connect - check "
+                    "`apprestore doctor`), app removed from the App Store, "
+                    "unavailable for this Apple ID region, or no "
+                    "purchase/license. To explicitly acquire a license, retry "
+                    "with --acquire-license."
                 )
 
             expected = downloaded.metadata.bundle_id

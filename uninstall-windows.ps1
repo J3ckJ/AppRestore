@@ -217,7 +217,11 @@ if ($PurgeUserData) {
     $DefaultCache = [System.IO.Path]::GetFullPath(
         (Join-Path $KnownLocalAppData "AppRestore")
     )
-    foreach ($UserDataTarget in @($DefaultIpaLibrary, $DefaultCache)) {
+    # ipatool 2.4+ кэширует здесь SAP-рантайм авторизации (Unicorn).
+    $IpaToolCache = [System.IO.Path]::GetFullPath(
+        (Join-Path $KnownLocalAppData "ipatool")
+    )
+    foreach ($UserDataTarget in @($DefaultIpaLibrary, $DefaultCache, $IpaToolCache)) {
         Assert-PlainDirectoryTree -Path $UserDataTarget
         if (
             (Test-Path -LiteralPath $UserDataTarget) -and
@@ -232,6 +236,6 @@ if ($PurgeUserData) {
     Write-Warning "Каталоги из APPRESTORE_IPA_DIR/APPRESTORE_CACHE_DIR автоматически не удаляются."
 }
 else {
-    Write-Host "IPA, кэш и авторизация ipatool сохранены."
+    Write-Host "IPA, кэш AppRestore, SAP-рантайм и авторизация ipatool сохранены."
     Write-Host "Для их явного удаления используйте -PurgeUserData."
 }

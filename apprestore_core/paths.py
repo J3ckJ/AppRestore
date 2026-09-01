@@ -6,11 +6,13 @@ import os
 import platform
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def project_root() -> Path:
@@ -26,6 +28,120 @@ def cache_dir() -> Path:
         return Path(root) / "AppRestore" if root else Path.home() / "AppData" / "Local" / "AppRestore"
     xdg = os.environ.get("XDG_CACHE_HOME")
     return Path(xdg) / "AppRestore" if xdg else Path.home() / "Library" / "Caches" / "AppRestore"
+
+
+def user_cache_root() -> Path:
+    """Платформенный кэш-корень так, как его резолвит Go `os.UserCacheDir()`.
+
+    ipatool >= 2.4 держит там SAP-рантайм авторизации, поэтому AppRestore
+    обязан вычислять ровно тот же каталог, что и апстрим.
+    """
+    if platform.system() == "Windows":
+        root = os.environ.get("LOCALAPPDATA")
+        return Path(root) if root else Path.home() / "AppData" / "Local"
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Caches"
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    return Path(xdg) if xdg else Path.home() / ".cache"
+
+
+def ipatool_sap_runtime_dir(unicorn_version: str) -> Path:
+    """Кэш Unicorn-библиотеки, которую ipatool качает при первом входе."""
+    return user_cache_root() / "ipatool" / "unicorn" / unicorn_version
+
+
+def ipatool_sap_assets_dir() -> Path:
+    """Кэш ассетов Apple, которые SAP-подписчик тянет со swcdn.apple.com."""
+    return user_cache_root() / "ipatool" / "sap" / "apple-assets-v2"
+
+
+def windows_system_proxy() -> tuple[str, str] | None:
+    """Прокси и bypass-список из настроек WinINET, если прокси включён.
+
+    Go читает только HTTP_PROXY/HTTPS_PROXY и полностью игнорирует настройки
+    Windows, поэтому ipatool уходит напрямую там, где браузер идёт через
+    прокси. Возвращает (url, bypass) в форме, готовой для переменных окружения.
+    """
+    if platform.system() != "Windows":
+        return None
+    try:
+        import winreg
+    except ImportError:
+        return None
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        ) as key:
+            enabled, _type = winreg.QueryValueEx(key, "ProxyEnable")
+            if not enabled:
+                return None
+            server, _type = winreg.QueryValueEx(key, "ProxyServer")
+            try:
+                override, _type = winreg.QueryValueEx(key, "ProxyOverride")
+            except OSError:
+                override = ""
+    except OSError:
+        return None
+
+    url = _normalize_windows_proxy(str(server))
+    if not url:
+        return None
+    return url, _normalize_windows_proxy_bypass(str(override))
+
+
+def _normalize_windows_proxy(server: str) -> str:
+    """Свести значение ProxyServer к одному URL для HTTPS.
+
+    WinINET хранит либо `host:port`, либо список вида
+    `http=host:port;https=host:port`.
+    """
+    server = server.strip()
+    if not server:
+        return ""
+    if "=" in server:
+        entries = {}
+        for part in server.split(";"):
+            scheme, separator, value = part.partition("=")
+            if separator and value.strip():
+                entries[scheme.strip().lower()] = value.strip()
+        server = entries.get("https") or entries.get("http") or ""
+        if not server:
+            return ""
+    if "://" not in server:
+        server = f"http://{server}"
+    return server
+
+
+def _normalize_windows_proxy_bypass(override: str) -> str:
+    """Перевести ProxyOverride в формат NO_PROXY."""
+    hosts = ["localhost", "127.0.0.1", "::1"]
+    for entry in override.split(";"):
+        entry = entry.strip()
+        # `<local>` означает «все имена без точки» — в NO_PROXY аналога нет.
+        if not entry or entry == "<local>":
+            continue
+        if entry not in hosts:
+            hosts.append(entry)
+    return ",".join(hosts)
+
+
+def proxy_is_reachable(url: str, timeout: float = 1.0) -> bool:
+    """Проверить, что прокси реально слушает.
+
+    Системный прокси часто указывает на локальный VPN-клиент, который может
+    быть выключен. Подставлять такой адрес в окружение ipatool вслепую нельзя:
+    это сломает то, что до сих пор работало напрямую.
+    """
+    parsed = urlsplit(url)
+    host, port = parsed.hostname, parsed.port
+    if not host:
+        return False
+    try:
+        with socket.create_connection((host, port or 80), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def data_dir() -> Path:
