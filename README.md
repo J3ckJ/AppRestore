@@ -17,7 +17,7 @@
 **AppRestore** — локальный инструмент, который возвращает приложения на iPhone,
 когда App Store и сам телефон уже «забыли» удобный путь обратно.
 
-> **Статус:** beta · Версия 0.2.1. Проверяйте актуальный релиз в GitHub Releases.
+> **Статус:** beta · Версия 0.2.2. Проверяйте актуальный релиз в GitHub Releases.
 > Windows + macOS · USB · ваш Apple ID · без обхода DRM.  
 > Проект не связан с Apple Inc.
 
@@ -239,7 +239,8 @@ apprestore restore --select 1 --skip-device-redownload
 - Python 3.10–3.13 (установщик при необходимости подготовит Python 3.12);
 - разблокированный iPhone по USB + «Доверять этому компьютеру»;
 - на Windows: Apple Mobile Device Support / Apple Devices / iTunes;
-- интернет для bootstrap, поиска и `ipatool`;
+- интернет для bootstrap, поиска и `ipatool` (первый вход в Apple ID
+  дополнительно качает SAP-рантайм `ipatool`, ~20 МБ, один раз);
 - Apple ID, у которого есть право на приложение (или свой законный IPA).
 
 ---
@@ -269,6 +270,10 @@ AppRestore **не** обходит DRM, подпись и региональны
 Пароль Apple ID / 2FA / keychain passphrase **не** проходят через argv AppRestore —
 их спрашивает сам `ipatool` в терминале.
 
+С версии 2.4 `ipatool` подписывает авторизацию App Store через SAP, а подписчик
+исполняется в эмуляторе Unicorn. Библиотеку эмулятора качает и сверяет по
+SHA-256 сам `ipatool` — AppRestore её не распространяет и не подменяет.
+
 Не публикуйте IPA, UDID, пароли и сырые логи в issue.
 
 Подробнее: [SECURITY.md](./SECURITY.md).
@@ -284,6 +289,7 @@ AppRestore **не** обходит DRM, подпись и региональны
 | Кэш + IPA-индекс | `%LOCALAPPDATA%\AppRestore` | `~/Library/Caches/AppRestore` |
 | История | `%LOCALAPPDATA%\AppRestore\known-apps.json` | `~/Library/Application Support/AppRestore/known-apps.json` |
 | Авторизация | хранилище `ipatool` | хранилище `ipatool` |
+| SAP-рантайм `ipatool` | `%LOCALAPPDATA%\ipatool\unicorn` | `~/Library/Caches/ipatool/unicorn` |
 
 Переменные: `APPRESTORE_IPA_DIR`, `APPRESTORE_CACHE_DIR`, `APPRESTORE_DATA_DIR`,
 `APPRESTORE_EXTRA_IPA_DIRS`, `APPRESTORE_IMAZING_PLIST`, `APPRESTORE_KNOWN_APPS`.
@@ -319,6 +325,9 @@ $localData = [Environment]::GetFolderPath(
 | `apprestore` не найден | новое окно терминала или полный путь к launcher |
 | iPhone не виден | USB data-кабель, Trust, `apprestore doctor` / `setup` |
 | `ipatool` снова просит passphrase | нормально для нового процесса на Windows |
+| вход в Apple ID долго молчит | первый вход качает SAP-рантайм `ipatool`; дайте ему несколько минут |
+| вход падает до запроса пароля | нет доступа к сети для SAP-рантайма; проверьте `apprestore doctor` |
+| `TLS handshake timeout` при входе или загрузке | DPI тормозит хендшейк дольше таймаута Go; поднимите прокси/VPN — AppRestore подставит системный прокси сам, если он слушает |
 | поиск пустой | delisted → нужен ID/URL; попробуйте `search` и веб-варианты имени |
 | download не идёт | нет лицензии / регион / сервер Apple; положите свой IPA в библиотеку |
 

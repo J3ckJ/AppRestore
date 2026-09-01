@@ -6,14 +6,14 @@ umask 077
 PATH='/usr/bin:/bin:/usr/sbin:/sbin'
 export PATH
 
-APPRESTORE_VERSION="0.2.1"
+APPRESTORE_VERSION="0.2.2"
 PYTHON_VERSION="3.12.13"
 PYTHON_BUILD="20260804"
 PYTHON_MACOS_X64_SHA256="23c1069b954060a875cce80a2d98afe9ca20b8e5244cf8df6c9475497d78bc4c"
 PYTHON_MACOS_ARM64_SHA256="b00971ee829e39965e2bda5585666dfdcc74bd1bd97f4b75071b3b05cecf52fd"
-IPATOOL_VERSION="2.3.2"
-IPATOOL_MACOS_AMD64_SHA256="d1861a0e00ae78ca1982530b7732b3e105dc789eed99a767b4038b6b9473424e"
-IPATOOL_MACOS_ARM64_SHA256="7c5a35a532de21240fcd0d5a4f3204c97dcb4b1e43df05b2487ad12378c0c044"
+IPATOOL_VERSION="2.5.0"
+IPATOOL_MACOS_AMD64_SHA256="8d6c42230215e8a9dc939b537ae7bb2db75f5b3bec62a52b2c8bb1fe08d8d272"
+IPATOOL_MACOS_ARM64_SHA256="1b8bbf14e717ef6827a78e6dcb67bd096f3aa8ff9a13b433cd26ac0527640341"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 APP_SUPPORT_DIR="$HOME/Library/Application Support/AppRestore"
 VENV_DIR="$APP_SUPPORT_DIR/venv"
@@ -568,6 +568,8 @@ main() {
     "В новых окнах терминала PATH будет настроен автоматически."
   printf "%b\n" \
     "${DIM}Пароль Apple ID и 2FA вводятся только в самом ipatool.${NC}"
+  printf "%b\n" \
+    "${DIM}Первый вход дольше обычного: ipatool докачивает SAP-рантайм.${NC}"
 }
 
 main "$@"

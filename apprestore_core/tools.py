@@ -4,6 +4,7 @@ import asyncio
 from importlib import metadata as package_metadata
 import importlib.util
 import json
+import os
 import platform
 import re
 import socket
@@ -18,7 +19,14 @@ from .catalog import CatalogError, parse_json_output, parse_udids
 from .command import CommandError, Runner
 from . import __version__
 from .models import Device, DeviceAppState, DoctorCheck, RedownloadRequestState
-from .paths import resolve_tool, resolve_windows_system_tool
+from .paths import (
+    ipatool_sap_assets_dir,
+    ipatool_sap_runtime_dir,
+    resolve_tool,
+    proxy_is_reachable,
+    resolve_windows_system_tool,
+    windows_system_proxy,
+)
 
 
 class ToolUnavailable(RuntimeError):
@@ -33,12 +41,34 @@ class InstallRequestState(str, Enum):
     INDETERMINATE = "indeterminate"
 
 
-IPATOOL_VERSION = "2.3.2"
+IPATOOL_VERSION = "2.5.0"
 # Хеш официального windows-amd64.tar.gz (проверяется установщиком до распаковки).
 # Не использовать для сверки извлечённого ipatool.exe — это разные файлы.
 IPATOOL_WINDOWS_AMD64_ARCHIVE_SHA256 = (
-    "6352441f6f91df7947aaa203b19cb7d3c9d77920fc466dd784ff9cae88db5c92"
+    "d7494be51097e4ab132c5f2453a1ccafa56fffe5379a1ac0366e0997bbda6df8"
 )
+# ipatool >= 2.4 подписывает запросы авторизации App Store через SAP, а сам
+# подписчик исполняется в эмуляторе Unicorn. Его shared library не входит в
+# релиз ipatool: она скачивается и кэшируется при первом входе в Apple ID.
+# Держать в синхроне с internal/sap/unicorn/artifact.go апстрима.
+IPATOOL_SAP_UNICORN_VERSION = "2.1.4"
+# Приватные фреймворки Apple, которые SAP-подписчик достаёт из пакета
+# обновления macOS. Держать в синхроне с internal/sap/assets апстрима.
+IPATOOL_SAP_ASSET_FILES = (
+    ("CommerceKit", 3271840),
+    ("CommerceCore", 207744),
+    ("CoreFP", 29014912),
+    ("CoreFP.icxs", 5288352),
+)
+# Имена самой Unicorn-библиотеки по платформам — по ним видно, что загрузка
+# дошла до конца, а не оставила пустой каталог под хеш.
+IPATOOL_SAP_RUNTIME_LIBRARIES = (
+    "libunicorn.dll",
+    "libunicorn.2.dylib",
+    "libunicorn.so.2",
+)
+# Первый вход = загрузка SAP-рантайма + ручной ввод пароля и 2FA.
+IPATOOL_LOGIN_TIMEOUT_SECONDS = 1800
 # Обратная совместимость со старым именем константы.
 IPATOOL_WINDOWS_AMD64_SHA256 = IPATOOL_WINDOWS_AMD64_ARCHIVE_SHA256
 
@@ -82,6 +112,40 @@ class AppRestoreTools:
         # официальный ipatool хранит passphrase только в памяти одного
         # процесса и на Windows спросил бы его снова.
         self._ipatool_session_authenticated = False
+        # Прокси для ipatool разрешаем один раз за процесс: проба сокета
+        # не должна повторяться перед каждым вызовом.
+        self._ipatool_proxy_env: dict[str, str] | None = None
+
+    def _ipatool_env(self) -> dict[str, str]:
+        """Прокси-окружение для дочернего ipatool.
+
+        ipatool написан на Go, а Go читает только HTTP_PROXY/HTTPS_PROXY и не
+        видит настроек прокси Windows. Там, где DPI растягивает TLS-хендшейк к
+        серверам Apple дольше десятисекундного таймаута Go, прямое соединение
+        падает с `TLS handshake timeout`, а через системный прокси проходит.
+        """
+        if self._ipatool_proxy_env is None:
+            self._ipatool_proxy_env = self._resolve_ipatool_proxy_env()
+        return self._ipatool_proxy_env
+
+    @staticmethod
+    def _resolve_ipatool_proxy_env() -> dict[str, str]:
+        # Явный выбор пользователя всегда важнее наших догадок.
+        if any(
+            os.environ.get(name)
+            for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+        ):
+            return {}
+        system = windows_system_proxy()
+        if not system:
+            return {}
+        url, bypass = system
+        # Системный прокси часто указывает на локальный VPN-клиент, который
+        # может быть выключен. Подставлять его вслепую нельзя: это сломает то,
+        # что до сих пор работало напрямую.
+        if not proxy_is_reachable(url):
+            return {}
+        return {"HTTP_PROXY": url, "HTTPS_PROXY": url, "NO_PROXY": bypass}
 
     def _tool(self, name: str) -> str:
         executable = resolve_tool(name)
@@ -143,6 +207,9 @@ class AppRestoreTools:
                 ipatool_detail,
             ),
         ]
+        checks.append(self._ipatool_sap_runtime_check())
+        checks.append(self._ipatool_sap_assets_check())
+        checks.append(self._ipatool_proxy_check())
         checks.append(self._runtime_provenance_check())
         if platform.system() == "Windows":
             service_ok, service_detail = self._apple_mobile_device_service()
@@ -156,6 +223,133 @@ class AppRestoreTools:
             port_ok, port_detail = self._apple_usbmux_port()
             checks.append(DoctorCheck("Apple usbmux (127.0.0.1:27015)", port_ok, port_detail))
         return checks
+
+    @staticmethod
+    def _ipatool_sap_runtime_check() -> DoctorCheck:
+        """Сообщить, готов ли SAP-рантайм ipatool к входу в Apple ID.
+
+        Начиная с ipatool 2.4 вход подписывается через SAP, и подписчику нужна
+        Unicorn-библиотека, которой нет в релизе ipatool. Первый вход тянет её
+        из сети и кладёт в кэш; без интернета или при закрытом прокси вход
+        падает ещё до запроса пароля, поэтому состояние кэша стоит видеть
+        заранее.
+        """
+        root = ipatool_sap_runtime_dir(IPATOOL_SAP_UNICORN_VERSION)
+        # Прерванная загрузка оставляет пустой каталог под хеш библиотеки и
+        # временный `.unicorn-artifact-*`, поэтому наличие каталога ничего не
+        # значит — искать надо саму библиотеку.
+        try:
+            cached = any(
+                (candidate / name).is_file()
+                for candidate in root.glob("*")
+                if candidate.is_dir()
+                for name in IPATOOL_SAP_RUNTIME_LIBRARIES
+            )
+        except OSError:
+            cached = False
+        if cached:
+            return DoctorCheck(
+                "ipatool SAP runtime",
+                True,
+                f"cached at {root}",
+                required=False,
+            )
+        return DoctorCheck(
+            "ipatool SAP runtime",
+            False,
+            (
+                f"not cached at {root}; the first Apple ID login downloads the "
+                f"Unicorn {IPATOOL_SAP_UNICORN_VERSION} runtime and can take "
+                "several minutes (needs internet access)"
+            ),
+            required=False,
+        )
+
+    @staticmethod
+    def _ipatool_sap_assets_check() -> DoctorCheck:
+        """Сообщить, лежат ли в кэше ассеты Apple для SAP-подписчика.
+
+        Подписчику мало Unicorn: он ещё вытягивает несколько приватных
+        фреймворков из пакета обновления macOS на swcdn.apple.com. Это второй
+        сетевой поход первого входа, и падает он отдельно от первого.
+        """
+        root = ipatool_sap_assets_dir()
+        # ipatool сверяет размер и SHA-256 и перекачивает всё заново, если файл
+        # не сошёлся. Размер здесь ловит обрыв загрузки, не читая 37 МБ.
+        missing: list[str] = []
+        for name, expected_size in IPATOOL_SAP_ASSET_FILES:
+            asset = root / name
+            try:
+                if asset.stat().st_size != expected_size:
+                    missing.append(f"{name} (truncated)")
+            except OSError:
+                missing.append(name)
+        if not missing:
+            return DoctorCheck(
+                "ipatool SAP assets",
+                True,
+                f"cached at {root}",
+                required=False,
+            )
+        return DoctorCheck(
+            "ipatool SAP assets",
+            False,
+            (
+                f"not cached at {root} (missing: {', '.join(missing)}); the "
+                "first Apple ID login fetches them from swcdn.apple.com"
+            ),
+            required=False,
+        )
+
+    def _ipatool_proxy_check(self) -> DoctorCheck:
+        """Показать, через что ipatool пойдёт в сеть.
+
+        ipatool на Go, а Go смотрит только на HTTP_PROXY/HTTPS_PROXY и не
+        читает настройки Windows. Там, где DPI растягивает TLS-хендшейк к
+        Apple дольше таймаута Go, прямой путь падает, а прокси спасает —
+        поэтому важно видеть, какой именно путь будет выбран.
+        """
+        inherited = next(
+            (
+                f"{name}={os.environ[name]}"
+                for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+                if os.environ.get(name)
+            ),
+            None,
+        )
+        if inherited:
+            return DoctorCheck(
+                "ipatool proxy",
+                True,
+                f"inherited from the environment ({inherited})",
+                required=False,
+            )
+        injected = self._ipatool_env().get("HTTPS_PROXY")
+        if injected:
+            return DoctorCheck(
+                "ipatool proxy",
+                True,
+                f"Windows system proxy {injected} is up and passed to ipatool",
+                required=False,
+            )
+        system = windows_system_proxy()
+        if system:
+            return DoctorCheck(
+                "ipatool proxy",
+                False,
+                (
+                    f"Windows is configured for proxy {system[0]}, but nothing "
+                    "is listening there, so ipatool connects directly; start "
+                    "the proxy if Apple hosts time out during TLS handshake"
+                ),
+                required=False,
+            )
+        return DoctorCheck(
+            "ipatool proxy",
+            True,
+            "no proxy configured; ipatool connects directly",
+            required=False,
+        )
 
     @staticmethod
     def _runtime_provenance_check() -> DoctorCheck:
@@ -776,6 +970,7 @@ class AppRestoreTools:
             capture=False,
             output_to_stderr=self.json_output,
             timeout=60,
+            env=self._ipatool_env(),
         )
         if result.returncode == 0:
             self._ipatool_session_authenticated = True
@@ -792,6 +987,7 @@ class AppRestoreTools:
             # только stdout/stderr; stdin остаётся унаследованным.
             capture=True,
             timeout=60,
+            env=self._ipatool_env(),
         )
         if result.returncode != 0:
             return None
@@ -819,7 +1015,11 @@ class AppRestoreTools:
             self._ipatool_cmd("auth", "login", "--email", email),
             capture=False,
             output_to_stderr=self.json_output,
-            timeout=600,
+            # ipatool >= 2.4 сначала поднимает SAP-подписчик: на первом входе он
+            # качает и распаковывает Unicorn-рантайм, и только потом спрашивает
+            # пароль и 2FA. Прежних 10 минут на всё это уже не хватает.
+            timeout=IPATOOL_LOGIN_TIMEOUT_SECONDS,
+            env=self._ipatool_env(),
         )
         if result.returncode != 0:
             self._ipatool_session_authenticated = False
@@ -832,6 +1032,7 @@ class AppRestoreTools:
             capture=False,
             output_to_stderr=self.json_output,
             timeout=60,
+            env=self._ipatool_env(),
         )
         self._ipatool_session_authenticated = False
         if result.returncode != 0:
@@ -862,6 +1063,7 @@ class AppRestoreTools:
             capture=False,
             output_to_stderr=self.json_output,
             timeout=1800,
+            env=self._ipatool_env(),
         )
         return result.returncode == 0
 
@@ -883,6 +1085,7 @@ class AppRestoreTools:
             ),
             capture=True,
             timeout=120,
+            env=self._ipatool_env(),
         )
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip()

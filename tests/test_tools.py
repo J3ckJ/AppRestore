@@ -7,6 +7,7 @@ import types
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 from apprestore_core import __version__
@@ -639,6 +640,90 @@ class ToolArgumentTests(unittest.TestCase):
         self.assertFalse(check.ok)
         self.assertFalse(check.required)
         self.assertIn("editable source=", check.detail)
+
+
+def _without_proxy_environment() -> Any:
+    """Убрать прокси-переменные только на время теста, не портя процесс."""
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name.lower() not in {"https_proxy", "http_proxy"}
+    }
+    return patch.dict(os.environ, environment, clear=True)
+
+
+class IpatoolProxyEnvironmentTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.runner = RecordingRunner()
+        self.tools = AppRestoreTools(self.runner)  # type: ignore[arg-type]
+
+    @patch("apprestore_core.tools.windows_system_proxy")
+    def test_explicit_environment_proxy_is_never_overridden(
+        self,
+        system_proxy: Mock,
+    ) -> None:
+        system_proxy.return_value = ("http://127.0.0.1:9", "localhost")
+        with patch.dict(
+            os.environ,
+            {"HTTPS_PROXY": "http://proxy.example:3128"},
+            clear=False,
+        ):
+            self.assertEqual(self.tools._resolve_ipatool_proxy_env(), {})
+        system_proxy.assert_not_called()
+
+    @patch("apprestore_core.tools.proxy_is_reachable", return_value=False)
+    @patch("apprestore_core.tools.windows_system_proxy")
+    def test_unreachable_system_proxy_is_not_injected(
+        self,
+        system_proxy: Mock,
+        _reachable: Mock,
+    ) -> None:
+        # Системный прокси часто указывает на выключенный VPN-клиент.
+        system_proxy.return_value = ("http://127.0.0.1:10809", "localhost")
+        with _without_proxy_environment():
+            self.assertEqual(self.tools._resolve_ipatool_proxy_env(), {})
+
+    @patch("apprestore_core.tools.proxy_is_reachable", return_value=True)
+    @patch("apprestore_core.tools.windows_system_proxy")
+    def test_reachable_system_proxy_reaches_ipatool(
+        self,
+        system_proxy: Mock,
+        _reachable: Mock,
+    ) -> None:
+        system_proxy.return_value = ("http://127.0.0.1:10809", "localhost,::1")
+        with _without_proxy_environment():
+            resolved = self.tools._resolve_ipatool_proxy_env()
+
+        self.assertEqual(
+            resolved,
+            {
+                "HTTP_PROXY": "http://127.0.0.1:10809",
+                "HTTPS_PROXY": "http://127.0.0.1:10809",
+                "NO_PROXY": "localhost,::1",
+            },
+        )
+
+    @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
+    def test_every_networked_ipatool_call_carries_the_proxy(
+        self,
+        _resolve: Mock,
+    ) -> None:
+        proxy = {"HTTPS_PROXY": "http://127.0.0.1:10809"}
+        self.tools._ipatool_proxy_env = proxy
+
+        self.tools.ipatool_login("owner@example.com")
+        with tempfile.TemporaryDirectory() as directory:
+            self.tools.download_ipa(
+                Path(directory) / "out.ipa",
+                bundle_id="com.example.alpha",
+            )
+        self.runner.stdout = "[]"
+        self.tools.search_apps("alpha")
+
+        self.assertTrue(self.runner.calls)
+        for command, keywords in self.runner.calls:
+            with self.subTest(command=command[:2]):
+                self.assertEqual(keywords.get("env"), proxy)
 
 
 if __name__ == "__main__":

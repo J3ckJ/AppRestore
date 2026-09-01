@@ -9,11 +9,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$AppRestoreVersion = "0.2.1"
+$AppRestoreVersion = "0.2.2"
 $ManagedInstallMarkerName = ".apprestore-managed"
 $ManagedInstallMarkerValue = "AppRestore managed installation v1"
-$IpaToolVersion = "2.3.2"
-$IpaToolSha256 = "6352441f6f91df7947aaa203b19cb7d3c9d77920fc466dd784ff9cae88db5c92"
+$IpaToolVersion = "2.5.0"
+$IpaToolSha256 = "d7494be51097e4ab132c5f2453a1ccafa56fffe5379a1ac0366e0997bbda6df8"
 $IpaToolUrl = "https://github.com/majd/ipatool/releases/download/v$IpaToolVersion/ipatool-$IpaToolVersion-windows-amd64.tar.gz"
 $PythonInstallerVersion = "3.12.10"
 $PythonInstallerSha256 = "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb"
@@ -1170,6 +1170,9 @@ try {
     }
 
     $ExpectedIpaToolName = "ipatool-$IpaToolVersion-windows-amd64.exe"
+    # Windows PowerShell 5.1 вырезает двойные кавычки из аргументов
+    # native-команд, поэтому inline-сниппет для python -c обязан обходиться
+    # одинарными: иначе установка падает на SyntaxError вместо распаковки.
     $SafeTarExtract = @'
 import pathlib
 import shutil
@@ -1179,7 +1182,7 @@ import tarfile
 archive_path = pathlib.Path(sys.argv[1])
 destination = pathlib.Path(sys.argv[2])
 expected_name = sys.argv[3]
-with tarfile.open(archive_path, mode="r:gz") as archive:
+with tarfile.open(archive_path, mode='r:gz') as archive:
     matches = [
         member
         for member in archive.getmembers()
@@ -1188,13 +1191,13 @@ with tarfile.open(archive_path, mode="r:gz") as archive:
     ]
     if len(matches) != 1:
         raise SystemExit(
-            f"expected exactly one {expected_name!r}, found {len(matches)}"
+            f'expected exactly one {expected_name!r}, found {len(matches)}'
         )
     source = archive.extractfile(matches[0])
     if source is None:
-        raise SystemExit("could not read the expected ipatool member")
+        raise SystemExit('could not read the expected ipatool member')
     target = destination / expected_name
-    with source, target.open("wb") as output:
+    with source, target.open('wb') as output:
         shutil.copyfileobj(source, output)
 '@
     Invoke-SelectedPython -Arguments @(
