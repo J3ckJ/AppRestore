@@ -57,6 +57,10 @@ QMainWindow, QDialog {{
 QWidget {{
   color: {INK};
 }}
+QLabel {{
+  border: none;
+  background: transparent;
+}}
 QScrollArea {{
   border: none;
   background: transparent;
@@ -113,7 +117,7 @@ QHeaderView::section {{
   color: {MUTED};
   border: none;
   border-bottom: 1px solid {LINE};
-  padding: 6px 10px;
+  padding: 8px 12px;
   font-weight: 600;
 }}
 QCheckBox {{

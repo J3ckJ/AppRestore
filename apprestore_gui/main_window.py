@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QSize, Signal
-from PySide6.QtGui import QAction, QIcon, QPixmap
+from PySide6.QtCore import Qt, QSize, Signal, QEvent
+from PySide6.QtGui import QColor, QBrush, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QTableWidget,
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QFileDialog,
+    QApplication,
 )
 
 from apprestore_core.models import MissingApp, OffloadedApp
@@ -50,6 +50,13 @@ from apprestore_gui.theme import (
     SIDE_TEXT,
     WARN,
 )
+from apprestore_gui.ui_icons import (
+    NAV_ICON_NAMES,
+    TILE_ICON_NAMES,
+    logo_mark_pixmap,
+    svg_icon,
+    svg_pixmap,
+)
 from apprestore_gui.widgets.phone import PhoneWidget
 from apprestore_gui.workers import run_in_thread
 
@@ -66,6 +73,91 @@ NAV = [
 ]
 
 
+def _muted_label(text: str, size: int = 11) -> QLabel:
+    label = QLabel(text)
+    label.setStyleSheet(f"color:{MUTED};font-size:{size}px;font-weight:500;border:none;background:transparent;")
+    return label
+
+
+def _value_label(text: str = "-", *, object_name: str | None = None) -> QLabel:
+    label = QLabel(text)
+    if object_name:
+        label.setObjectName(object_name)
+    label.setStyleSheet("font-size:13px;font-weight:650;border:none;background:transparent;")
+    return label
+
+
+class AppCell(QWidget):
+    """Icon + bold name + muted subtitle (version / bundle)."""
+
+    def __init__(self, pixmap: QPixmap, name: str, subtitle: str, parent=None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 8, 4)
+        layout.setSpacing(10)
+        icon = QLabel()
+        icon.setFixedSize(36, 36)
+        icon.setPixmap(pixmap)
+        icon.setStyleSheet("border:none;background:transparent;")
+        texts = QVBoxLayout()
+        texts.setContentsMargins(0, 0, 0, 0)
+        texts.setSpacing(1)
+        title = QLabel(name)
+        title.setStyleSheet("font-size:13px;font-weight:650;border:none;background:transparent;")
+        sub = QLabel(subtitle)
+        sub.setStyleSheet(f"color:{MUTED};font-size:11px;font-weight:400;border:none;background:transparent;")
+        texts.addWidget(title)
+        texts.addWidget(sub)
+        layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(texts, 1)
+
+
+class ActionTile(QFrame):
+    clicked = Signal()
+
+    def __init__(self, title: str, subtitle: str, icon_name: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(72)
+        self.setStyleSheet(
+            f"""
+            QFrame {{
+              background: {PANEL};
+              border: 1px solid {LINE};
+              border-radius: 8px;
+            }}
+            QFrame:hover {{
+              border-color: #C4C4C8;
+              background: #FAFAFB;
+            }}
+            QLabel {{ border: none; background: transparent; }}
+            """
+        )
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 10, 12, 10)
+        row.setSpacing(12)
+        icon = QLabel()
+        icon.setFixedSize(44, 44)
+        icon.setPixmap(svg_pixmap(icon_name, 44))
+        texts = QVBoxLayout()
+        texts.setContentsMargins(0, 0, 0, 0)
+        texts.setSpacing(2)
+        t = QLabel(title)
+        t.setStyleSheet("font-size:13px;font-weight:650;")
+        s = QLabel(subtitle)
+        s.setWordWrap(True)
+        s.setStyleSheet(f"color:{MUTED};font-size:11.5px;font-weight:400;line-height:1.35;")
+        texts.addWidget(t)
+        texts.addWidget(s)
+        row.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addLayout(texts, 1)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
 class Sidebar(QFrame):
     navigated = Signal(str)
 
@@ -75,60 +167,86 @@ class Sidebar(QFrame):
         self.setFixedWidth(240)
         self.setStyleSheet(
             f"""
-            QFrame#sidebar {{ background: {SIDE}; }}
-            QLabel {{ color: {SIDE_TEXT}; }}
+            QFrame#sidebar {{ background: {SIDE}; border: none; }}
+            QFrame#sidebar QLabel {{ color: {SIDE_TEXT}; border: none; }}
             QListWidget {{
               background: transparent; border: none; color: {SIDE_TEXT};
-              outline: none;
+              outline: none; padding: 0 2px;
             }}
             QListWidget::item {{
-              padding: 8px 10px; border-radius: 6px; margin: 1px 4px;
+              padding: 7px 10px; border-radius: 6px; margin: 1px 4px;
+              color: {SIDE_TEXT};
             }}
             QListWidget::item:selected {{
-              background: #3A3A3E; color: white; font-weight: 600;
+              background: #3A3A3E; color: white;
             }}
             """
         )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 14, 10, 10)
-        layout.setSpacing(6)
+        layout.setSpacing(8)
 
         brand = QHBoxLayout()
-        mark = QLabel("AR")
+        brand.setSpacing(10)
+        mark = QLabel()
         mark.setFixedSize(28, 28)
-        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        mark.setStyleSheet(
-            f"background:{ACCENT};color:white;border-radius:7px;font-weight:700;font-size:11px;"
-        )
-        title = QLabel("<b>AppRestore</b><br><span style='color:#A1A1A6;font-size:11px'>возврат приложений</span>")
-        brand.addWidget(mark)
-        brand.addWidget(title, 1)
+        mark.setPixmap(logo_mark_pixmap(28))
+        mark.setStyleSheet("border:none;background:transparent;")
+        titles = QVBoxLayout()
+        titles.setContentsMargins(0, 0, 0, 0)
+        titles.setSpacing(0)
+        name = QLabel("AppRestore")
+        name.setStyleSheet("color:#FFFFFF;font-size:13px;font-weight:700;border:none;")
+        tag = QLabel("возврат приложений")
+        tag.setStyleSheet(f"color:{SIDE_MUTED};font-size:11px;font-weight:400;border:none;")
+        titles.addWidget(name)
+        titles.addWidget(tag)
+        brand.addWidget(mark, 0, Qt.AlignmentFlag.AlignVCenter)
+        brand.addLayout(titles, 1)
         layout.addLayout(brand)
 
+        device_wrap = QFrame()
+        device_wrap.setObjectName("deviceCard")
+        device_wrap.setStyleSheet(
+            f"QFrame#deviceCard{{background:{SIDE_2};border-radius:8px;border:none;}}"
+            f"QFrame#deviceCard QLabel{{border:none;background:transparent;}}"
+        )
+        dw = QHBoxLayout(device_wrap)
+        dw.setContentsMargins(10, 10, 10, 10)
+        dw.setSpacing(8)
+        phone_icon = QLabel()
+        phone_icon.setFixedSize(18, 28)
+        phone_icon.setPixmap(svg_pixmap("smartphone", 18, color="#D1D1D6"))
+        phone_icon.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.device = QLabel("Устройство не выбрано")
         self.device.setWordWrap(True)
-        self.device.setStyleSheet(
-            f"background:{SIDE_2};border-radius:8px;padding:10px;color:{SIDE_TEXT};"
-        )
-        layout.addWidget(self.device)
+        self.device.setStyleSheet(f"color:{SIDE_TEXT};")
+        dw.addWidget(phone_icon, 0, Qt.AlignmentFlag.AlignTop)
+        dw.addWidget(self.device, 1)
+        layout.addWidget(device_wrap)
 
         section = QLabel("РАЗДЕЛЫ")
         section.setStyleSheet(
-            f"color:{SIDE_MUTED};font-size:10px;font-weight:700;letter-spacing:1px;padding:8px 6px 2px;"
+            f"color:{SIDE_MUTED};font-size:10px;font-weight:700;letter-spacing:1px;padding:6px 6px 2px;border:none;"
         )
         layout.addWidget(section)
 
         self.nav = QListWidget()
+        self.nav.setIconSize(QSize(16, 16))
+        self.nav.setSpacing(1)
         for key, label in NAV:
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, key)
+            icon_name = NAV_ICON_NAMES.get(key)
+            if icon_name:
+                item.setIcon(svg_icon(icon_name, 16, color="#D1D1D6"))
             self.nav.addItem(item)
         self.nav.setCurrentRow(0)
         self.nav.currentItemChanged.connect(self._on_nav)
         layout.addWidget(self.nav, 1)
 
         foot = QLabel("Данные остаются на этом компьютере")
-        foot.setStyleSheet(f"color:{SIDE_MUTED};font-size:11px;")
+        foot.setStyleSheet(f"color:{SIDE_MUTED};font-size:11px;border:none;")
         foot.setWordWrap(True)
         layout.addWidget(foot)
 
@@ -147,23 +265,6 @@ class Sidebar(QFrame):
                 break
 
 
-class Tile(QPushButton):
-    def __init__(self, title: str, subtitle: str, parent=None) -> None:
-        super().__init__(parent)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(72)
-        self.setStyleSheet(
-            f"""
-            QPushButton {{
-              text-align: left; padding: 12px 14px; background: {PANEL};
-              border: 1px solid {LINE}; border-radius: 8px;
-            }}
-            QPushButton:hover {{ border-color: #C4C4C8; background: #FAFAFB; }}
-            """
-        )
-        self.setText(f"{title}\n{subtitle}")
-
-
 class MainWindow(QMainWindow):
     def __init__(self, service: GuiService, artwork: ArtworkCache) -> None:
         super().__init__()
@@ -173,6 +274,9 @@ class MainWindow(QMainWindow):
         self.resize(1200, 760)
         self._device_udid: str | None = None
         self._log_lines: list[str] = []
+        self._phone: PhoneWidget | None = None
+        self._phone_cap_title: QLabel | None = None
+        self._phone_cap_sub: QLabel | None = None
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -209,9 +313,9 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
         head = QHBoxLayout()
         label = QLabel(title)
-        label.setStyleSheet("font-size:14px;font-weight:650;")
+        label.setStyleSheet("font-size:14px;font-weight:650;border:none;background:transparent;")
         meta = QLabel("")
-        meta.setStyleSheet(f"color:{MUTED};font-size:12px;")
+        meta.setStyleSheet(f"color:{MUTED};font-size:12px;font-weight:500;border:none;background:transparent;")
         meta.setObjectName("meta")
         head.addWidget(label)
         head.addStretch(1)
@@ -249,23 +353,78 @@ class MainWindow(QMainWindow):
         devices = self.service.devices()
         if not devices:
             self._device_udid = None
-            self.sidebar.set_device_text("Нет подключённого iPhone\nПодключите по USB")
+            self.sidebar.set_device_text("Нет подключённого iPhone<br>Подключите по USB")
+            self._update_phone_home([])
             return
         device = devices[0]
         self._device_udid = device.udid
         auth = "вход есть" if self.service.authenticated() else "нужен вход"
+        auth_color = OK if self.service.authenticated() else "#A1A1A6"
         self.sidebar.set_device_text(
-            f"<b>{device.name}</b><br>iOS {device.ios_version} · USB<br>"
+            f"<b>{device.name}</b><br>"
+            f"<span style='color:#A1A1A6'>iOS {device.ios_version} · USB</span><br>"
             f"<span style='color:#30D158'>● подключён</span><br>"
-            f"<span style='color:#A1A1A6'>{auth}</span>"
+            f"<span style='color:{auth_color}'>{auth}</span>"
         )
+        self._refresh_phone_from_device()
+
+    def _refresh_phone_from_device(self) -> None:
+        if self.service.demo_mode:
+            apps = demo.DEMO_HOME
+            icons: list[tuple[QPixmap, bool]] = []
+            for app in apps[:16]:
+                pix = self.artwork.pixmap_for_app(
+                    bundle_id=app.bundle_id,
+                    store_id=app.store_id,
+                    name=app.name,
+                    size=64,
+                )
+                icons.append((pix, app.offloaded))
+            offloaded_n = sum(1 for a in apps if a.offloaded)
+            self._update_phone_home(icons, device_name="iPhone 14", offloaded_n=offloaded_n)
+            return
+        if not self._device_udid:
+            self._update_phone_home([])
+            return
+        # Live: show offloaded + fill from missing if needed.
+        off = self.service.offloaded(self._device_udid)
+        icons = []
+        for app in off[:16]:
+            pix = self.artwork.pixmap_for_app(
+                bundle_id=app.bundle_id, store_id=app.store_id, name=app.name, size=64
+            )
+            icons.append((pix, True))
+        devices = self.service.devices()
+        name = devices[0].name if devices else "iPhone"
+        self._update_phone_home(icons, device_name=name, offloaded_n=len(off))
+
+    def _update_phone_home(
+        self,
+        icons: list[tuple[QPixmap, bool]],
+        *,
+        device_name: str = "iPhone",
+        offloaded_n: int = 0,
+    ) -> None:
+        if self._phone:
+            self._phone.set_icons(icons)
+        if self._phone_cap_title:
+            self._phone_cap_title.setText(device_name)
+        if self._phone_cap_sub:
+            if offloaded_n:
+                self._phone_cap_sub.setText(f"{offloaded_n} сгруженных на экране")
+            elif icons:
+                self._phone_cap_sub.setText("приложения на экране")
+            else:
+                self._phone_cap_sub.setText("нет данных экрана")
 
     def refresh_overview_meta(self) -> None:
         page = self.pages["overview"]
         meta = page.findChild(QLabel, "meta")
         if meta:
             meta.setText("готово к работе" if self._device_udid else "нет устройства")
-            meta.setStyleSheet(f"color:{OK if self._device_udid else WARN};font-size:12px;font-weight:600;")
+            meta.setStyleSheet(
+                f"color:{OK if self._device_udid else WARN};font-size:12px;font-weight:600;border:none;background:transparent;"
+            )
         model = page.findChild(QLabel, "info_model")
         system = page.findChild(QLabel, "info_system")
         apple = page.findChild(QLabel, "info_apple")
@@ -279,51 +438,69 @@ class MainWindow(QMainWindow):
         if apple:
             if self.service.authenticated():
                 apple.setText("сессия есть")
-                apple.setStyleSheet(f"color:{OK};font-weight:650;")
+                apple.setStyleSheet(f"color:{OK};font-size:13px;font-weight:650;border:none;background:transparent;")
             else:
                 apple.setText("нужен вход")
-                apple.setStyleSheet(f"color:{WARN};font-weight:650;")
+                apple.setStyleSheet(f"color:{WARN};font-size:13px;font-weight:650;border:none;background:transparent;")
+        self._refresh_phone_from_device()
+
+    def _info_card(self, title: str, value_name: str) -> QFrame:
+        box = QFrame()
+        box.setObjectName("infoCard")
+        box.setStyleSheet(
+            f"""
+            QFrame#infoCard {{
+              background: {PANEL};
+              border: 1px solid {LINE};
+              border-radius: 8px;
+            }}
+            QFrame#infoCard QLabel {{
+              border: none;
+              background: transparent;
+            }}
+            """
+        )
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(12, 10, 12, 10)
+        bl.setSpacing(3)
+        bl.addWidget(_muted_label(title, 11))
+        bl.addWidget(_value_label("-", object_name=value_name))
+        return box
 
     def _build_overview(self) -> QWidget:
         page, layout, meta = self._page_shell("Обзор устройства")
         meta.setText("готово к работе")
         body = QHBoxLayout()
+        body.setSpacing(16)
         left = QVBoxLayout()
-        phone = PhoneWidget()
-        left.addWidget(phone, 0, Qt.AlignmentFlag.AlignHCenter)
-        cap = QLabel("iPhone\nприложение на экране")
-        cap.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        cap.setStyleSheet(f"color:{MUTED};")
-        left.addWidget(cap)
+        left.setSpacing(8)
+        self._phone = PhoneWidget()
+        left.addWidget(self._phone, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._phone_cap_title = QLabel("iPhone")
+        self._phone_cap_title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self._phone_cap_title.setStyleSheet("font-size:13px;font-weight:700;border:none;background:transparent;")
+        self._phone_cap_sub = QLabel("")
+        self._phone_cap_sub.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self._phone_cap_sub.setStyleSheet(f"color:{MUTED};font-size:11.5px;font-weight:400;border:none;background:transparent;")
+        left.addWidget(self._phone_cap_title)
+        left.addWidget(self._phone_cap_sub)
         left.addStretch(1)
         body.addLayout(left, 0)
 
         right = QVBoxLayout()
+        right.setSpacing(10)
         info = QHBoxLayout()
+        info.setSpacing(8)
         for key, title in (
             ("info_model", "Модель"),
             ("info_system", "Система"),
             ("info_apple", "Apple ID"),
         ):
-            box = QFrame()
-            box.setStyleSheet(
-                f"QFrame{{background:{PANEL};border:1px solid {LINE};border-radius:8px;}}"
-            )
-            bl = QVBoxLayout(box)
-            bl.setContentsMargins(10, 8, 10, 8)
-            t = QLabel(title)
-            t.setStyleSheet(f"color:{MUTED};font-size:11px;")
-            v = QLabel("-")
-            v.setObjectName(key)
-            v.setStyleSheet("font-weight:650;")
-            bl.addWidget(t)
-            bl.addWidget(v)
-            info.addWidget(box)
+            info.addWidget(self._info_card(title, key))
         right.addLayout(info)
 
         grid = QVBoxLayout()
-        row1 = QHBoxLayout()
-        row2 = QHBoxLayout()
+        grid.setSpacing(8)
         tiles = [
             ("Вернуть сгруженные", "Ярлыки на месте, приложения выгружены", "offloaded"),
             ("Найти и поставить", "По имени, ссылке или из истории", "install"),
@@ -332,23 +509,80 @@ class MainWindow(QMainWindow):
             ("Проверки", "Связь с телефоном и готовность", "doctor"),
             ("Операции", "Журнал последних действий", "log"),
         ]
-        for i, (title, sub, target) in enumerate(tiles):
-            tile = Tile(title, sub)
-            tile.clicked.connect(lambda _=False, t=target: self._show_page(t))
-            (row1 if i < 3 else row2).addWidget(tile)
-        grid.addLayout(row1)
-        grid.addLayout(row2)
+        # v5 CSS: two columns, three rows
+        for i in range(0, len(tiles), 2):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            for title, sub, target in tiles[i : i + 2]:
+                tile = ActionTile(title, sub, TILE_ICON_NAMES[target])
+                tile.clicked.connect(lambda t=target: self._show_page(t))
+                row.addWidget(tile)
+            grid.addLayout(row)
         right.addLayout(grid)
         right.addStretch(1)
         body.addLayout(right, 1)
         layout.addLayout(body, 1)
         return page
 
+    def _prepare_table(self, table: QTableWidget) -> None:
+        table.setShowGrid(False)
+        table.setAlternatingRowColors(False)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        table.verticalHeader().setVisible(False)
+        table.setIconSize(QSize(36, 36))
+        header = table.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        header.setHighlightSections(False)
+        table.setStyleSheet(
+            f"""
+            QTableWidget {{
+              background: {PANEL};
+              border: 1px solid {LINE};
+              border-radius: 8px;
+              gridline-color: transparent;
+            }}
+            QTableWidget::item {{ padding: 4px; }}
+            QHeaderView::section {{
+              background: #F7F7F9;
+              color: {MUTED};
+              border: none;
+              border-bottom: 1px solid {LINE};
+              padding: 8px 12px;
+              font-weight: 600;
+              text-align: left;
+            }}
+            """
+        )
+
+    def _tint_checked_rows(self, table: QTableWidget) -> None:
+        soft = QBrush(QColor(ACCENT_SOFT))
+        clear = QBrush(QColor(PANEL))
+        for r in range(table.rowCount()):
+            item = table.item(r, 0)
+            checked = bool(item and item.checkState() == Qt.CheckState.Checked)
+            brush = soft if checked else clear
+            for c in range(table.columnCount()):
+                cell = table.item(r, c)
+                if cell:
+                    cell.setBackground(brush)
+            widget = table.cellWidget(r, 1)
+            if widget:
+                widget.setStyleSheet(
+                    f"background:{ACCENT_SOFT if checked else 'transparent'};border:none;"
+                )
+
     def _fill_app_table(
         self,
         table: QTableWidget,
         rows: list[tuple[Any, str, str, str | None, str | None]],
+        *,
+        status_text: str = "сгружено",
+        status_color: str = WARN,
+        precheck: int = 0,
     ) -> None:
+        table.blockSignals(True)
         table.setRowCount(0)
         table.setRowCount(len(rows))
         for r, (obj, name, version, bundle_id, store_id) in enumerate(rows):
@@ -358,36 +592,45 @@ class MainWindow(QMainWindow):
                 | Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
             )
-            check.setCheckState(Qt.CheckState.Unchecked)
+            check.setCheckState(
+                Qt.CheckState.Checked if r < precheck else Qt.CheckState.Unchecked
+            )
             check.setData(Qt.ItemDataRole.UserRole, obj)
             table.setItem(r, 0, check)
             pix = self.artwork.pixmap_for_app(
                 bundle_id=bundle_id, store_id=store_id, name=name, size=36
             )
-            name_item = QTableWidgetItem(f"{name}\n{version}")
-            name_item.setData(Qt.ItemDataRole.DecorationRole, QIcon(pix))
+            cell = AppCell(pix, name, version)
+            table.setCellWidget(r, 1, cell)
+            # placeholder item so background tint works
+            name_item = QTableWidgetItem("")
+            name_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             table.setItem(r, 1, name_item)
-            status = QTableWidgetItem("сгружено")
+            status = QTableWidgetItem(status_text)
+            status.setForeground(QColor(status_color))
+            status.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             table.setItem(r, 2, status)
-            table.setRowHeight(r, 48)
+            table.setRowHeight(r, 52)
+        table.blockSignals(False)
+        self._tint_checked_rows(table)
 
     def _build_offloaded(self) -> QWidget:
         page, layout, meta = self._page_shell("Сгруженные")
-        meta.setObjectName("meta")
         lead = QLabel(
             "Сначала пробуем докачку самого iPhone. Если не выйдет, загрузим через ваш Apple ID."
         )
-        lead.setStyleSheet(f"color:{MUTED};")
+        lead.setStyleSheet(f"color:{MUTED};font-weight:400;border:none;background:transparent;")
         lead.setWordWrap(True)
         layout.addWidget(lead)
         table = QTableWidget(0, 3)
         table.setObjectName("offloaded_table")
         table.setHorizontalHeaderLabels(["", "Приложение", "Статус"])
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        table.verticalHeader().setVisible(False)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setIconSize(QSize(36, 36))
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(0, 36)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._prepare_table(table)
+        table.itemChanged.connect(lambda _=None: self._on_offloaded_changed())
         layout.addWidget(table, 1)
         actions = QHBoxLayout()
         select_all = QPushButton("Выбрать все")
@@ -396,16 +639,31 @@ class MainWindow(QMainWindow):
         restore.setObjectName("primary")
         restore.clicked.connect(self._restore_selected_offloaded)
         hint = QLabel("Экран телефона лучше оставить разблокированным")
-        hint.setStyleSheet(f"color:{MUTED};font-size:11.5px;")
+        hint.setStyleSheet(f"color:{MUTED};font-size:11.5px;font-weight:400;border:none;")
         actions.addWidget(select_all)
         actions.addStretch(1)
         actions.addWidget(hint)
         actions.addWidget(restore)
         layout.addLayout(actions)
         self._progress = QLabel("")
-        self._progress.setStyleSheet(f"color:{MUTED};")
+        self._progress.setStyleSheet(f"color:{MUTED};border:none;")
         layout.addWidget(self._progress)
         return page
+
+    def _on_offloaded_changed(self) -> None:
+        table = self.pages["offloaded"].findChild(QTableWidget, "offloaded_table")
+        meta = self.pages["offloaded"].findChild(QLabel, "meta")
+        if not table:
+            return
+        self._tint_checked_rows(table)
+        total = table.rowCount()
+        selected = sum(
+            1
+            for r in range(total)
+            if table.item(r, 0) and table.item(r, 0).checkState() == Qt.CheckState.Checked
+        )
+        if meta and total:
+            meta.setText(f"выбрано {selected} из {total}")
 
     def reload_offloaded(self) -> None:
         table = self.pages["offloaded"].findChild(QTableWidget, "offloaded_table")
@@ -421,19 +679,31 @@ class MainWindow(QMainWindow):
         rows = [
             (a, a.name, f"версия {a.version}", a.bundle_id, a.store_id) for a in apps
         ]
-        self._fill_app_table(table, rows)
-        for r in range(table.rowCount()):
-            table.item(r, 2).setText("сгружено")
-            table.item(r, 2).setForeground(Qt.GlobalColor.darkYellow)
+        precheck = 3 if self.service.demo_mode and len(rows) >= 3 else 0
+        self._fill_app_table(
+            table,
+            rows,
+            status_text="сгружено",
+            status_color=WARN,
+            precheck=precheck,
+        )
         if meta:
-            meta.setText(f"{len(apps)} на устройстве")
+            if precheck:
+                meta.setText(f"выбрано {precheck} из {len(apps)}")
+            else:
+                meta.setText(f"{len(apps)} на устройстве")
 
     def _check_all(self, table: QTableWidget, checked: bool) -> None:
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        table.blockSignals(True)
         for r in range(table.rowCount()):
             item = table.item(r, 0)
             if item:
                 item.setCheckState(state)
+        table.blockSignals(False)
+        self._tint_checked_rows(table)
+        if table.objectName() == "offloaded_table":
+            self._on_offloaded_changed()
 
     def _selected_apps(self, table: QTableWidget) -> list[Any]:
         out = []
@@ -496,7 +766,7 @@ class MainWindow(QMainWindow):
             "его в магазине на этот аккаунт. Платное без оплаты не ставится."
         )
         note.setWordWrap(True)
-        note.setStyleSheet(f"color:{MUTED};font-size:11.5px;")
+        note.setStyleSheet(f"color:{MUTED};font-size:11.5px;font-weight:400;border:none;")
         layout.addWidget(note)
         self.acquire = QCheckBox("Получить бесплатно в App Store на ваш Apple ID")
         self.acquire.setChecked(True)
@@ -505,8 +775,10 @@ class MainWindow(QMainWindow):
         table.setObjectName("install_table")
         table.setHorizontalHeaderLabels(["", "Приложение", "Статус"])
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        table.verticalHeader().setVisible(False)
-        table.setIconSize(QSize(36, 36))
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(0, 36)
+        self._prepare_table(table)
+        table.itemChanged.connect(lambda _=None: self._tint_checked_rows(table))
         layout.addWidget(table, 1)
         actions = QHBoxLayout()
         go = QPushButton("Скачать и установить")
@@ -519,30 +791,22 @@ class MainWindow(QMainWindow):
 
     def reload_missing(self) -> None:
         table = self.pages["install"].findChild(QTableWidget, "install_table")
+        meta = self.pages["install"].findChild(QLabel, "meta")
         if not table or not self._device_udid:
             return
         apps = self.service.missing(self._device_udid)
-        table.setRowCount(len(apps))
-        for r, app in enumerate(apps):
-            check = QTableWidgetItem()
-            check.setFlags(
-                Qt.ItemFlag.ItemIsUserCheckable
-                | Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsSelectable
-            )
-            check.setCheckState(Qt.CheckState.Unchecked)
-            check.setData(Qt.ItemDataRole.UserRole, app)
-            table.setItem(r, 0, check)
-            pix = self.artwork.pixmap_for_app(
-                bundle_id=app.bundle_id, store_id=app.store_id, name=app.name, size=36
-            )
-            name_item = QTableWidgetItem(f"{app.name}\n{app.bundle_id}")
-            name_item.setData(Qt.ItemDataRole.DecorationRole, QIcon(pix))
-            table.setItem(r, 1, name_item)
-            st = QTableWidgetItem("нет на телефоне")
-            st.setForeground(Qt.GlobalColor.red)
-            table.setItem(r, 2, st)
-            table.setRowHeight(r, 48)
+        rows = [
+            (a, a.name, a.bundle_id, a.bundle_id, a.store_id) for a in apps
+        ]
+        self._fill_app_table(
+            table,
+            rows,
+            status_text="нет на телефоне",
+            status_color=BAD,
+            precheck=0,
+        )
+        if meta:
+            meta.setText("нет на телефоне")
 
     def _run_search(self) -> None:
         search = self.pages["install"].findChild(QLineEdit, "install_search")
@@ -557,7 +821,7 @@ class MainWindow(QMainWindow):
             return self.service.search(term)
 
         def done(rows: list[dict[str, str]]) -> None:
-            table.setRowCount(len(rows))
+            built = []
             for r, row in enumerate(rows):
                 app = MissingApp(
                     bundle_id=row.get("bundleId") or f"unknown.{r}",
@@ -566,28 +830,14 @@ class MainWindow(QMainWindow):
                     store_match="search",
                     source=row.get("source") or "search",
                 )
-                check = QTableWidgetItem()
-                check.setFlags(
-                    Qt.ItemFlag.ItemIsUserCheckable
-                    | Qt.ItemFlag.ItemIsEnabled
-                    | Qt.ItemFlag.ItemIsSelectable
-                )
-                check.setCheckState(
-                    Qt.CheckState.Checked if r == 0 else Qt.CheckState.Unchecked
-                )
-                check.setData(Qt.ItemDataRole.UserRole, app)
-                table.setItem(r, 0, check)
-                pix = self.artwork.pixmap_for_app(
-                    bundle_id=app.bundle_id,
-                    store_id=app.store_id,
-                    name=app.name,
-                    size=36,
-                )
-                name_item = QTableWidgetItem(f"{app.name}\n{app.bundle_id}")
-                name_item.setData(Qt.ItemDataRole.DecorationRole, QIcon(pix))
-                table.setItem(r, 1, name_item)
-                table.setItem(r, 2, QTableWidgetItem(row.get("source") or "поиск"))
-                table.setRowHeight(r, 48)
+                built.append((app, app.name, app.bundle_id, app.bundle_id, app.store_id))
+            self._fill_app_table(
+                table,
+                built,
+                status_text="поиск",
+                status_color=MUTED,
+                precheck=1 if built else 0,
+            )
             self.log(f"search {term}: {len(rows)}")
 
         run_in_thread(
@@ -634,50 +884,62 @@ class MainWindow(QMainWindow):
         table = QTableWidget(0, 3)
         table.setObjectName("library_table")
         table.setHorizontalHeaderLabels(["Файл", "Приложение", ""])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        table.verticalHeader().setVisible(False)
-        table.setIconSize(QSize(28, 28))
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._prepare_table(table)
         layout.addWidget(table, 1)
         actions = QHBoxLayout()
         scan = QPushButton("Сканировать")
         scan.clicked.connect(self.reload_library)
         pick = QPushButton("Выбрать файл")
         pick.clicked.connect(self._pick_ipa)
+        install = QPushButton("Установить")
+        install.setObjectName("primary")
         actions.addWidget(scan)
         actions.addWidget(pick)
         actions.addStretch(1)
+        actions.addWidget(install)
         layout.addLayout(actions)
         return page
 
     def reload_library(self) -> None:
         table = self.pages["library"].findChild(QTableWidget, "library_table")
+        meta = self.pages["library"].findChild(QLabel, "meta")
         if not table:
             return
         entries = self.service.scan_local()
+        table.setRowCount(0)
+        table.setRowCount(len(entries))
         if self.service.demo_mode:
-            table.setRowCount(len(entries))
             for r, (fname, bundle, name) in enumerate(entries):
                 table.setItem(r, 0, QTableWidgetItem(fname))
-                pix = self.artwork.pixmap_for_app(bundle_id=bundle, name=name, size=28)
-                item = QTableWidgetItem(name)
-                item.setData(Qt.ItemDataRole.DecorationRole, QIcon(pix))
-                table.setItem(r, 1, item)
-                table.setItem(r, 2, QTableWidgetItem("Установить"))
-                table.setRowHeight(r, 40)
+                pix = self.artwork.pixmap_for_app(bundle_id=bundle, name=name, size=36)
+                table.setCellWidget(r, 1, AppCell(pix, name, bundle))
+                table.setItem(r, 1, QTableWidgetItem(""))
+                link = QTableWidgetItem("Установить")
+                link.setForeground(QColor(ACCENT))
+                table.setItem(r, 2, link)
+                table.setRowHeight(r, 52)
+            if meta:
+                meta.setText(f"{len(entries)} файла" if len(entries) == 3 else f"{len(entries)} файлов")
             return
-        table.setRowCount(len(entries))
         for r, entry in enumerate(entries):
             path = getattr(entry, "path", None) or Path(str(entry))
             name = getattr(entry, "name", path.stem)
             bundle = getattr(entry, "bundle_id", "")
             table.setItem(r, 0, QTableWidgetItem(Path(path).name))
-            pix = self.artwork.pixmap_for_app(bundle_id=bundle, name=name, size=28)
-            item = QTableWidgetItem(name)
-            item.setData(Qt.ItemDataRole.DecorationRole, QIcon(pix))
+            pix = self.artwork.pixmap_for_app(bundle_id=bundle, name=name, size=36)
+            table.setCellWidget(r, 1, AppCell(pix, name, bundle or "IPA"))
+            item = QTableWidgetItem("")
             item.setData(Qt.ItemDataRole.UserRole, str(path))
             table.setItem(r, 1, item)
-            table.setItem(r, 2, QTableWidgetItem("Установить"))
-            table.setRowHeight(r, 40)
+            link = QTableWidgetItem("Установить")
+            link.setForeground(QColor(ACCENT))
+            table.setItem(r, 2, link)
+            table.setRowHeight(r, 52)
+        if meta:
+            meta.setText(f"{len(entries)} файлов")
 
     def _pick_ipa(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -702,7 +964,8 @@ class MainWindow(QMainWindow):
         table.setObjectName("doctor_table")
         table.setHorizontalHeaderLabels(["Проверка", "Результат"])
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._prepare_table(table)
         layout.addWidget(table, 1)
         actions = QHBoxLayout()
         refresh = QPushButton("Обновить")
@@ -721,15 +984,28 @@ class MainWindow(QMainWindow):
 
     def reload_doctor(self) -> None:
         table = self.pages["doctor"].findChild(QTableWidget, "doctor_table")
+        meta = self.pages["doctor"].findChild(QLabel, "meta")
         if not table:
             return
         checks = self.service.doctor()
         table.setRowCount(len(checks))
+        any_bad = False
         for r, check in enumerate(checks):
-            table.setItem(r, 0, QTableWidgetItem(check.name))
-            item = QTableWidgetItem(check.detail if check.ok else check.detail)
-            item.setForeground(Qt.GlobalColor.darkGreen if check.ok else Qt.GlobalColor.red)
+            name = QTableWidgetItem(check.name)
+            name.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            table.setItem(r, 0, name)
+            item = QTableWidgetItem(check.detail)
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            item.setForeground(QColor(OK if check.ok else BAD))
             table.setItem(r, 1, item)
+            table.setRowHeight(r, 40)
+            if not check.ok:
+                any_bad = True
+        if meta:
+            meta.setText("нужен вход" if any_bad else "всё в порядке")
+            meta.setStyleSheet(
+                f"color:{WARN if any_bad else OK};font-size:12px;font-weight:600;border:none;"
+            )
 
     def _run_setup(self) -> None:
         def job() -> list[str]:
@@ -747,30 +1023,32 @@ class MainWindow(QMainWindow):
 
     def _build_account(self) -> QWidget:
         page, layout, meta = self._page_shell("Apple ID")
+        meta.setText("не вошли")
+        meta.setStyleSheet(f"color:{WARN};font-size:12px;font-weight:600;border:none;")
         lead = QLabel(
             "Пароль и код подтверждения вводятся здесь и не сохраняются в AppRestore."
         )
         lead.setWordWrap(True)
-        lead.setStyleSheet(f"color:{MUTED};")
+        lead.setStyleSheet(f"color:{MUTED};font-weight:400;border:none;")
         layout.addWidget(lead)
-        form = QFormLayout()
-        email = QLineEdit()
-        email.setObjectName("auth_email")
-        password = QLineEdit()
-        password.setObjectName("auth_password")
-        password.setEchoMode(QLineEdit.EchoMode.Password)
-        code = QLineEdit()
-        code.setObjectName("auth_code")
-        passphrase = QLineEdit()
-        passphrase.setObjectName("auth_passphrase")
-        passphrase.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("Email", email)
-        form.addRow("Пароль", password)
-        form.addRow("Код из сообщения", code)
-        form.addRow("Passphrase (если спросит)", passphrase)
-        layout.addLayout(form)
+
+        def field(label: str, obj: str, *, password: bool = False, placeholder: str = "") -> QLineEdit:
+            layout.addWidget(_muted_label(label, 12))
+            edit = QLineEdit()
+            edit.setObjectName(obj)
+            if password:
+                edit.setEchoMode(QLineEdit.EchoMode.Password)
+            if placeholder:
+                edit.setPlaceholderText(placeholder)
+            layout.addWidget(edit)
+            return edit
+
+        field("Email", "auth_email", placeholder="you@example.com")
+        field("Пароль", "auth_password", password=True)
+        field("Код из сообщения", "auth_code")
+        field("Passphrase (если спросит)", "auth_passphrase", password=True)
         note = QLabel("Первый вход иногда занимает несколько минут.")
-        note.setStyleSheet(f"color:{MUTED};font-size:11.5px;")
+        note.setStyleSheet(f"color:{MUTED};font-size:11.5px;font-weight:400;border:none;")
         layout.addWidget(note)
         actions = QHBoxLayout()
         revoke = QPushButton("Выйти")
@@ -830,31 +1108,52 @@ class MainWindow(QMainWindow):
         view.setObjectName("log")
         view.setReadOnly(True)
         layout.addWidget(view, 1)
-        for line in self._log_lines:
-            view.append(line)
+        if self.service.demo_mode and not self._log_lines:
+            demo_lines = [
+                "22:01:12  ok  connected iPhone 14",
+                "22:01:40  ok  signed in",
+                "22:02:05  ok  restore Instagram",
+                "22:02:18  err  Spotify: phone locked",
+                "22:02:18  hint unlock the phone and retry",
+            ]
+            for line in demo_lines:
+                self._log_lines.append(line)
+                view.append(line)
+        else:
+            for line in self._log_lines:
+                view.append(line)
+        actions = QHBoxLayout()
+        copy = QPushButton("Копировать очищенное")
+        copy.clicked.connect(lambda: QApplication.clipboard().setText("\n".join(self._log_lines)))
+        actions.addWidget(copy)
+        actions.addStretch(1)
+        layout.addLayout(actions)
         return page
 
     def _build_settings(self) -> QWidget:
         page, layout, meta = self._page_shell("Настройки")
-        meta.setText("0.3.0-gui")
-        form = QFormLayout()
+        meta.setText("0.2.4")
+        layout.addWidget(_muted_label("Папка с файлами IPA", 12))
         ipa = QLineEdit(str(Path.home() / "AppRestore" / "ipa"))
+        layout.addWidget(ipa)
+        layout.addWidget(_muted_label("Кэш", 12))
         cache = QLineEdit(str(Path.home() / "AppRestore" / "cache"))
+        layout.addWidget(cache)
+        layout.addWidget(_muted_label("Обновления", 12))
         updates = QComboBox()
         updates.addItems(["Спрашивать о новой версии", "Только вручную"])
-        form.addRow("Папка с файлами IPA", ipa)
-        form.addRow("Кэш", cache)
-        form.addRow("Обновления", updates)
-        layout.addLayout(form)
+        layout.addWidget(updates)
         note = QLabel("Обновление ставится с проверкой целостности файла.")
-        note.setStyleSheet(f"color:{MUTED};font-size:11.5px;")
+        note.setStyleSheet(f"color:{MUTED};font-size:11.5px;font-weight:400;border:none;")
         layout.addWidget(note)
         save = QPushButton("Сохранить")
         save.setObjectName("primary")
         save.clicked.connect(
             lambda: QMessageBox.information(self, "Настройки", "Сохранено локально в этом сеансе.")
         )
+        check = QPushButton("Проверить обновление")
         row = QHBoxLayout()
+        row.addWidget(check)
         row.addStretch(1)
         row.addWidget(save)
         layout.addLayout(row)
