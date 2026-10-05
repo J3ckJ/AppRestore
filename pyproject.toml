@@ -16,8 +16,18 @@ dependencies = [
 
 [project.scripts]
 apprestore = "apprestore_core.cli:main"
+apprestore-gui = "apprestore_gui.app:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["apprestore_core*"]
+include = ["apprestore_core*", "apprestore_gui*"]
 exclude = ["tests*"]
+
+[project.optional-dependencies]
+gui = [
+  "PySide6>=6.6,<6.10",
+  "pywinpty>=2.0.0; platform_system==\"Windows\"",
+]
+
+[tool.setuptools.package-data]
+apprestore_gui = ["resources/**/*"]

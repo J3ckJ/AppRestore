@@ -1,0 +1,69 @@
+name: GUI build
+
+on:
+  push:
+    branches: [gui]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows GUI artifact
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        shell: pwsh
+        run: |
+          python -m pip install -U pip
+          python -m pip install .[gui] pyinstaller
+      - name: Test GUI units
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pip install pytest pytest-qt
+          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py
+      - name: Build
+        shell: pwsh
+        run: |
+          pyinstaller packaging/apprestore-gui.spec --noconfirm --clean
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AppRestore-windows
+          path: dist/AppRestore/**
+
+  macos:
+    name: macOS GUI artifact
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install -U pip
+          python -m pip install '.[gui]' pyinstaller
+      - name: Test GUI units
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pip install pytest pytest-qt
+          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py
+      - name: Build
+        run: |
+          pyinstaller packaging/apprestore-gui.spec --noconfirm --clean
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AppRestore-macos
+          path: |
+            dist/AppRestore.app
+            dist/AppRestore
