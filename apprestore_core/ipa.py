@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 from .models import IpaMetadata
 from .ipa_index import IpaIndex, IpaIndexError, IpaIndexRecord, normalize_ipa_path
 
-BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,253}[A-Za-z0-9])?$")
+BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,253}[A-Za-z0-9-])?$")
 MAX_PLIST_SIZE = 8 * 1024 * 1024
 MAX_ZIP_ENTRIES = 100_000
 MAX_PLIST_COMPRESSION_RATIO = 1_000

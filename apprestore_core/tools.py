@@ -42,11 +42,11 @@ class InstallRequestState(str, Enum):
     INDETERMINATE = "indeterminate"
 
 
-IPATOOL_VERSION = "2.5.0"
+IPATOOL_VERSION = "2.6.0"
 # Хеш официального windows-amd64.tar.gz (проверяется установщиком до распаковки).
 # Не использовать для сверки извлечённого ipatool.exe — это разные файлы.
 IPATOOL_WINDOWS_AMD64_ARCHIVE_SHA256 = (
-    "d7494be51097e4ab132c5f2453a1ccafa56fffe5379a1ac0366e0997bbda6df8"
+    "3ee48adc7c4aa84a8cc8ff9399d387c25f9b8593b2c212da29e966047a08ad21"
 )
 # ipatool >= 2.4 подписывает запросы авторизации App Store через SAP, а сам
 # подписчик исполняется в эмуляторе Unicorn. Его shared library не входит в
@@ -1095,8 +1095,8 @@ class AppRestoreTools:
                 detail or "ipatool search failed"
             )
         try:
-            payload = json.loads(result.stdout or "{}")
-        except json.JSONDecodeError as exc:
+            payload = parse_json_output(result.stdout or "")
+        except CatalogError as exc:
             raise ToolUnavailable("ipatool search returned invalid JSON") from exc
 
         rows: list[Any]

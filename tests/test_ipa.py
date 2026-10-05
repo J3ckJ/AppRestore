@@ -21,6 +21,11 @@ from tests.helpers import make_ipa
 class BundleIdTests(unittest.TestCase):
     def test_accepts_safe_ascii_identifier(self) -> None:
         self.assertEqual(validate_bundle_id("com.example.Alpha-1"), "com.example.Alpha-1")
+        # Apple alphabet allows a trailing hyphen in a reverse-DNS label.
+        self.assertEqual(
+            validate_bundle_id("com.brickoapps.CALC-"),
+            "com.brickoapps.CALC-",
+        )
 
     def test_rejects_unsafe_or_normalized_identifiers(self) -> None:
         invalid = [

@@ -24,24 +24,24 @@ universal wheel `requirements/wheels/hexdump-3.3-py3-none-any.whl`. Их SHA-256
 и рецепт зафиксированы в `requirements/README.md` и
 `requirements/runtime.lock`.
 
-## ipatool 2.5.0
+## ipatool 2.6.0
 
 - Назначение: авторизация и загрузка IPA, доступных учётной записи App Store.
 - Проект: <https://github.com/majd/ipatool>
 - Лицензия upstream: MIT.
-- Текст лицензии: <https://github.com/majd/ipatool/blob/v2.5.0/LICENSE>
+- Текст лицензии: <https://github.com/majd/ipatool/blob/v2.6.0/LICENSE>
 
-Windows-установщик загружает официальный x64-архив релиза v2.5.0 с GitHub и принимает его только при SHA-256:
+Windows-установщик загружает официальный x64-архив релиза v2.6.0 с GitHub и принимает его только при SHA-256:
 
 ```text
-d7494be51097e4ab132c5f2453a1ccafa56fffe5379a1ac0366e0997bbda6df8
+3ee48adc7c4aa84a8cc8ff9399d387c25f9b8593b2c212da29e966047a08ad21
 ```
 
 macOS-установщик принимает архивы того же релиза только при SHA-256:
 
 ```text
-8d6c42230215e8a9dc939b537ae7bb2db75f5b3bec62a52b2c8bb1fe08d8d272  macos-amd64
-1b8bbf14e717ef6827a78e6dcb67bd096f3aa8ff9a13b433cd26ac0527640341  macos-arm64
+6b9dcb890c9dad1961fd59827a1ac88687757a6f731a0079c00f443cd1a74e01  macos-amd64
+2f03bbe36def30943597164865991197c1f585a8dd19781542031c76e9f5346f  macos-arm64
 ```
 
 ## Unicorn Engine 2.1.4
