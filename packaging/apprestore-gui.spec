@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 block_cipher = None
-root = Path(SPECPATH).resolve().parent.parent
+root = Path(SPECPATH).resolve().parent
 datas = [
     (str(root / "apprestore_gui" / "resources"), "apprestore_gui/resources"),
 ]
