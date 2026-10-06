@@ -32,3 +32,19 @@ def test_main_window_opens_all_pages(qapp, qtbot) -> None:
     for key, _label in NAV:
         window._show_page(key)
         assert window.stack.currentIndex() >= 0
+
+
+def test_store_acquire_checkbox_is_off_by_default(qapp, qtbot) -> None:
+    from PySide6.QtWidgets import QHeaderView, QTableWidget
+
+    service = GuiService(demo_mode=True)
+    window = MainWindow(service, ArtworkCache())
+    qtbot.addWidget(window)
+    assert window.acquire.isChecked() is False
+    table = window.pages["install"].findChild(QTableWidget, "install_table")
+    assert table is not None
+    assert table.wordWrap() is False
+    assert (
+        table.horizontalHeader().sectionResizeMode(2)
+        == QHeaderView.ResizeMode.ResizeToContents
+    )

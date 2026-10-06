@@ -1362,7 +1362,8 @@ class MainWindow(QMainWindow):
         note.setStyleSheet(f"color:{MUTED};font-size:11.5px;font-weight:400;border:none;")
         layout.addWidget(note)
         self.acquire = QCheckBox("Получить бесплатно в App Store на ваш Apple ID")
-        self.acquire.setChecked(True)
+        # Off by default: getting an app adds it to the Apple ID purchase history.
+        self.acquire.setChecked(False)
         layout.addWidget(self.acquire)
         table = QTableWidget(0, 3)
         table.setObjectName("install_table")
@@ -1370,6 +1371,9 @@ class MainWindow(QMainWindow):
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         table.setColumnWidth(0, 36)
+        # Keep "нет на телефоне" on one line instead of wrapping in a narrow column.
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        table.setWordWrap(False)
         self._prepare_table(table)
         table.itemChanged.connect(lambda _=None: self._tint_checked_rows(table))
         layout.addWidget(table, 1)
