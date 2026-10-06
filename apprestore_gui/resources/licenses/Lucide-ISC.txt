@@ -1,0 +1,4 @@
+Lucide icons are ISC licensed: https://lucide.dev/license
+Copyright (c) 2024 Lucide Contributors
+Icons used in AppRestore GUI are original SVG paths inspired by Lucide style
+or embedded Lucide-compatible stroke icons.

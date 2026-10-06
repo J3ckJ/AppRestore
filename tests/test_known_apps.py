@@ -170,5 +170,35 @@ class ItunesSearchTests(unittest.TestCase):
         self.assertGreaterEqual(ranked[0][0], 8)
 
 
+class StoreIdSearchTests(unittest.TestCase):
+    def test_bare_store_id_stays_installable_when_catalogs_miss_it(self) -> None:
+        with mock.patch(
+            "apprestore_core.catalog.lookup_itunes_app_by_store_id",
+            return_value=None,
+        ):
+            apps = search_app_catalogs("6744154094", limit=5)
+        self.assertEqual(len(apps), 1)
+        self.assertEqual(apps[0]["storeId"], "6744154094")
+        self.assertEqual(apps[0]["source"], "store-id")
+        self.assertEqual(apps[0]["bundleId"], "")
+
+    def test_store_url_uses_the_lookup_name(self) -> None:
+        looked = {
+            "storeId": "6744154094",
+            "bundleId": "ru.example.sound",
+            "name": "Сила Звука",
+            "source": "itunes-lookup",
+        }
+        with mock.patch(
+            "apprestore_core.catalog.lookup_itunes_app_by_store_id",
+            return_value=looked,
+        ):
+            apps = search_app_catalogs(
+                "https://apps.apple.com/ru/app/id6744154094",
+                limit=5,
+            )
+        self.assertEqual(apps, [looked])
+
+
 if __name__ == "__main__":
     unittest.main()

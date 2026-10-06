@@ -166,6 +166,42 @@ class CommandError(RuntimeError):
         super().__init__(detail)
 
 
+def _parent_has_no_console() -> bool:
+    """True for a windowed Windows process (e.g. the frozen GUI)."""
+
+    if os.name != "nt":
+        return False
+    try:
+        return not ctypes.windll.kernel32.GetConsoleWindow()  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return False
+
+
+def windows_creationflags(*, no_console: bool | None = None) -> int:
+    """Process-creation flags for console children on Windows.
+
+    A new process group lets timeouts kill the whole tree.  A windowed parent
+    (the GUI) has no console to share, so every console child would pop up its
+    own black window; CREATE_NO_WINDOW suppresses that.  A console parent (the
+    CLI) keeps sharing its console so interactive prompts still work.
+    """
+
+    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    if no_console is None:
+        no_console = _parent_has_no_console()
+    if no_console:
+        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return flags
+
+
+def hidden_console_creationflags() -> int:
+    """Flags for one-off helper children (PowerShell, sc.exe) on Windows."""
+
+    if os.name != "nt" or not _parent_has_no_console():
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+
 class Runner:
     """Run commands without invoking a shell."""
 
@@ -216,11 +252,7 @@ class Runner:
                 env=process_env,
                 shell=False,
                 start_new_session=os.name != "nt",
-                creationflags=(
-                    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-                    if os.name == "nt"
-                    else 0
-                ),
+                creationflags=windows_creationflags() if os.name == "nt" else 0,
             )
         except FileNotFoundError as exc:
             result = CommandResult(command, 127, "", str(exc))

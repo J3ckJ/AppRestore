@@ -1,79 +1,170 @@
-# AppRestore
+<p align="center">
+  <img src="packaging/icons/AppRestore-1024.png" width="112" alt="Иконка AppRestore">
+</p>
 
-[![CI](https://github.com/J3ckJ/AppRestore/actions/workflows/ci.yml/badge.svg)](https://github.com/J3ckJ/AppRestore/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/J3ckJ/AppRestore)](https://github.com/J3ckJ/AppRestore/releases/latest)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
+<h1 align="center">AppRestore</h1>
 
-```text
-     _                ____           _
-    / \   _ __  _ __ |  _ \ ___  ___| |_ ___  _ __ ___
-   / _ \ | '_ \| '_ \| |_) / _ \/ __| __/ _ \| '__/ _ \
-  / ___ \| |_) | |_) |  _ <  __/\__ \ || (_) | | |  __/
- /_/   \_\ .__/| .__/|_| \_\___||___/\__\___/|_|  \___|
-         |_|   |_|
-Телефон → сгруженные / удалённые → скачать IPA → вернуть
-```
+<p align="center">
+  Возвращает на iPhone сгруженные и удалённые приложения.<br>
+  Windows и macOS · iPhone по USB · ваш Apple ID
+</p>
 
-**AppRestore** возвращает на iPhone приложения, которые система сгрузила или
-удалила, когда в App Store уже нет удобной кнопки «Загрузить». Работает локально
-на вашем компьютере: USB, ваш Apple ID, без обхода DRM.
+<p align="center">
+  <a href="https://github.com/J3ckJ/AppRestore/actions/workflows/ci.yml"><img src="https://github.com/J3ckJ/AppRestore/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/J3ckJ/AppRestore/releases/latest"><img src="https://img.shields.io/github/v/release/J3ckJ/AppRestore" alt="Release"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3"></a>
+</p>
 
-> **Статус:** beta · Версия 0.2.4. Windows и macOS · проект не связан с Apple Inc.
+> **Статус:** beta · Версия 0.3.0. Windows и macOS · проект не связан с Apple Inc.
 
-## Возможности
+## Что это
 
-- короткое меню: сгруженные, удалённые без ярлыка, локальные IPA, диагностика;
-- загрузка по bundle ID, App Store ID или ссылке `apps.apple.com`;
-- поиск по имени (iTunes, IPA Filezone, веб), если ID неизвестен;
-- проверка IPA перед установкой и подтверждение результата на телефоне;
-- локальная история найденных App Store ID;
-- `apprestore doctor` для проверки зависимостей и сети.
+Бывает, что iPhone сам выгрузил приложение, чтобы освободить место, а в
+App Store кнопки «Загрузить» уже нет: приложение убрали из магазина или оно
+недоступно в вашей стране. AppRestore помогает вернуть такое приложение.
 
-## Как это работает
+- **Сгруженные** (ярлык на экране остался, а самого приложения нет):
+  программа просит iPhone докачать их сам, а если не выходит, скачивает
+  через ваш Apple ID и ставит.
+- **Удалённые** (ярлыка уже нет): найдите приложение по имени, ссылке
+  `apps.apple.com` или номеру в App Store, и программа его поставит.
+- **Свои файлы IPA**: если у вас сохранён файл приложения, его можно
+  поставить на телефон.
 
-```text
-iPhone по USB
-   │
-   ├─ сгружено (ярлык-placeholder)
-   │     → свой IPA / штатный redownload iOS / загрузка через ipatool
-   │
-   └─ удалено полностью (нет иконки)
-         → история / store ID / поиск → скачать IPA → установить
-```
+Всё работает на вашем компьютере. Нужны кабель USB и ваш Apple ID. Защита
+приложений (DRM) не обходится: ставится только то, на что у вашего Apple ID
+есть право.
 
-Установщик ставит AppRestore и проверенный **ipatool 2.6.0**. Пароль Apple ID
-спрашивает сам `ipatool` в консоли; AppRestore его не хранит и не передаёт в
-аргументах командной строки.
+![Главный экран AppRestore](docs/screenshots/overview.png)
 
-## Требования
+## Скачать
 
-- **Windows 10/11 x64** или **macOS** (Apple Silicon или Intel);
-- iPhone по **USB**, с разблокированным экраном и доверием к компьютеру;
-- Python 3.10-3.13 (bootstrap ставит свой, если нужно);
-- интернет для установки, поиска и входа в Apple ID;
-- Apple ID, у которого есть право на нужное приложение (или уже свой законный IPA).
+Все файлы лежат на странице
+[последнего выпуска](https://github.com/J3ckJ/AppRestore/releases/latest).
+Есть две версии, выберите одну.
 
-## Установка
+### Графическая версия (для всех, без командной строки)
 
-Канонический источник: [GitHub Releases](https://github.com/J3ckJ/AppRestore/releases/latest).
-Bootstrap скачивает versioned source ZIP, сверяет **SHA-256** и ставит AppRestore
-в user-scope.
+Обычная программа с окном и кнопками. Python и терминал не нужны, всё нужное
+уже внутри.
 
-### Windows (одна строка)
+| Система | Файл |
+|---|---|
+| Windows 10/11 (64 бит) | [AppRestore-GUI-Windows.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-Windows.zip) |
+| macOS на Apple Silicon (M1 и новее) | [AppRestore-GUI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip) |
+
+На Mac с процессором Intel графическая версия не запустится. Используйте
+терминальную версию.
+
+### Терминальная версия
+
+Меню в окне терминала. Подходит, если вам удобна командная строка, нужен Mac
+с Intel или вы хотите запускать команды из скриптов. Ставится одной командой.
+
+| Система | Файл |
+|---|---|
+| Windows 10/11 | [install.ps1](https://github.com/J3ckJ/AppRestore/releases/latest/download/install.ps1) |
+| macOS (Apple Silicon и Intel) | [install.sh](https://github.com/J3ckJ/AppRestore/releases/latest/download/install.sh) |
+
+Как поставить, написано ниже, в разделе
+[Установка терминальной версии](#установка-терминальной-версии).
+
+Контрольные суммы SHA-256 всех файлов лежат в
+[SHA256SUMS.txt](https://github.com/J3ckJ/AppRestore/releases/latest/download/SHA256SUMS.txt).
+
+## Что нужно
+
+- компьютер с **Windows 10/11 (64 бит)** или **macOS**;
+- iPhone и кабель **USB**. Экран телефона разблокирован, на вопрос «Доверять
+  этому компьютеру?» ответьте **Доверять**;
+- интернет;
+- Apple ID, на котором это приложение уже было (покупалось или скачивалось),
+  либо свой файл IPA. Бесплатное приложение можно получить на Apple ID прямо
+  из программы.
+
+## Графическая версия
+
+### Windows
+
+1. Скачайте [AppRestore-GUI-Windows.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-Windows.zip).
+2. Распакуйте архив в свою папку, например `C:\Users\<вы>\AppRestore`.
+   Не кладите программу в `Program Files`: оттуда не работает обновление в
+   один клик, у программы нет прав заменить свои файлы.
+3. Запустите `AppRestore.exe`.
+4. Если появится синее окно Windows SmartScreen «Система Windows защитила ваш
+   компьютер», нажмите **Подробнее**, затем **Выполнить в любом случае**.
+   Это предупреждение появляется потому, что у программы нет платной подписи
+   издателя.
+
+### macOS
+
+1. Скачайте [AppRestore-GUI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip)
+   и откройте его. Появится `AppRestore.app`.
+2. Перенесите `AppRestore.app` в папку «Программы».
+3. Сборка не подписана в Apple, поэтому при первом запуске macOS её не
+   откроет двойным щелчком. Сделайте так: щёлкните по программе правой кнопкой
+   мыши, выберите **Открыть**, затем ещё раз **Открыть**.
+4. Если кнопки «Открыть» нет (так бывает в новых версиях macOS), откройте
+   «Системные настройки», раздел «Конфиденциальность и безопасность»,
+   прокрутите вниз и нажмите **Всё равно открыть**. Или выполните в
+   «Терминале» одну команду:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/AppRestore.app
+   ```
+
+### Как пользоваться
+
+1. Подключите iPhone кабелем, разблокируйте его и нажмите **Доверять**.
+2. Откройте AppRestore. На экране «Обзор» появится ваш телефон.
+3. Откройте раздел **Apple ID** и войдите. Если Apple пришлёт код, введите его
+   в том же окне. Пароль программа не сохраняет.
+4. Раздел **Сгруженные**: отметьте приложения и нажмите **Восстановить**.
+   Экран телефона лучше держать разблокированным.
+5. Раздел **Найти и поставить**: введите название, ссылку или номер
+   приложения в App Store, отметьте нужное и нажмите **Скачать и установить**.
+
+![Поиск и установка приложения](docs/screenshots/install.png)
+
+Галочка **«Получить бесплатно в App Store на ваш Apple ID»** нужна, если
+бесплатного приложения ещё не было на вашем Apple ID. Тогда программа сначала
+получит его в App Store на ваш аккаунт, как кнопка «Загрузить» в магазине.
+По умолчанию галочка выключена. Платные приложения так не ставятся.
+
+Если телефон не виден, откройте раздел **Проверки**: там видно, чего не хватает.
+
+### Обновление
+
+«Настройки» → **Проверить обновления**. Программа покажет, что нового, и
+спросит разрешения. После нажатия **Обновить** она скачает новую версию,
+проверит её контрольную сумму, закроется, заменит себя и запустится снова.
+Если новая версия не запустится, вернётся прежняя.
+
+Обновление в один клик не работает, если программа лежит в `Program Files`
+(Windows) или в другой папке, куда нельзя писать без прав администратора. В
+этом случае скачайте новый архив со страницы выпуска и замените папку вручную.
+
+## Установка терминальной версии
+
+Установщик скачивает архив с исходным кодом нужной версии, сверяет его
+контрольную сумму SHA-256 и ставит AppRestore только для вашего пользователя,
+без прав администратора. Вместе с ним ставится проверенный **ipatool 2.6.0**.
+
+### Windows (одна строка в PowerShell)
 
 ```powershell
 irm https://github.com/J3ckJ/AppRestore/releases/latest/download/install.ps1 | iex
 apprestore
 ```
 
-### macOS (одна строка)
+### macOS (одна строка в «Терминале»)
 
 ```bash
 curl -fsSL https://github.com/J3ckJ/AppRestore/releases/latest/download/install.sh | /bin/bash && export PATH="$HOME/.local/bin:$PATH"
 apprestore
 ```
 
-### Сначала посмотреть установщик и хеш
+### Сначала посмотреть установщик и проверить сумму
 
 **Windows:**
 
@@ -88,12 +179,12 @@ notepad $installer
 apprestore
 ```
 
-Сверьте хеш с `SHA256SUMS.txt` того же релиза.
+Сверьте сумму с `SHA256SUMS.txt` того же выпуска.
 
-**macOS:** скачайте `install.sh` и `SHA256SUMS.txt` со страницы релиза, сверьте
-`shasum -a 256 install.sh`, прочитайте скрипт, затем запустите его.
+**macOS:** скачайте `install.sh` и `SHA256SUMS.txt` со страницы выпуска,
+проверьте `shasum -a 256 install.sh`, прочитайте скрипт и запустите его.
 
-### Из исходников релиза
+### Из исходного кода выпуска
 
 ```powershell
 .\install-windows.ps1
@@ -105,18 +196,21 @@ apprestore
 apprestore
 ```
 
-Обновление: повторите ту же bootstrap-команду. Установщик собирает новую версию
-в staging и только потом подменяет текущую.
+**Обновление терминальной версии:** выполните ту же команду установки ещё раз.
+Установщик сначала собирает новую версию отдельно и только потом заменяет
+старую.
 
-## Быстрый старт
+### Как пользоваться терминальной версией
 
-1. Подключите iPhone по USB, разблокируйте, нажмите **Доверять**.
-2. Запустите `apprestore` без аргументов: откроется меню.
-3. При необходимости: **A** - вход в Apple ID, **B** - зависимости (`doctor`/`setup`).
-4. **1** - сгруженные (есть ярлык-placeholder).
-5. **2** - удалённые без ярлыка (поиск по имени, store ID или URL).
+1. Подключите iPhone по USB, разблокируйте его и нажмите **Доверять**.
+2. Запустите `apprestore` без параметров: откроется меню.
+3. **A**: вход в Apple ID. **B**: проверка и установка нужных компонентов
+   (`doctor` и `setup`).
+4. **1**: сгруженные приложения (ярлык остался на экране).
+5. **2**: удалённые приложения без ярлыка (поиск по имени, номеру в App Store
+   или ссылке).
 
-Полезные команды (из `--help`):
+Команды:
 
 ```text
 apprestore --version
@@ -134,84 +228,111 @@ apprestore restore-missing
 apprestore restore-missing --store-id 1234567890
 ```
 
-На Windows Apple USB bridge ставится через `apprestore setup`, если `doctor`
-его не видит.
+Флаг `--acquire-license` разрешает получить бесплатное приложение на ваш
+Apple ID (`ipatool --purchase`). Без него программа ничего не получает в
+магазине сама.
+
+На Windows драйвер Apple для USB ставится командой `apprestore setup`, если
+`apprestore doctor` его не находит.
 
 ## Частые вопросы
 
-**Телефон не виден.** Проверьте кабель, разблокировку и «Доверять этому
-компьютеру». Затем `apprestore devices` и `apprestore doctor`.
+**Телефон не виден.** Проверьте кабель, разблокируйте экран и нажмите
+«Доверять этому компьютеру». В графической версии откройте раздел «Проверки»,
+в терминальной выполните `apprestore devices` и `apprestore doctor`. На
+Windows нужен драйвер Apple для USB: поставьте приложение «Устройства Apple»
+(Apple Devices) или iTunes, либо выполните `apprestore setup`.
 
-**Спрашивает код 2FA.** Это нормально: код вводит `ipatool` в том же окне
-терминала. AppRestore пароль и 2FA не логирует.
+**Apple просит код.** Это обычная двухфакторная защита. В графической версии
+поле для кода появится в окне, в терминальной код вводится там же, где пароль.
+AppRestore не записывает пароль и код в журнал.
 
-**Приложения больше нет в App Store.** Если лицензия на Apple ID жива, часто
-помогает загрузка по **store ID** или URL страницы. Иначе нужен свой ранее
-сохранённый IPA.
+**Спрашивают «пароль связки ключей».** Это не пароль Apple ID. Его спрашивает
+ipatool на Windows, чтобы зашифровать сохранённый вход. Придумайте его при
+первом входе и вводите тот же при следующих. Графическая версия спрашивает
+его один раз при запуске.
 
-**`ipatool` снова просит passphrase.** На Windows новый процесс `ipatool`
-иногда снова спрашивает passphrase keychain. Это поведение upstream, не баг
-меню AppRestore.
+**Первый вход в Apple ID долго молчит.** При первом входе ipatool скачивает
+служебный компонент. Подождите несколько минут.
 
-**Первый вход в Apple ID долго молчит.** `ipatool` 2.4+ при первом входе
-скачивает SAP/Unicorn-рантайм. Подождите несколько минут; прогресс смотрите в
-`apprestore doctor` (проверки SAP runtime / SAP assets).
+**Приложения больше нет в App Store.** Если оно было на вашем Apple ID, часто
+помогает поиск по номеру приложения или по ссылке на его страницу. Иначе
+нужен свой сохранённый файл IPA.
 
-**Ошибка сети / TLS к Apple.** AppRestore может подставить системный HTTPS-прокси
-(Windows или macOS), только если он реально слушает. Явные `HTTP_PROXY` /
-`HTTPS_PROXY` всегда важнее.
+**Ошибка сети при входе.** Сервер Apple может не отвечать из вашей сети.
+Попробуйте VPN или системный прокси. Явные `HTTP_PROXY` и `HTTPS_PROXY` всегда
+важнее.
 
 ## Безопасность и приватность
 
-- пароль Apple ID, 2FA и keychain passphrase **не** передаются через argv/env
-  AppRestore; их читает интерактивный `ipatool`;
-- в репозиторий и релизы не входят ваши IPA, бэкапы и данные устройства;
-- локально пишутся: установленные бинари, кэш `ipatool` (SAP), каталог IPA
-  библиотеки и небольшой файл известных App Store ID;
-- `--acquire-license` нужен явно, если разрешаете `ipatool --purchase`;
-- в issue не прикладывайте IPA, UDID, email, пароли и сырые логи.
+- пароль Apple ID, код и пароль связки ключей не передаются в параметрах
+  командной строки и не записываются в журнал;
+- в репозиторий и выпуски не попадают ваши IPA, резервные копии и данные
+  телефона;
+- на компьютере остаются: сама программа, служебные файлы ipatool, папка с
+  файлами IPA и небольшой список найденных номеров приложений;
+- получить приложение в App Store на ваш Apple ID программа может только с
+  вашего разрешения (галочка в окне или флаг `--acquire-license`);
+- не прикладывайте к сообщениям об ошибке файлы IPA, UDID, почту, пароли и
+  полные журналы.
 
 Подробнее: [SECURITY.md](./SECURITY.md).
 
 ## Ограничения
 
-- только официальный путь через ваш Apple ID и законные IPA;
-- DRM не обходится, пиратские IPA не цель проекта;
-- Linux как целевая платформа установки не поддерживается;
-- успех для delisted-приложений зависит от лицензии и ответов Apple;
-- beta: проверяйте актуальный релиз и changelog.
+- только законный путь: ваш Apple ID и ваши файлы IPA;
+- защита приложений (DRM) не обходится, пиратские IPA не поддерживаются;
+- графическая версия для macOS работает только на Apple Silicon и не подписана
+  в Apple;
+- сборки для Windows не подписаны, поэтому SmartScreen показывает
+  предупреждение;
+- Linux не поддерживается;
+- вернуть приложение, которое убрали из магазина, получится, только если Apple
+  ещё отдаёт его вашему Apple ID;
+- это beta: смотрите последний выпуск и [список изменений](./CHANGELOG.md).
 
 ## Лицензия и сторонние компоненты
 
-AppRestore: [GNU GPL v3](./LICENSE).
+AppRestore распространяется по лицензии [GNU GPL v3](./LICENSE).
 
-Ключевые зависимости установщика:
+Главные компоненты:
 
-- **ipatool 2.6.0** (MIT) - вход в Apple ID и загрузка IPA;
-- **pymobiledevice3** - USB к iPhone;
-- **Unicorn 2.1.4** - SAP-рантайм, который `ipatool` качает сам при первом входе.
+- **ipatool 2.6.0** (MIT): вход в Apple ID и загрузка IPA;
+- **pymobiledevice3**: связь с iPhone по USB;
+- **PySide6 (Qt)**: окно графической версии;
+- **Unicorn 2.1.4**: служебный компонент, который ipatool скачивает сам при
+  первом входе.
 
-Полный список и SHA-256 архивов: [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+Полный список и суммы SHA-256: [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 
 ## Участие и выпуск
 
-- вклад: [CONTRIBUTING.md](./CONTRIBUTING.md);
-- как выпускать релиз: [docs/RELEASING.md](./docs/RELEASING.md);
+- как помочь проекту: [CONTRIBUTING.md](./CONTRIBUTING.md);
+- как выпускать новую версию: [docs/RELEASING.md](./docs/RELEASING.md);
 - история изменений: [CHANGELOG.md](./CHANGELOG.md).
 
-В релизе всегда четыре ассета: `AppRestore-<version>-source.zip`, `install.ps1`,
-`install.sh`, `SHA256SUMS.txt`.
+В каждом выпуске шесть файлов: `AppRestore-GUI-Windows.zip`,
+`AppRestore-GUI-macOS.zip`, `install.ps1`, `install.sh`,
+`AppRestore-<версия>-source.zip` и `SHA256SUMS.txt`.
 
 ---
 
 ## English summary
 
-**AppRestore** restores offloaded or deleted iOS apps to an iPhone over USB from
-Windows or macOS, using your own Apple ID and the verified **ipatool 2.6.0**
-download path. It does not bypass DRM.
+**AppRestore** brings offloaded or deleted apps back to an iPhone over USB from
+Windows or macOS, using your own Apple ID and the verified **ipatool 2.6.0**.
+It does not bypass DRM.
 
-Install from
-[GitHub Releases](https://github.com/J3ckJ/AppRestore/releases/latest):
+Download from
+[the latest release](https://github.com/J3ckJ/AppRestore/releases/latest):
+
+- **Desktop app (no command line):**
+  [Windows](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-Windows.zip),
+  [macOS, Apple Silicon](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip).
+  Both builds are unsigned: on Windows click **More info** → **Run anyway**; on
+  macOS right-click → **Open** or run
+  `xattr -dr com.apple.quarantine /Applications/AppRestore.app`.
+- **Terminal version:**
 
 ```powershell
 irm https://github.com/J3ckJ/AppRestore/releases/latest/download/install.ps1 | iex
@@ -222,6 +343,6 @@ curl -fsSL https://github.com/J3ckJ/AppRestore/releases/latest/download/install.
 ```
 
 Then run `apprestore`, trust the computer on the phone, use menu item **A** to
-sign in when needed, **1** for offloaded placeholders, **2** for fully removed
-apps. Passwords stay inside interactive `ipatool`; AppRestore does not put them
-on argv. See `apprestore --help` and [SECURITY.md](./SECURITY.md).
+sign in, **1** for offloaded apps, **2** for fully removed apps. Passwords stay
+inside interactive `ipatool`; AppRestore does not put them on argv. See
+`apprestore --help` and [SECURITY.md](./SECURITY.md).

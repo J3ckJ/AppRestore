@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 import tempfile
@@ -308,6 +309,42 @@ class ToolArgumentTests(unittest.TestCase):
             ),
         )
         self.assertEqual(self.runner.calls[-1][1].get("timeout"), 60)
+
+    def test_user_site_pymobiledevice3_is_queried_in_process(self) -> None:
+        user_site = str(Path.home() / "user-site")
+        spec = importlib.util.spec_from_file_location(
+            "pymobiledevice3",
+            str(Path(user_site) / "pymobiledevice3" / "__init__.py"),
+        )
+        with (
+            patch("apprestore_core.tools.importlib.util.find_spec", return_value=spec),
+            patch(
+                "apprestore_core.tools.site.getusersitepackages",
+                return_value=user_site,
+            ),
+            patch("apprestore_core.tools.platform.system", return_value="Windows"),
+            patch.object(
+                AppRestoreTools,
+                "_list_udids_in_process",
+                return_value=["00008020-test"],
+            ) as listed,
+            patch.object(
+                AppRestoreTools,
+                "_lockdown_values_in_process",
+                return_value={"DeviceName": "iPhone", "ProductVersion": "18.2"},
+            ) as info,
+        ):
+            self.assertEqual(self.tools.list_udids(), ["00008020-test"])
+            device = self.tools.device_info("00008020-test")
+            command = self.tools._pymobiledevice3_cmd("apps", "list")
+
+        listed.assert_called_once_with()
+        info.assert_called_once_with("00008020-test")
+        self.assertEqual(device.name, "iPhone")
+        self.assertEqual(device.ios_version, "18.2")
+        self.assertEqual(self.runner.calls, [])
+        self.assertNotIn("-I", command)
+        self.assertEqual(command[:3], [sys.executable, "-m", "pymobiledevice3"])
 
     def test_device_info_removes_terminal_controls_and_newlines(self) -> None:
         self.runner.stdout = (

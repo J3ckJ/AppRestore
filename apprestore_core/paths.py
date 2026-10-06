@@ -14,6 +14,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .command import hidden_console_creationflags
+
 
 def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -492,6 +494,7 @@ exit 1
             capture_output=True,
             timeout=20,
             env=environment,
+            creationflags=hidden_console_creationflags(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return False

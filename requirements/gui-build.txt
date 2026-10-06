@@ -1,0 +1,5 @@
+# GUI build tools (pinned versions; not hash-locked yet).
+PySide6==6.9.3
+pyinstaller==6.22.3
+pywinpty==3.0.5; platform_system == "Windows"
+pytest-qt==4.5.0

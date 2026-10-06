@@ -14,6 +14,7 @@ from typing import Any, Callable, TypeVar
 
 from . import __version__
 from .ipa import IpaError, validate_bundle_id
+from .known_apps import parse_app_store_id
 from .models import IpaMetadata, MissingApp, OffloadedApp
 
 ADAM_ID_KEYS = {
@@ -960,6 +961,24 @@ def _search_query_variants(term: str) -> list[str]:
     return variants
 
 
+def _direct_store_id_result(store_id: str) -> dict[str, str]:
+    """One installable row for a pasted App Store id or apps.apple.com link.
+
+    The public name search drops these: a removed app has no title that
+    contains the digits, so the rank filter would return nothing.
+    """
+
+    looked = lookup_itunes_app_by_store_id(store_id)
+    if looked:
+        return looked
+    return {
+        "storeId": store_id,
+        "bundleId": "",
+        "name": f"App Store {store_id}",
+        "source": "store-id",
+    }
+
+
 def search_app_catalogs(term: str, *, limit: int = 10) -> list[dict[str, str]]:
     """
     Merge live iTunes search with IPA Filezone archive.
@@ -972,6 +991,9 @@ def search_app_catalogs(term: str, *, limit: int = 10) -> list[dict[str, str]]:
         return []
     if limit < 1 or limit > 50:
         raise ValueError("limit must be between 1 and 50")
+    store_id = parse_app_store_id(query)
+    if store_id:
+        return [_direct_store_id_result(store_id)][:limit]
 
     deadline = time.monotonic() + _CATALOG_SEARCH_DEADLINE_SECONDS
     variants = _search_query_variants(query)
