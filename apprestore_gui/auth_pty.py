@@ -168,9 +168,99 @@ def _login_posix(
     return AuthResult(False, f"Вход не удался (код {proc.returncode})")
 
 
-def _load_pty_process():
-    """pywinpty is installed as the ``winpty`` import package."""
+class PosixPtyProcess:
+    """The part of pywinpty's ``PtyProcess`` the login code uses, on a POSIX pty.
 
+    macOS has no pywinpty. ipatool reads the password and the code from its
+    stdin, so a pseudo-terminal on stdin/stdout/stderr is all it needs.
+    """
+
+    def __init__(self, proc: subprocess.Popen[bytes], master: int) -> None:
+        import codecs
+
+        self._proc = proc
+        self._master = master
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    @classmethod
+    def spawn(
+        cls,
+        argv: Sequence[str],
+        env: Mapping[str, str] | None = None,
+        dimensions: tuple[int, int] = (24, 80),
+    ) -> PosixPtyProcess:
+        import fcntl
+        import pty
+        import struct
+        import termios
+
+        master, slave = pty.openpty()
+        try:
+            rows, cols = dimensions
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        except OSError:
+            pass
+        try:
+            proc = subprocess.Popen(
+                list(argv),
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                env=dict(env) if env is not None else None,
+                close_fds=True,
+                start_new_session=True,
+            )
+        except BaseException:
+            os.close(master)
+            os.close(slave)
+            raise
+        os.close(slave)
+        return cls(proc, master)
+
+    def read(self, size: int = 1024) -> str:
+        """Block until output arrives. Raise EOFError once the child is gone."""
+
+        try:
+            data = os.read(self._master, size)
+        except OSError as exc:  # EIO on Linux once the child closed the pty
+            raise EOFError("pty closed") from exc
+        if not data:  # macOS reports EOF as an empty read
+            raise EOFError("pty closed")
+        return self._decoder.decode(data)
+
+    def write(self, text: str) -> int:
+        return os.write(self._master, text.encode("utf-8"))
+
+    def isalive(self) -> bool:
+        return self._proc.poll() is None
+
+    @property
+    def exitstatus(self) -> int | None:
+        return self._proc.poll()
+
+    def terminate(self, force: bool = False) -> None:
+        if self._proc.poll() is None:
+            try:
+                self._proc.kill() if force else self._proc.terminate()
+            except OSError:
+                pass
+            try:
+                self._proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+
+    def __del__(self) -> None:
+        try:
+            os.close(self._master)
+        except (AttributeError, OSError):
+            pass
+
+
+def _load_pty_process():
+    """Windows: pywinpty (the ``winpty`` import package). Elsewhere: a POSIX pty."""
+
+    if sys.platform != "win32":
+        return PosixPtyProcess
     try:
         from winpty import PtyProcess  # type: ignore[import-not-found]
     except ImportError:

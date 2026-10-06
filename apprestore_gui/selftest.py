@@ -132,6 +132,19 @@ def _winpty_import() -> str:
     return f"{pty.__module__}.{pty.__name__}"
 
 
+def _posix_pty_import() -> str:
+    import fcntl  # noqa: F401
+    import pty  # noqa: F401
+    import termios  # noqa: F401
+
+    from apprestore_gui.auth_pty import _load_pty_process
+
+    pty_process = _load_pty_process()
+    if pty_process is None:
+        raise ImportError("no pty for the Apple ID login")
+    return f"{pty_process.__module__}.{pty_process.__name__}"
+
+
 def _qt_import() -> str:
     from PySide6 import QtCore, QtSvg, QtWidgets  # noqa: F401
 
@@ -161,6 +174,8 @@ def run_self_test(output: Path | None = None) -> int:
     ]
     if sys.platform == "win32":
         checks.insert(-1, _check("winpty (Apple ID login)", _winpty_import))
+    else:
+        checks.insert(-1, _check("pty (Apple ID login)", _posix_pty_import))
     report = {
         "ok": all(c["ok"] or not c["required"] for c in checks),
         "frozen": is_frozen(),

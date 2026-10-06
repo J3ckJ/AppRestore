@@ -30,7 +30,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py
+          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py tests/test_auth_pty_posix.py
       - name: Build
         shell: pwsh
         run: |
@@ -71,7 +71,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py
+          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py tests/test_auth_pty_posix.py
       - name: Build
         run: |
           pyinstaller packaging/apprestore-gui.spec --noconfirm --clean
