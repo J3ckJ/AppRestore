@@ -97,3 +97,26 @@ def maybe_dispatch(argv: Sequence[str] | None = None) -> int | None:
         return None
     module, args = parsed
     return run_module(module, args)
+
+
+def ensure_std_streams() -> list[str]:
+    """Give a windowed (no console) frozen app real stdio objects.
+
+    A GUI-subsystem AppRestore.exe started by double click, by Explorer or by
+    another program without inherited handles gets ``sys.stdout`` (and
+    friends) set to ``None``.  Libraries such as pymobiledevice3's CLI call
+    ``sys.stdout.fileno()`` at import time and crash.  Point missing streams
+    at the null device instead.  Returns the names that were replaced.
+    """
+
+    import os
+
+    fixed: list[str] = []
+    for name, mode in (("stdin", "r"), ("stdout", "w"), ("stderr", "w")):
+        if getattr(sys, name, None) is None:
+            stream = open(os.devnull, mode, encoding="utf-8")  # noqa: SIM115 - lives for the process
+            setattr(sys, name, stream)
+            if getattr(sys, f"__{name}__", None) is None:
+                setattr(sys, f"__{name}__", stream)
+            fixed.append(name)
+    return fixed

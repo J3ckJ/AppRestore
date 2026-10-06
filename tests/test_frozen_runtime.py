@@ -251,3 +251,34 @@ def test_bundle_ipatool_pins_match_installers() -> None:
     mac = (root / "install-macos.sh").read_text(encoding="utf-8")
     assert f'IPATOOL_MACOS_ARM64_SHA256="{module.ARCHIVE_SHA256["macos-arm64"]}"' in mac
     assert f'IPATOOL_MACOS_AMD64_SHA256="{module.ARCHIVE_SHA256["macos-amd64"]}"' in mac
+
+
+def test_windowed_app_without_console_gets_null_streams(monkeypatch):
+    """Double-clicked AppRestore.exe has sys.stdout=None; imports must not crash."""
+
+    from apprestore_core import frozen
+
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "__stdout__", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    fixed = frozen.ensure_std_streams()
+    assert {"stdout", "stderr"} <= set(fixed)
+    assert sys.stdout.fileno() >= 0
+    assert sys.__stdout__ is sys.stdout
+    sys.stdout.write("ignored")
+    assert frozen.ensure_std_streams() == []
+
+
+def test_gui_entry_repairs_streams_before_dispatch(monkeypatch):
+    from apprestore_gui import app
+
+    seen = {}
+
+    def fake_dispatch(argv):
+        seen["stdout"] = sys.stdout
+        return 0
+
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr("apprestore_core.frozen.maybe_dispatch", fake_dispatch)
+    assert app.main(["--apprestore-run-module", "pymobiledevice3", "version"]) == 0
+    assert seen["stdout"] is not None

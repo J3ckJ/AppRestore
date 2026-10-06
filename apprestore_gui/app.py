@@ -10,7 +10,10 @@ def main(argv: list[str] | None = None) -> int:
 
     # A frozen bundle is also the "interpreter" for pymobiledevice3 child
     # processes.  Handle that before argparse or Qt so no window appears.
-    from apprestore_core.frozen import maybe_dispatch
+    from apprestore_core.frozen import ensure_std_streams, maybe_dispatch
+
+    # Windowed builds have no console: sys.stdout/stderr may be None.
+    ensure_std_streams()
 
     dispatched = maybe_dispatch(raw)
     if dispatched is not None:
