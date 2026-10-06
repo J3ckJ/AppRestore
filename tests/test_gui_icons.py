@@ -8,6 +8,8 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+pytest.importorskip("PySide6")
+
 from PySide6.QtWidgets import QApplication
 
 from apprestore_gui.icons_cache import ArtworkCache, placeholder_pixmap, _safe_key

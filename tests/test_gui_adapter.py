@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
+pytest.importorskip("PySide6")
+
 from apprestore_core.models import CommandResult
 from apprestore_gui.auth_pty import (
     KeychainRunner,
