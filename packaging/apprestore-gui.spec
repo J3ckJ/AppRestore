@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec for AppRestore GUI (Windows/macOS CI).
 
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -69,6 +70,16 @@ for package in ("pymobiledevice3",):
 
 if sys.platform == "win32":
     hidden += ["winpty"]
+    # ConPTY loads OpenConsole.exe from the same folder as conpty.dll.
+    # Without it, Windows uses conhost.exe, which crashes (0xc0000142)
+    # when the window sends the keychain passphrase to ipatool.
+    _winpty = importlib.util.find_spec("winpty")
+    if _winpty is not None and _winpty.origin:
+        _winpty_dir = Path(_winpty.origin).parent
+        for _name in ("OpenConsole.exe", "winpty-agent.exe"):
+            _tool = _winpty_dir / _name
+            if _tool.is_file():
+                binaries.append((str(_tool), "winpty"))
 
 a = Analysis(
     [str(root / "apprestore_gui" / "app.py")],

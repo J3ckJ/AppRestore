@@ -132,6 +132,21 @@ def _winpty_import() -> str:
     return f"{pty.__module__}.{pty.__name__}"
 
 
+def _windows_console_host() -> str:
+    """OpenConsole.exe must sit next to conpty.dll.
+
+    The hidden keychain terminal uses ConPTY. Without this host, Windows
+    starts conhost.exe, which crashes and ipatool never opens (0xc0000142).
+    """
+
+    import winpty
+
+    host = Path(winpty.__file__).resolve().parent / "OpenConsole.exe"
+    if not host.is_file():
+        raise FileNotFoundError(f"OpenConsole.exe is missing next to {host.parent}")
+    return str(host)
+
+
 def _posix_pty_import() -> str:
     import fcntl  # noqa: F401
     import pty  # noqa: F401
@@ -174,6 +189,7 @@ def run_self_test(output: Path | None = None) -> int:
     ]
     if sys.platform == "win32":
         checks.insert(-1, _check("winpty (Apple ID login)", _winpty_import))
+        checks.insert(-1, _check("hidden terminal host", _windows_console_host))
     else:
         checks.insert(-1, _check("pty (Apple ID login)", _posix_pty_import))
     report = {

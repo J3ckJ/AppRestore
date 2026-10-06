@@ -47,6 +47,7 @@ def test_spec_uses_icons_and_window_icon_is_bundled():
     assert (ROOT / "apprestore_gui" / "resources" / "icons" / "app-icon-256.png").is_file()
     app = (ROOT / "apprestore_gui" / "app.py").read_text(encoding="utf-8")
     assert "setWindowIcon(app_icon())" in app
+    assert "OpenConsole.exe" in spec and "winpty-agent.exe" in spec
 
 
 def test_updater_asset_names_match_release_workflow():
