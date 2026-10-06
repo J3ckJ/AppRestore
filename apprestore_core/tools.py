@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import re
+import site
 import socket
 import sys
 import time
@@ -33,6 +34,20 @@ from .paths import (
 
 class ToolUnavailable(RuntimeError):
     pass
+
+
+def _path_is_inside(child: Path, parent: Path) -> bool:
+    """True when ``child`` is ``parent`` or a path inside it."""
+
+    try:
+        child_text = os.path.normcase(os.path.abspath(child))
+        parent_text = os.path.normcase(os.path.abspath(parent))
+    except (OSError, ValueError):
+        return False
+    if child_text == parent_text:
+        return True
+    prefix = parent_text.rstrip("\\/") + os.sep
+    return child_text.startswith(prefix)
 
 
 class InstallRequestState(str, Enum):
@@ -180,7 +195,14 @@ class AppRestoreTools:
                 # In a PyInstaller bundle sys.executable is AppRestore itself;
                 # "-m pymobiledevice3" would just start the GUI again.
                 return frozen_module_command("pymobiledevice3", *parts)
-            return [sys.executable, "-I", "-m", "pymobiledevice3", *parts]
+            # -I hides user site-packages. A pip install --user copy is
+            # importable here, but the isolated child reports
+            # "No module named pymobiledevice3" and the GUI shows no iPhone.
+            command = [sys.executable]
+            if not self._pymobiledevice3_only_in_user_site():
+                command.append("-I")
+            command.extend(["-m", "pymobiledevice3", *parts])
+            return command
         return [self._tool("pymobiledevice3"), *parts]
 
     def doctor(self) -> list[DoctorCheck]:
@@ -583,8 +605,31 @@ class AppRestoreTools:
             result.stdout + result.stderr
         ).lower()
 
+    def _pymobiledevice3_only_in_user_site(self) -> bool:
+        """True when pymobiledevice3 is installed only in the user site.
+
+        ``python -I`` skips that directory, so device discovery has to stay
+        in this process. A copy inside the interpreter prefix (the release
+        venv) stays on the isolated ``-m`` command.
+        """
+
+        try:
+            spec = importlib.util.find_spec("pymobiledevice3")
+        except (ImportError, ValueError):
+            return False
+        origin = getattr(spec, "origin", None)
+        if not isinstance(origin, str) or not origin:
+            return False
+        try:
+            user_site = site.getusersitepackages()
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
+        if not isinstance(user_site, str) or not user_site:
+            return False
+        return _path_is_inside(Path(origin), Path(user_site))
+
     def list_udids(self) -> list[str]:
-        if is_frozen():
+        if is_frozen() or self._pymobiledevice3_only_in_user_site():
             return self._list_udids_in_process()
         command = self._pymobiledevice3_cmd(
             "usbmux",
@@ -651,7 +696,7 @@ class AppRestoreTools:
         return asyncio.run(asyncio.wait_for(_run(), timeout=timeout))
 
     def device_info(self, udid: str) -> Device:
-        if is_frozen():
+        if is_frozen() or self._pymobiledevice3_only_in_user_site():
             payload: Any = self._lockdown_values_in_process(udid)
             return self._device_from_lockdown(udid, payload)
         result = self.runner.run(

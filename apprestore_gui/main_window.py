@@ -3,12 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QSize, Signal, QEvent
+from PySide6.QtCore import Qt, QSize, QTimer, Signal, QEvent
 from PySide6.QtGui import QColor, QBrush, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -34,13 +35,20 @@ from PySide6.QtWidgets import (
 from apprestore_core import __version__ as APP_VERSION
 from apprestore_core.models import MissingApp, OffloadedApp
 from apprestore_gui import demo
-from apprestore_gui.auth_pty import login_with_prompts
+from apprestore_gui.auth_pty import (
+    AppleLogin,
+    AuthResult,
+    keychain_has_saved_account,
+    probe_keychain,
+    unlock_keychain,
+)
 from apprestore_gui.icons_cache import ArtworkCache
 from apprestore_gui.service_adapter import GuiService
 from apprestore_gui.theme import (
     ACCENT,
     ACCENT_SOFT,
     BAD,
+    INK,
     LINE,
     MUTED,
     OK,
@@ -60,6 +68,38 @@ from apprestore_gui.ui_icons import (
 )
 from apprestore_gui.widgets.phone import PhoneWidget
 from apprestore_gui.workers import run_in_thread
+
+
+def file_install_prompt(message: str, app_name: str = "") -> str | None:
+    """Russian explanation when native redownload did not clearly start.
+
+    The CLI asks the same question and then retries with
+    ``try_device_redownload=False``. ``None`` means this is a different error.
+    """
+    text = message.lower()
+    if "refusing a competing ipa install" not in text:
+        return None
+    name = app_name.strip() or "Приложение"
+    if "did not finish downloading" in text:
+        return (
+            f"{name}: iPhone, похоже, ещё качает это приложение. "
+            "Пока загрузка идёт, ставить файл параллельно нельзя. "
+            "Если на телефоне загрузка уже остановилась, можно поставить его файлом с компьютера."
+        )
+    return (
+        f"{name}: iPhone не начал загрузку сам, приложение всё ещё сгружено. "
+        "Если на телефоне сейчас ничего не качается, можно поставить его файлом с компьютера."
+    )
+
+
+def friendly_restore_error(message: str) -> str:
+    low = message.lower()
+    if "not authenticated" in low or "passphrase is required" in low:
+        return (
+            "Сессия Apple ID закрыта. Откройте её в разделе Apple ID "
+            "(пароль связки вводится один раз при открытии окна) и повторите."
+        )
+    return message
 
 
 NAV = [
@@ -274,6 +314,19 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("AppRestore")
         self.resize(1200, 760)
         self._device_udid: str | None = None
+        self._device = None
+        self._device_watch_busy = False
+        self._icons_busy = False
+        self._offloaded_inflight = False
+        self._offloaded_waiters: list[tuple[Any, Any]] = []
+        self._offloaded_generation = 0
+        self._apple_signed_in = False
+        self._apple_session = "unknown"
+        self._pending_file_apps: list[Any] = []
+        self._auth_started = False
+        self._auth_phase = "idle"
+        self._auth_job: AppleLogin | None = None
+        self._udid_misses = 0
         self._log_lines: list[str] = []
         self._phone: PhoneWidget | None = None
         self._phone_cap_title: QLabel | None = None
@@ -297,8 +350,16 @@ class MainWindow(QMainWindow):
         for key, _ in NAV:
             self.stack.addWidget(self.pages[key])
 
-        self.refresh_device()
         self._show_page("overview")
+        if self.service.demo_mode:
+            self.refresh_device()
+        else:
+            self._apply_devices([])
+            self._device_timer = QTimer(self)
+            self._device_timer.setInterval(3000)
+            self._device_timer.timeout.connect(self._watch_devices)
+            self._device_timer.start()
+            QTimer.singleShot(0, self._watch_devices)
 
     def log(self, message: str) -> None:
         self._log_lines.append(message)
@@ -350,24 +411,252 @@ class MainWindow(QMainWindow):
             elif key == "overview":
                 self.refresh_overview_meta()
 
-    def refresh_device(self) -> None:
-        devices = self.service.devices()
+    def _watch_devices(self) -> None:
+        if self._device_watch_busy or self.service.demo_mode:
+            return
+        self._device_watch_busy = True
+        run_in_thread(
+            self,
+            self.service.connected_udids,
+            on_finished=self._on_udids,
+            on_failed=self._on_udids_failed,
+        )
+        if not self._auth_started:
+            self._auth_started = True
+            run_in_thread(
+                self,
+                self._read_apple_session,
+                self.service,
+                on_finished=self._on_apple_session,
+                on_failed=lambda _message: None,
+            )
+
+    def _on_udids(self, udids: object) -> None:
+        self._device_watch_busy = False
+        self._udid_misses = 0
+        found = [str(item) for item in udids] if isinstance(udids, list) else []
+        current = found[0] if found else None
+        if current == self._device_udid:
+            return
+        if current is None:
+            self.service.device_error = ""
+            self.log("iPhone отключён")
+            self._apply_devices([])
+            self._refresh_visible_lists()
+            return
+        self._device_watch_busy = True
+        run_in_thread(
+            self,
+            self.service.devices,
+            on_finished=self._on_devices_found,
+            on_failed=self._on_devices_failed,
+        )
+
+    def _on_udids_failed(self, message: str) -> None:
+        self._device_watch_busy = False
+        self.service.device_error = message
+        self._udid_misses += 1
+        if self._device_udid and self._udid_misses < 2:
+            return
+        if self._device_udid:
+            self.log("iPhone отключён")
+        self._apply_devices([])
+        self._refresh_visible_lists()
+
+    def _refresh_visible_lists(self) -> None:
+        keys = [key for key, _label in NAV]
+        index = self.stack.currentIndex()
+        key = keys[index] if 0 <= index < len(keys) else ""
+        if key == "offloaded":
+            self.reload_offloaded()
+        elif key == "install":
+            self.reload_missing()
+
+    @staticmethod
+    def _read_apple_session(service: GuiService) -> str:
+        del service
+        try:
+            return probe_keychain()
+        except Exception:
+            return "out"
+
+    def _apple_auth_label(self) -> tuple[str, str]:
+        if self._apple_session == "in" or self._apple_signed_in:
+            return "вход есть", OK
+        if self._apple_session == "locked":
+            return "нужен пароль связки", WARN
+        return "нужен вход", "#A1A1A6"
+
+    def _on_apple_session(self, state: object) -> None:
+        if state is True or state == "in":
+            session = "in"
+        elif state == "locked":
+            session = "locked"
+        else:
+            session = "out"
+        self._apple_session = session
+        self._apple_signed_in = session == "in"
+        self.refresh_overview_meta()
+        if self._device is not None:
+            self._apply_devices([self._device])
+        self._sync_auth_entry()
+        if session == "locked" and not self.service.keychain_ready():
+            QTimer.singleShot(0, self._ask_keychain_passphrase)
+
+    def _ask_keychain_passphrase(self) -> None:
+        if self.service.demo_mode or self.service.keychain_ready():
+            return
+        if getattr(self, "_keychain_dialog", None) is not None:
+            return
+        saved_account = keychain_has_saved_account()
+        dialog = QDialog(self)
+        self._keychain_dialog = dialog
+        dialog.setWindowTitle("Пароль связки ключей")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(440)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+        title = QLabel("Откройте связку один раз" if saved_account else "Пароль для новой связки")
+        title.setStyleSheet("font-size:15px;font-weight:650;border:none;")
+        if saved_account:
+            explanation = (
+                "Это не пароль Apple ID. ipatool спрашивает его у каждого своего запуска. "
+                "Введите его здесь один раз — дальше AppRestore подставит его сам, без чёрного окна."
+            )
+        else:
+            explanation = (
+                "Сохранённого входа нет: он удалён при выходе. Это не пароль Apple ID. "
+                "ipatool зашифрует этим паролем новый вход. Введите его один раз — "
+                "дальше AppRestore подставит его сам, без чёрного окна."
+            )
+        text = QLabel(explanation)
+        text.setWordWrap(True)
+        text.setStyleSheet(f"color:{MUTED};font-weight:400;border:none;")
+        edit = QLineEdit()
+        edit.setEchoMode(QLineEdit.EchoMode.Password)
+        edit.setPlaceholderText("пароль связки ключей")
+        status = QLabel("")
+        status.setWordWrap(True)
+        status.setStyleSheet(f"color:{WARN};font-weight:500;border:none;")
+        buttons = QHBoxLayout()
+        later = QPushButton("Позже")
+        open_button = QPushButton("Открыть" if saved_account else "Запомнить")
+        open_button.setObjectName("primary")
+        buttons.addWidget(later)
+        buttons.addStretch(1)
+        buttons.addWidget(open_button)
+        layout.addWidget(title)
+        layout.addWidget(text)
+        layout.addWidget(edit)
+        layout.addWidget(status)
+        layout.addLayout(buttons)
+
+        def close_dialog() -> None:
+            self._keychain_dialog = None
+
+        def finish(result: object) -> None:
+            auth = result if isinstance(result, AuthResult) else AuthResult(False, "Не удалось открыть связку.")
+            if auth.ok:
+                self.service.remember_keychain_passphrase(
+                    edit.text(),
+                    session_open=auth.session_open,
+                )
+                if auth.session_open:
+                    self._apple_session = "in"
+                    self._apple_signed_in = True
+                else:
+                    self._apple_session = "out"
+                    self._apple_signed_in = False
+                    if self._auth_job is None:
+                        self._set_auth_status(auth.message, WARN)
+                self.refresh_overview_meta()
+                if self._device is not None:
+                    self._apply_devices([self._device])
+                self._sync_auth_entry()
+                close_dialog()
+                if dialog.isVisible():
+                    dialog.accept()
+                return
+            if not dialog.isVisible():
+                return
+            edit.setEnabled(True)
+            open_button.setEnabled(True)
+            later.setEnabled(True)
+            edit.setFocus()
+            edit.selectAll()
+            status.setText(auth.message or "Не удалось открыть связку.")
+
+        def submit() -> None:
+            secret = edit.text()
+            if not secret:
+                status.setText("Введите пароль связки ключей.")
+                edit.setFocus()
+                return
+            edit.setEnabled(False)
+            open_button.setEnabled(False)
+            later.setEnabled(False)
+            status.setText(
+                "Проверяем пароль. Это не пароль Apple ID."
+                if saved_account
+                else "Запоминаем пароль связки."
+            )
+            run_in_thread(
+                dialog,
+                lambda: unlock_keychain(secret),
+                on_finished=finish,
+                on_failed=lambda message: finish(AuthResult(False, message)),
+            )
+
+        open_button.clicked.connect(submit)
+        edit.returnPressed.connect(submit)
+        later.clicked.connect(dialog.reject)
+        dialog.finished.connect(close_dialog)
+        edit.setFocus()
+        dialog.exec()
+
+    def _on_devices_found(self, devices: object) -> None:
+        self._device_watch_busy = False
+        found = list(devices) if isinstance(devices, list) else []
+        if found and (self._device is None or found[0].udid != self._device_udid):
+            name = getattr(found[0], "name", "iPhone")
+            self.log(f"iPhone подключён: {name}")
+        self._apply_devices(found)
+        self._refresh_visible_lists()
+
+    def _on_devices_failed(self, message: str) -> None:
+        self._device_watch_busy = False
+        self.service.device_error = message
+        if self._device_udid:
+            return
+        self._apply_devices([])
+
+    def _apply_devices(self, devices: list[Any]) -> None:
         if not devices:
             self._device_udid = None
-            self.sidebar.set_device_text("Нет подключённого iPhone<br>Подключите по USB")
+            self._device = None
+            detail = (self.service.device_error or "Подключите по USB").replace("<", " ")
+            if len(detail) > 160:
+                detail = detail[:157] + "..."
+            self.sidebar.set_device_text(f"Нет подключённого iPhone<br>{detail}")
             self._update_phone_home([])
+            self.refresh_overview_meta()
             return
         device = devices[0]
+        self._device = device
         self._device_udid = device.udid
-        auth = "вход есть" if self.service.authenticated() else "нужен вход"
-        auth_color = OK if self.service.authenticated() else "#A1A1A6"
+        auth, auth_color = self._apple_auth_label()
         self.sidebar.set_device_text(
             f"<b>{device.name}</b><br>"
             f"<span style='color:#A1A1A6'>iOS {device.ios_version} · USB</span><br>"
             f"<span style='color:#30D158'>● подключён</span><br>"
             f"<span style='color:{auth_color}'>{auth}</span>"
         )
-        self._refresh_phone_from_device()
+        self.refresh_overview_meta()
+        QTimer.singleShot(0, self._refresh_phone_from_device)
+
+    def refresh_device(self) -> None:
+        self._apply_devices(self.service.devices())
 
     def _refresh_phone_from_device(self) -> None:
         if self.service.demo_mode:
@@ -387,17 +676,68 @@ class MainWindow(QMainWindow):
         if not self._device_udid:
             self._update_phone_home([])
             return
-        # Live: show offloaded + fill from missing if needed.
-        off = self.service.offloaded(self._device_udid)
-        icons = []
-        for app in off[:16]:
-            pix = self.artwork.pixmap_for_app(
-                bundle_id=app.bundle_id, store_id=app.store_id, name=app.name, size=64
-            )
-            icons.append((pix, True))
-        devices = self.service.devices()
-        name = devices[0].name if devices else "iPhone"
-        self._update_phone_home(icons, device_name=name, offloaded_n=len(off))
+        udid = self._device_udid
+        name = self._device.name if self._device is not None else "iPhone"
+        if self._icons_busy:
+            return
+        self._icons_busy = True
+
+        def done(apps: list[Any]) -> None:
+            self._icons_busy = False
+            if self._device_udid != udid:
+                return
+            icons = []
+            for app in list(apps)[:16]:
+                pix = self.artwork.cached_pixmap(
+                    bundle_id=app.bundle_id,
+                    store_id=app.store_id,
+                    name=app.name,
+                    size=64,
+                )
+                icons.append((pix, True))
+            self._update_phone_home(icons, device_name=name, offloaded_n=len(list(apps)))
+
+        def failed(_message: str) -> None:
+            self._icons_busy = False
+            if self._device_udid == udid:
+                self._update_phone_home([], device_name=name)
+
+        self._request_offloaded(udid, done, failed)
+
+    def _request_offloaded(
+        self,
+        udid: str,
+        on_finished: Any,
+        on_failed: Any,
+    ) -> None:
+        """One USB app list at a time. A second caller waits for the same result."""
+        self._offloaded_waiters.append((on_finished, on_failed))
+        if self._offloaded_inflight:
+            return
+        self._offloaded_inflight = True
+
+        def done(apps: object) -> None:
+            self._offloaded_inflight = False
+            waiters = self._offloaded_waiters
+            self._offloaded_waiters = []
+            rows = list(apps) if isinstance(apps, list) else []
+            for ok, _fail in waiters:
+                ok(rows)
+
+        def failed(message: str) -> None:
+            self._offloaded_inflight = False
+            waiters = self._offloaded_waiters
+            self._offloaded_waiters = []
+            for _ok, fail in waiters:
+                fail(message)
+
+        run_in_thread(
+            self,
+            self.service.offloaded,
+            udid,
+            on_finished=done,
+            on_failed=failed,
+        )
 
     def _update_phone_home(
         self,
@@ -429,21 +769,27 @@ class MainWindow(QMainWindow):
         model = page.findChild(QLabel, "info_model")
         system = page.findChild(QLabel, "info_system")
         apple = page.findChild(QLabel, "info_apple")
-        devices = self.service.devices()
-        if devices:
-            d = devices[0]
+        device = self._device
+        if device is not None:
             if model:
-                model.setText(d.name)
+                model.setText(device.name)
             if system:
-                system.setText(f"iOS {d.ios_version}")
+                system.setText(f"iOS {device.ios_version}")
+        else:
+            if model:
+                model.setText("-")
+            if system:
+                system.setText("-")
         if apple:
-            if self.service.authenticated():
+            if self._apple_session == "in" or self._apple_signed_in:
                 apple.setText("сессия есть")
                 apple.setStyleSheet(f"color:{OK};font-size:13px;font-weight:650;border:none;background:transparent;")
+            elif self._apple_session == "locked":
+                apple.setText("нужен пароль связки")
+                apple.setStyleSheet(f"color:{WARN};font-size:13px;font-weight:650;border:none;background:transparent;")
             else:
                 apple.setText("нужен вход")
                 apple.setStyleSheet(f"color:{WARN};font-size:13px;font-weight:650;border:none;background:transparent;")
-        self._refresh_phone_from_device()
 
     def _info_card(self, title: str, value_name: str) -> QFrame:
         box = QFrame()
@@ -560,19 +906,23 @@ class MainWindow(QMainWindow):
     def _tint_checked_rows(self, table: QTableWidget) -> None:
         soft = QBrush(QColor(ACCENT_SOFT))
         clear = QBrush(QColor(PANEL))
-        for r in range(table.rowCount()):
-            item = table.item(r, 0)
-            checked = bool(item and item.checkState() == Qt.CheckState.Checked)
-            brush = soft if checked else clear
-            for c in range(table.columnCount()):
-                cell = table.item(r, c)
-                if cell:
-                    cell.setBackground(brush)
-            widget = table.cellWidget(r, 1)
-            if widget:
-                widget.setStyleSheet(
-                    f"background:{ACCENT_SOFT if checked else 'transparent'};border:none;"
-                )
+        table.blockSignals(True)
+        try:
+            for r in range(table.rowCount()):
+                item = table.item(r, 0)
+                checked = bool(item and item.checkState() == Qt.CheckState.Checked)
+                brush = soft if checked else clear
+                for c in range(table.columnCount()):
+                    cell = table.item(r, c)
+                    if cell:
+                        cell.setBackground(brush)
+                widget = table.cellWidget(r, 1)
+                if widget:
+                    widget.setStyleSheet(
+                        f"background:{ACCENT_SOFT if checked else 'transparent'};border:none;"
+                    )
+        finally:
+            table.blockSignals(False)
 
     def _fill_app_table(
         self,
@@ -598,7 +948,7 @@ class MainWindow(QMainWindow):
             )
             check.setData(Qt.ItemDataRole.UserRole, obj)
             table.setItem(r, 0, check)
-            pix = self.artwork.pixmap_for_app(
+            pix = self.artwork.cached_pixmap(
                 bundle_id=bundle_id, store_id=store_id, name=name, size=36
             )
             cell = AppCell(pix, name, version)
@@ -639,6 +989,7 @@ class MainWindow(QMainWindow):
         restore = QPushButton("Восстановить")
         restore.setObjectName("primary")
         restore.clicked.connect(self._restore_selected_offloaded)
+        self._offloaded_restore_btn = restore
         hint = QLabel("Экран телефона лучше оставить разблокированным")
         hint.setStyleSheet(f"color:{MUTED};font-size:11.5px;font-weight:400;border:none;")
         actions.addWidget(select_all)
@@ -672,27 +1023,107 @@ class MainWindow(QMainWindow):
         if not table:
             return
         if not self._device_udid:
+            self._offloaded_generation += 1
             table.setRowCount(0)
             if meta:
                 meta.setText("нет устройства")
+            if self._progress:
+                self._progress.setText("")
             return
-        apps = self.service.offloaded(self._device_udid)
-        rows = [
-            (a, a.name, f"версия {a.version}", a.bundle_id, a.store_id) for a in apps
-        ]
-        precheck = 3 if self.service.demo_mode and len(rows) >= 3 else 0
-        self._fill_app_table(
-            table,
-            rows,
-            status_text="сгружено",
-            status_color=WARN,
-            precheck=precheck,
-        )
+        udid = self._device_udid
         if meta:
-            if precheck:
-                meta.setText(f"выбрано {precheck} из {len(apps)}")
+            meta.setText("обновляем…" if table.rowCount() else "смотрим iPhone…")
+        if self._progress:
+            self._progress.setText("Читаем приложения с iPhone. Окно можно двигать.")
+
+        def done(apps: list[Any]) -> None:
+            if self._device_udid != udid:
+                return
+            self._show_offloaded_apps(apps)
+
+        def failed(message: str) -> None:
+            if self._device_udid != udid:
+                return
+            if meta:
+                meta.setText("не прочиталось")
+            lowered = message.casefold()
+            if "device not found" in lowered or "usbmux" in lowered or "connectionterminated" in lowered:
+                text = "iPhone не ответил. Разблокируйте его и откройте этот раздел ещё раз."
             else:
-                meta.setText(f"{len(apps)} на устройстве")
+                text = message.splitlines()[-1][:240]
+            if self._progress:
+                self._progress.setText(text)
+            self.log("err  " + text)
+
+        self._request_offloaded(udid, done, failed)
+
+    def _show_offloaded_apps(self, apps: list[Any]) -> None:
+        table = self.pages["offloaded"].findChild(QTableWidget, "offloaded_table")
+        meta = self.pages["offloaded"].findChild(QLabel, "meta")
+        if not table:
+            return
+        self._offloaded_generation += 1
+        generation = self._offloaded_generation
+        rows = [(a, a.name, f"версия {a.version}", a.bundle_id, a.store_id) for a in apps]
+        self._offloaded_rows = rows
+        self._offloaded_fill_at = 0
+        table.blockSignals(True)
+        table.setRowCount(0)
+        table.setRowCount(len(rows))
+        table.blockSignals(False)
+        if meta:
+            meta.setText(f"{len(apps)} на устройстве")
+        if self._progress:
+            self._progress.setText("Показываем список…" if rows else "")
+        self._fill_offloaded_chunk(generation)
+
+    def _fill_offloaded_chunk(self, generation: int) -> None:
+        if generation != self._offloaded_generation:
+            return
+        table = self.pages["offloaded"].findChild(QTableWidget, "offloaded_table")
+        rows = getattr(self, "_offloaded_rows", [])
+        if not table:
+            return
+        start = self._offloaded_fill_at
+        end = min(start + 40, len(rows))
+        table.blockSignals(True)
+        table.setUpdatesEnabled(False)
+        for r in range(start, end):
+            obj, name, version, bundle_id, store_id = rows[r]
+            check = QTableWidgetItem()
+            check.setFlags(
+                Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+            )
+            check.setCheckState(
+                Qt.CheckState.Checked
+                if self.service.demo_mode and r < 3
+                else Qt.CheckState.Unchecked
+            )
+            check.setData(Qt.ItemDataRole.UserRole, obj)
+            table.setItem(r, 0, check)
+            pix = self.artwork.cached_pixmap(
+                bundle_id=bundle_id, store_id=store_id, name=name, size=36
+            )
+            table.setCellWidget(r, 1, AppCell(pix, name, version))
+            name_item = QTableWidgetItem("")
+            name_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            table.setItem(r, 1, name_item)
+            status = QTableWidgetItem("сгружено")
+            status.setForeground(QColor(WARN))
+            status.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            table.setItem(r, 2, status)
+            table.setRowHeight(r, 52)
+        table.setUpdatesEnabled(True)
+        table.blockSignals(False)
+        self._offloaded_fill_at = end
+        if end < len(rows):
+            QTimer.singleShot(0, lambda gen=generation: self._fill_offloaded_chunk(gen))
+            return
+        self._on_offloaded_changed()
+        if self._progress:
+            self._progress.setText("")
 
     def _check_all(self, table: QTableWidget, checked: bool) -> None:
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
@@ -722,33 +1153,193 @@ class MainWindow(QMainWindow):
         if not apps:
             QMessageBox.information(self, "AppRestore", "Выберите хотя бы одно приложение.")
             return
-        self._progress.setText("Восстановление…")
+        self._start_offloaded_restore(apps, try_device_redownload=True)
+
+    def _offloaded_restore_button(self) -> QPushButton | None:
+        button = getattr(self, "_offloaded_restore_btn", None)
+        if isinstance(button, QPushButton):
+            return button
+        return None
+
+    def _start_offloaded_restore(
+        self,
+        apps: list[Any],
+        *,
+        try_device_redownload: bool,
+    ) -> None:
+        if not apps or not self._device_udid:
+            return
+        button = self._offloaded_restore_button()
+        if button is not None:
+            button.setEnabled(False)
+        if try_device_redownload:
+            self._progress.setText("Просим iPhone скачать само. Окно можно двигать.")
+        else:
+            self._progress.setText("Ставим файлом с компьютера. Окно можно двигать.")
         udid = self._device_udid
 
-        def job() -> list[str]:
-            results = []
+        def job() -> list[tuple[Any, str | None, str | None]]:
+            out: list[tuple[Any, str | None, str | None]] = []
             for app in apps:
-                self.log(f"restore {app.name}")
-                status = self.service.restore_offloaded(udid, app)
-                results.append(status)
-            return results
+                try:
+                    status = self.service.restore_offloaded(
+                        udid,
+                        app,
+                        try_device_redownload=try_device_redownload,
+                    )
+                except Exception as exc:
+                    out.append((app, None, str(exc)))
+                else:
+                    out.append((app, status, None))
+            return out
 
-        def done(results: list[str]) -> None:
+        def done(results: list[tuple[Any, str | None, str | None]]) -> None:
+            succeeded = [
+                (app, status)
+                for app, status, err in results
+                if err is None and status is not None
+            ]
+            failed = [(app, err) for app, _status, err in results if err]
+            for app, status in succeeded:
+                self.log(f"restore {app.name}: {status}")
+            fallback: list[tuple[Any, str]] = []
+            other: list[tuple[Any, str]] = []
+            for app, err in failed:
+                self.log(f"err  {app.name}: {err}")
+                prompt = (
+                    file_install_prompt(err, app.name)
+                    if try_device_redownload
+                    else None
+                )
+                if prompt:
+                    fallback.append((app, prompt))
+                else:
+                    other.append((app, err))
+            if fallback:
+                self._offer_file_install(fallback, other, succeeded)
+                return
+            self._finish_offloaded_restore(succeeded, other)
+
+        def fail(msg: str) -> None:
+            self._set_offloaded_restore_enabled(True)
+            self._progress.setText("")
+            self.log(f"err  {msg}")
+            QMessageBox.warning(self, "Ошибка", friendly_restore_error(msg))
+
+        run_in_thread(self, job, on_finished=done, on_failed=fail)
+
+    def _set_offloaded_restore_enabled(self, enabled: bool) -> None:
+        button = self._offloaded_restore_button()
+        if button is not None:
+            button.setEnabled(enabled)
+
+    def _offer_file_install(
+        self,
+        fallback: list[tuple[Any, str]],
+        other: list[tuple[Any, str]],
+        succeeded: list[tuple[Any, str]],
+    ) -> None:
+        self._progress.setText("")
+        text = "\n\n".join(prompt for _app, prompt in fallback)
+        session_open = self._apple_session == "in" or self._apple_signed_in
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("AppRestore")
+        box.setText("Загрузка на iPhone не подтвердилась")
+        locked = self._apple_session == "locked" and not session_open
+        if session_open:
+            box.setInformativeText(text)
+        elif locked:
+            box.setInformativeText(
+                text
+                + "\n\nЧтобы поставить файлом, откройте связку. "
+                "Пароль вводится один раз и в консоль больше не попадает."
+            )
+        else:
+            box.setInformativeText(
+                text
+                + "\n\nЧтобы поставить файлом, сначала войдите в Apple ID. "
+                "После этого установка начнётся сама."
+            )
+        if session_open:
+            accept = box.addButton("Поставить файлом", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("Не сейчас", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is accept:
+                if other:
+                    self._show_restore_errors(other)
+                self._start_offloaded_restore(
+                    [app for app, _prompt in fallback],
+                    try_device_redownload=False,
+                )
+                return
+        else:
+            accept = box.addButton(
+                "Открыть связку" if locked else "К Apple ID",
+                QMessageBox.ButtonRole.AcceptRole,
+            )
+            box.addButton("Закрыть", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is accept:
+                self._set_offloaded_restore_enabled(True)
+                if locked:
+                    self._ask_keychain_passphrase()
+                    if self.service.keychain_ready():
+                        self._start_offloaded_restore(
+                            [app for app, _prompt in fallback],
+                            try_device_redownload=False,
+                        )
+                        return
+                else:
+                    self._pending_file_apps = [app for app, _prompt in fallback]
+                    if other:
+                        self._show_restore_errors(other)
+                    self._show_page("account")
+                    return
+        self._finish_offloaded_restore(succeeded, other)
+
+    def _finish_offloaded_restore(
+        self,
+        succeeded: list[tuple[Any, str]],
+        failed: list[tuple[Any, str]],
+    ) -> None:
+        self._set_offloaded_restore_enabled(True)
+        if failed:
+            self._progress.setText("")
+            self._show_restore_errors(failed)
+            if succeeded:
+                self.reload_offloaded()
+            return
+        if succeeded:
             self._progress.setText("Готово")
-            self.log("ok  " + "; ".join(results))
             QMessageBox.information(
                 self,
                 "Готово",
                 "Выбранные приложения обработаны. Посмотрите домашний экран iPhone.",
             )
             self.reload_offloaded()
+            return
+        self._progress.setText("")
 
-        def fail(msg: str) -> None:
-            self._progress.setText("")
-            self.log(f"err  {msg}")
-            QMessageBox.warning(self, "Ошибка", msg)
+    def _continue_pending_file_install(self) -> None:
+        pending = self._pending_file_apps
+        self._pending_file_apps = []
+        if not pending or not self._device_udid:
+            return
+        if not (self._apple_session == "in" or self._apple_signed_in):
+            return
+        keys = [key for key, _label in NAV]
+        self.sidebar.nav.blockSignals(True)
+        self.sidebar.select("offloaded")
+        self.sidebar.nav.blockSignals(False)
+        self.stack.setCurrentIndex(keys.index("offloaded"))
+        self._start_offloaded_restore(pending, try_device_redownload=False)
 
-        run_in_thread(self, job, on_finished=done, on_failed=fail)
+    def _show_restore_errors(self, failed: list[tuple[Any, str]]) -> None:
+        lines = [
+            f"{app.name}: {friendly_restore_error(err)}" for app, err in failed
+        ]
+        QMessageBox.warning(self, "Ошибка", "\n\n".join(lines))
 
     def _build_install(self) -> QWidget:
         page, layout, meta = self._page_shell("Найти и поставить")
@@ -759,6 +1350,7 @@ class MainWindow(QMainWindow):
         find = QPushButton("Искать")
         find.setObjectName("primary")
         find.clicked.connect(self._run_search)
+        search.returnPressed.connect(self._run_search)
         bar.addWidget(search, 1)
         bar.addWidget(find)
         layout.addLayout(bar)
@@ -793,7 +1385,12 @@ class MainWindow(QMainWindow):
     def reload_missing(self) -> None:
         table = self.pages["install"].findChild(QTableWidget, "install_table")
         meta = self.pages["install"].findChild(QLabel, "meta")
-        if not table or not self._device_udid:
+        if not table:
+            return
+        if not self._device_udid:
+            table.setRowCount(0)
+            if meta:
+                meta.setText("нет устройства")
             return
         apps = self.service.missing(self._device_udid)
         rows = [
@@ -817,6 +1414,9 @@ class MainWindow(QMainWindow):
         term = search.text().strip()
         if not term:
             return
+        meta = self.pages["install"].findChild(QLabel, "meta")
+        if meta:
+            meta.setText("ищем…")
 
         def job() -> list[dict[str, str]]:
             return self.service.search(term)
@@ -824,28 +1424,42 @@ class MainWindow(QMainWindow):
         def done(rows: list[dict[str, str]]) -> None:
             built = []
             for r, row in enumerate(rows):
+                bundle_id = (row.get("bundleId") or "").strip()
+                store_id = (row.get("storeId") or "").strip() or None
                 app = MissingApp(
-                    bundle_id=row.get("bundleId") or f"unknown.{r}",
+                    bundle_id=bundle_id,
                     name=row.get("name") or "App",
-                    store_id=row.get("storeId") or None,
+                    store_id=store_id,
                     store_match="search",
                     source=row.get("source") or "search",
                 )
-                built.append((app, app.name, app.bundle_id, app.bundle_id, app.store_id))
+                detail = bundle_id or (
+                    f"номер {store_id}" if store_id else ""
+                )
+                built.append((app, app.name, detail, bundle_id or None, store_id))
             self._fill_app_table(
                 table,
                 built,
-                status_text="поиск",
+                status_text="можно скачать",
                 status_color=MUTED,
                 precheck=1 if built else 0,
             )
+            if meta:
+                meta.setText(
+                    f"найдено: {len(built)}" if built else "ничего не найдено"
+                )
             self.log(f"search {term}: {len(rows)}")
+
+        def failed(message: str) -> None:
+            if meta:
+                meta.setText("поиск не удался")
+            QMessageBox.warning(self, "Поиск", message)
 
         run_in_thread(
             self,
             job,
             on_finished=done,
-            on_failed=lambda m: QMessageBox.warning(self, "Поиск", m),
+            on_failed=failed,
         )
 
     def _install_selected_missing(self) -> None:
@@ -1031,14 +1645,16 @@ class MainWindow(QMainWindow):
         meta.setText("не вошли")
         meta.setStyleSheet(f"color:{WARN};font-size:12px;font-weight:600;border:none;")
         lead = QLabel(
-            "Пароль и код подтверждения вводятся здесь и не сохраняются в AppRestore."
+            "Сначала почта и пароль. Поле кода появится только если Apple попросит его после входа."
         )
         lead.setWordWrap(True)
         lead.setStyleSheet(f"color:{MUTED};font-weight:400;border:none;")
         layout.addWidget(lead)
 
         def field(label: str, obj: str, *, password: bool = False, placeholder: str = "") -> QLineEdit:
-            layout.addWidget(_muted_label(label, 12))
+            caption = _muted_label(label, 12)
+            caption.setObjectName(f"{obj}_label")
+            layout.addWidget(caption)
             edit = QLineEdit()
             edit.setObjectName(obj)
             if password:
@@ -1050,61 +1666,340 @@ class MainWindow(QMainWindow):
 
         field("Email", "auth_email", placeholder="you@example.com")
         field("Пароль", "auth_password", password=True)
-        field("Код из сообщения", "auth_code")
-        field("Passphrase (если спросит)", "auth_passphrase", password=True)
-        note = QLabel("Первый вход иногда занимает несколько минут.")
+        field("Код из сообщения", "auth_code", placeholder="6 цифр из сообщения Apple")
+        for name in ("auth_email", "auth_password", "auth_code"):
+            page.findChild(QLineEdit, name).returnPressed.connect(self._login)
+        self._sync_code_field(page)
+
+        self._auth_transcript = QTextEdit()
+        self._auth_transcript.setObjectName("auth_transcript")
+        self._auth_transcript.setReadOnly(True)
+        self._auth_transcript.setFixedHeight(132)
+        self._auth_transcript.setPlaceholderText(
+            "Ход входа появится здесь. Пароль и код в этот журнал не пишутся."
+        )
+        self._auth_transcript.setStyleSheet(
+            f"QTextEdit {{ background:{PANEL}; border:1px solid {LINE}; border-radius:8px; color:{INK}; }}"
+        )
+        layout.addWidget(self._auth_transcript)
+
+        note = QLabel(
+            "Пароль связки спрашивается один раз при открытии программы, не на этой вкладке."
+        )
+        note.setWordWrap(True)
         note.setStyleSheet(f"color:{MUTED};font-size:11.5px;font-weight:400;border:none;")
         layout.addWidget(note)
+        self._auth_status = QLabel("")
+        self._auth_status.setObjectName("auth_status")
+        self._auth_status.setWordWrap(True)
+        self._auth_status.hide()
+        layout.addWidget(self._auth_status)
         actions = QHBoxLayout()
         revoke = QPushButton("Выйти")
         revoke.setObjectName("danger")
         revoke.clicked.connect(self._revoke)
-        login = QPushButton("Войти")
-        login.setObjectName("primary")
-        login.clicked.connect(self._login)
+        self._auth_cancel = QPushButton("Отмена")
+        self._auth_cancel.hide()
+        self._auth_cancel.clicked.connect(self._cancel_login)
+        self._auth_login = QPushButton("Войти")
+        self._auth_login.setObjectName("primary")
+        self._auth_login.setMinimumWidth(148)
+        self._auth_login.clicked.connect(self._login)
         actions.addWidget(revoke)
         actions.addStretch(1)
-        actions.addWidget(login)
+        actions.addWidget(self._auth_cancel)
+        actions.addWidget(self._auth_login)
         layout.addLayout(actions)
         layout.addStretch(1)
         return page
 
-    def _login(self) -> None:
+    def _set_auth_status(self, text: str, color: str) -> None:
+        meta = self.pages["account"].findChild(QLabel, "meta")
+        if not text:
+            self._auth_status.hide()
+        else:
+            self._auth_status.setText(text)
+            self._auth_status.setStyleSheet(
+                f"color:{color}; background:{PANEL}; border:1px solid {LINE}; "
+                "border-radius:8px; padding:8px 10px;"
+            )
+            self._auth_status.show()
+        if meta and self._auth_phase == "idle" and self._apple_signed_in:
+            meta.setText("сессия есть")
+            meta.setStyleSheet(f"color:{OK};font-size:12px;font-weight:600;border:none;")
+        elif meta and self._auth_phase == "running":
+            meta.setText("входим…")
+            meta.setStyleSheet(f"color:{WARN};font-size:12px;font-weight:600;border:none;")
+        elif meta and self._auth_phase == "need_code":
+            meta.setText("нужен код")
+            meta.setStyleSheet(f"color:{WARN};font-size:12px;font-weight:600;border:none;")
+        elif meta and self._auth_phase == "need_passphrase":
+            meta.setText("нужен пароль связки")
+            meta.setStyleSheet(f"color:{WARN};font-size:12px;font-weight:600;border:none;")
+        elif meta and self._auth_phase == "idle" and self._apple_session == "locked":
+            meta.setText("связка закрыта")
+            meta.setStyleSheet(f"color:{WARN};font-size:12px;font-weight:600;border:none;")
+        elif meta and not self._apple_signed_in:
+            meta.setText("не вошли")
+            meta.setStyleSheet(f"color:{WARN};font-size:12px;font-weight:600;border:none;")
+
+    def _sync_code_field(self, page: QWidget | None = None) -> None:
+        host = page if page is not None else self.pages.get("account")
+        if host is None:
+            return
+        self._set_code_field_visible(self._auth_phase == "need_code", host)
+
+    def _set_code_field_visible(self, visible: bool, page: QWidget | None = None) -> None:
+        if page is None:
+            page = self.pages.get("account")
+        if page is None:
+            return
+        for name in ("auth_code_label", "auth_code"):
+            widget = page.findChild(QWidget, name)
+            if widget is not None:
+                widget.setVisible(visible)
+
+    def _mark_auth_field(self, name: str | None) -> None:
         page = self.pages["account"]
-        email = page.findChild(QLineEdit, "auth_email").text()
-        password = page.findChild(QLineEdit, "auth_password").text()
-        code = page.findChild(QLineEdit, "auth_code").text()
-        passphrase = page.findChild(QLineEdit, "auth_passphrase").text()
-        if self.service.demo_mode:
-            QMessageBox.information(
-                self, "Демо", "В демо-режиме вход в Apple ID не выполняется."
+        for field_name in ("auth_email", "auth_password", "auth_code"):
+            edit = page.findChild(QLineEdit, field_name)
+            if edit is None:
+                continue
+            if field_name == name:
+                edit.setFocus()
+                edit.selectAll()
+
+    def _reset_auth_buttons(self) -> None:
+        self._auth_phase = "idle"
+        self._auth_login.setEnabled(True)
+        self._auth_login.setText("Войти")
+        self._auth_cancel.hide()
+        self._mark_auth_field(None)
+        page = self.pages["account"]
+        for name in ("auth_email", "auth_password", "auth_code"):
+            edit = page.findChild(QLineEdit, name)
+            if edit is not None:
+                edit.setEnabled(True)
+        self._sync_code_field()
+
+    def _sync_auth_entry(self) -> None:
+        if self._auth_phase != "idle":
+            return
+        if self._apple_session == "locked" and not self.service.keychain_ready():
+            self._auth_login.setText("Открыть связку")
+            self._set_auth_status(
+                "Сессия Apple ID уже сохранена. Пароль связки вводится один раз в отдельном окне, не на этой вкладке.",
+                WARN,
             )
             return
+        self._auth_login.setText("Войти")
 
-        def job():
-            return login_with_prompts(
-                email, password, code, passphrase, on_output=lambda t: None
+    def _login(self) -> None:
+        page = self.pages["account"]
+        email = page.findChild(QLineEdit, "auth_email").text().strip()
+        password = page.findChild(QLineEdit, "auth_password").text()
+        code_edit = page.findChild(QLineEdit, "auth_code")
+        code = code_edit.text().strip() if code_edit is not None else ""
+        passphrase = self.service.keychain_passphrase()
+        if self.service.demo_mode:
+            self._set_auth_status("В демо-режиме вход в Apple ID не выполняется.", WARN)
+            return
+        if self._auth_phase == "need_code":
+            if not code:
+                self._set_auth_status("Введите код из сообщения Apple.", WARN)
+                self._mark_auth_field("auth_code")
+                return
+            if self._auth_job is None:
+                self._reset_auth_buttons()
+                self._set_auth_status("Вход уже завершился. Нажмите «Войти» ещё раз.", WARN)
+                return
+            self._auth_job.submit("code", code)
+            self._auth_phase = "running"
+            self._auth_login.setEnabled(False)
+            self._auth_login.setText("Входим…")
+            self._set_auth_status("Код отправлен. Ждём ответ Apple…", MUTED)
+            self._mark_auth_field(None)
+            return
+        if self._auth_phase == "need_passphrase" or (
+            self._apple_session == "locked" and self._auth_job is None and not passphrase
+        ):
+            self._ask_keychain_passphrase()
+            passphrase = self.service.keychain_passphrase()
+            if not passphrase:
+                return
+            if self._auth_job is not None:
+                self._auth_job.submit("passphrase", passphrase)
+                self._auth_phase = "running"
+                self._auth_login.setEnabled(False)
+                self._auth_login.setText("Входим…")
+                self._set_auth_status("Пароль связки отправлен.", MUTED)
+                self._mark_auth_field(None)
+                return
+            self._reset_auth_buttons()
+            self._sync_auth_entry()
+            return
+        if self._auth_phase == "running":
+            return
+        if "@" not in email:
+            self._set_auth_status("Укажите email Apple ID, например name@icloud.com.", WARN)
+            self._mark_auth_field("auth_email")
+            return
+        if not password:
+            self._set_auth_status("Введите пароль. AppRestore его не сохраняет.", WARN)
+            self._mark_auth_field("auth_password")
+            return
+
+        self._start_auth_job(email, password, code, passphrase, "Входим…")
+
+    def _start_auth_job(
+        self,
+        email: str,
+        password: str,
+        code: str,
+        passphrase: str,
+        button_text: str,
+    ) -> None:
+        page = self.pages["account"]
+        self._auth_phase = "running"
+        self._auth_transcript.clear()
+        self._auth_login.setEnabled(False)
+        self._auth_login.setText(button_text)
+        self._auth_cancel.show()
+        for name in ("auth_email", "auth_password"):
+            edit = page.findChild(QLineEdit, name)
+            if edit is not None:
+                edit.setEnabled(False)
+        self._set_auth_status(button_text, MUTED)
+        self.log("вход  запрос отправлен")
+        job = AppleLogin(email, password, code, passphrase)
+        job.output.connect(self._on_auth_output)
+        job.status.connect(self._on_auth_status)
+        job.need_input.connect(self._on_auth_need)
+        job.done.connect(self._on_auth_done)
+        self._auth_job = job
+        job.start()
+
+    def _on_auth_output(self, text: str) -> None:
+        self._auth_transcript.insertPlainText(text)
+        bar = self._auth_transcript.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _on_auth_status(self, text: str) -> None:
+        if self._auth_phase in ("need_code", "need_passphrase"):
+            return
+        self._set_auth_status(text, MUTED if self._auth_phase == "running" else WARN)
+
+    def _on_auth_need(self, kind: str) -> None:
+        if kind == "code":
+            self._auth_phase = "need_code"
+            self._set_code_field_visible(True)
+            self._auth_login.setEnabled(True)
+            self._auth_login.setText("Отправить код")
+            self._mark_auth_field("auth_code")
+            self._set_auth_status(
+                "Apple просит код из сообщения. Введите его и нажмите «Отправить код».",
+                WARN,
             )
+            return
+        if kind == "passphrase":
+            secret = self.service.keychain_passphrase()
+            if secret and self._auth_job is not None:
+                self._auth_job.submit("passphrase", secret)
+                self._auth_phase = "running"
+                self._auth_login.setEnabled(False)
+                self._auth_login.setText("Входим…")
+                self._set_auth_status("Пароль связки отправлен.", MUTED)
+                return
+            self._auth_phase = "need_passphrase"
+            self._auth_login.setEnabled(True)
+            self._auth_login.setText("Открыть связку")
+            self._set_auth_status(
+                "Нужен пароль связки ключей. Это не пароль Apple ID.",
+                WARN,
+            )
+            self._ask_keychain_passphrase()
+            secret = self.service.keychain_passphrase()
+            if secret and self._auth_job is not None:
+                self._auth_job.submit("passphrase", secret)
+                self._auth_phase = "running"
+                self._auth_login.setEnabled(False)
+                self._auth_login.setText("Входим…")
+                self._set_auth_status("Пароль связки отправлен.", MUTED)
+                self._mark_auth_field(None)
 
-        def done(result) -> None:
-            self.log(("ok  " if result.ok else "err  ") + result.message)
-            if result.ok:
-                QMessageBox.information(self, "Apple ID", result.message)
+    def _on_auth_done(self, result: object) -> None:
+        auth = result if isinstance(result, AuthResult) else AuthResult(False, "Вход завершился без ответа.")
+        self._auth_job = None
+        if not auth.ok and "связки" in auth.message:
+            self._apple_session = "locked"
+            self._apple_signed_in = False
+            self._auth_phase = "need_passphrase"
+            self._auth_login.setEnabled(True)
+            self._auth_login.setText("Открыть связку")
+            self._auth_cancel.hide()
+            page = self.pages["account"]
+            for name in ("auth_email", "auth_password", "auth_code"):
+                edit = page.findChild(QLineEdit, name)
+                if edit is not None:
+                    edit.setEnabled(True)
+            self._set_auth_status(auth.message, WARN)
+            self.log("err  " + auth.message)
+            if self._device is not None:
+                self._apply_devices([self._device])
             else:
-                QMessageBox.warning(self, "Apple ID", result.message)
-            self.refresh_device()
-            self.refresh_overview_meta()
+                self.refresh_overview_meta()
+            return
+        self._reset_auth_buttons()
+        page = self.pages["account"]
+        if auth.ok:
+            self._apple_session = "in"
+            self._apple_signed_in = True
+            for name in ("auth_password", "auth_code"):
+                edit = page.findChild(QLineEdit, name)
+                if edit is not None:
+                    edit.clear()
+            self._set_code_field_visible(False)
+            self._set_auth_status(auth.message, OK)
+            self.log("ok  вход выполнен")
+            self._continue_pending_file_install()
+            if self._device is not None:
+                self._apply_devices([self._device])
+            else:
+                self.refresh_overview_meta()
+            return
+        self._set_auth_status(auth.message, BAD)
+        self.log("err  " + auth.message)
 
-        run_in_thread(self, job, on_finished=done, on_failed=lambda m: QMessageBox.warning(self, "Apple ID", m))
+    def _cancel_login(self) -> None:
+        job = self._auth_job
+        if job is not None:
+            job.cancel()
+        self._set_auth_status("Останавливаем вход…", MUTED)
 
     def _revoke(self) -> None:
+        if self._auth_job is not None:
+            self._auth_job.cancel()
         try:
             self.service.revoke()
-            self.log("ok  signed out")
-            QMessageBox.information(self, "Apple ID", "Сессия завершена.")
         except Exception as exc:
-            QMessageBox.warning(self, "Apple ID", str(exc))
-        self.refresh_device()
+            self._set_auth_status(str(exc), BAD)
+            self.log("err  " + str(exc))
+            return
+        self._apple_signed_in = False
+        self._apple_session = "out"
+        self.service.clear_keychain_passphrase()
+        self._reset_auth_buttons()
+        self._set_auth_status("Сессия Apple ID завершена.", MUTED)
+        self.log("ok  выход выполнен")
+        if self._device is not None:
+            self._apply_devices([self._device])
+        else:
+            self.refresh_overview_meta()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if self._auth_job is not None:
+            self._auth_job.cancel()
+        super().closeEvent(event)
 
     def _build_log(self) -> QWidget:
         page, layout, meta = self._page_shell("Операции")

@@ -2,30 +2,40 @@
 
 from __future__ import annotations
 
+import threading
+import traceback
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, Signal
 
 
-class Worker(QObject):
+class _Bridge(QObject):
+    """Lives on the GUI thread. Worker threads only emit its signals."""
+
     finished = Signal(object)
     failed = Signal(str)
     progress = Signal(str)
 
-    def __init__(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
-        super().__init__()
-        self._fn = fn
-        self._args = args
-        self._kwargs = kwargs
+    def __init__(
+        self,
+        parent: QObject,
+        on_finished: Callable[[Any], None] | None,
+        on_failed: Callable[[str], None] | None,
+        on_progress: Callable[[str], None] | None,
+    ) -> None:
+        super().__init__(parent)
+        if on_finished is not None:
+            self.finished.connect(on_finished)
+        if on_failed is not None:
+            self.failed.connect(on_failed)
+        if on_progress is not None:
+            self.progress.connect(on_progress)
+        self.finished.connect(self._release)
+        self.failed.connect(self._release)
 
-    def run(self) -> None:
-        try:
-            result = self._fn(*self._args, **self._kwargs)
-        except Exception as exc:  # noqa: BLE001 - surface to UI
-            self.failed.emit(str(exc))
-            return
-        self.finished.emit(result)
+    def _release(self, _value: object = None) -> None:
+        self.deleteLater()
 
 
 def run_in_thread(
@@ -36,25 +46,17 @@ def run_in_thread(
     on_failed: Callable[[str], None] | None = None,
     on_progress: Callable[[str], None] | None = None,
     **kwargs: Any,
-) -> tuple[QThread, Worker]:
-    thread = QThread(parent)
-    worker = Worker(fn, *args, **kwargs)
-    worker.moveToThread(thread)
-    thread.started.connect(worker.run)
-    if on_finished:
-        worker.finished.connect(on_finished)
-    if on_failed:
-        worker.failed.connect(on_failed)
-    if on_progress:
-        worker.progress.connect(on_progress)
+) -> _Bridge:
+    bridge = _Bridge(parent, on_finished, on_failed, on_progress)
 
-    def _cleanup() -> None:
-        thread.quit()
-        thread.wait(5000)
-        worker.deleteLater()
-        thread.deleteLater()
+    def _run() -> None:
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as exc:
+            traceback.print_exc()
+            bridge.failed.emit(str(exc))
+            return
+        bridge.finished.emit(result)
 
-    worker.finished.connect(lambda *_: _cleanup())
-    worker.failed.connect(lambda *_: _cleanup())
-    thread.start()
-    return thread, worker
+    threading.Thread(target=_run, name="apprestore-worker", daemon=True).start()
+    return bridge

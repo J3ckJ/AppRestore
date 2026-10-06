@@ -140,6 +140,33 @@ class ArtworkCache:
                     return _rounded_pixmap(image, size)
         return placeholder_pixmap(name or bundle_id or "App", size)
 
+    def cached_pixmap(
+        self,
+        *,
+        bundle_id: str | None = None,
+        store_id: str | None = None,
+        name: str = "",
+        size: int = 40,
+    ) -> QPixmap:
+        """Icon from the local cache. Never touches the network."""
+        info: dict[str, Any] | None = None
+        if store_id:
+            cached = self._index.get(f"id:{store_id}:us")
+            if isinstance(cached, dict):
+                info = cached
+        if info is None and bundle_id:
+            cached = self._index.get(f"bundle:{bundle_id}:us")
+            if isinstance(cached, dict):
+                info = cached
+        artwork = info.get("artwork") if info else None
+        if isinstance(artwork, str) and artwork:
+            path = self.local_path_for(artwork)
+            if path.is_file() and path.stat().st_size > 64:
+                image = QImage(str(path))
+                if not image.isNull():
+                    return _rounded_pixmap(image, size)
+        return placeholder_pixmap(name or bundle_id or "App", size)
+
 
 def _rounded_pixmap(image: QImage, size: int) -> QPixmap:
     scaled = image.scaled(

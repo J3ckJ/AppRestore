@@ -1,8 +1,33 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import sys
+
+
+def _release_windows_console() -> None:
+    """Close a python.exe console so ipatool cannot prompt in a black window.
+
+    A windowed parent makes child tools use CREATE_NO_WINDOW. The keychain
+    passphrase is then typed in the Qt dialog and written to a hidden ConPTY.
+    """
+
+    if sys.platform != "win32":
+        return
+    if os.environ.get("APPRESTORE_KEEP_CONSOLE") == "1":
+        return
+    kernel = ctypes.windll.kernel32
+    try:
+        if not kernel.GetConsoleWindow():
+            return
+        kernel.FreeConsole()
+    except (AttributeError, OSError):
+        return
+    for name, mode in (("stdin", "r"), ("stdout", "w"), ("stderr", "w")):
+        stream = open(os.devnull, mode, encoding="utf-8", errors="replace")  # noqa: SIM115
+        setattr(sys, name, stream)
+        setattr(sys, f"__{name}__", stream)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,6 +82,9 @@ def main(argv: list[str] | None = None) -> int:
         from apprestore_gui.selftest import run_self_test
 
         return run_self_test(Path(args.output) if args.output else None)
+
+    if not args.screenshot_dir:
+        _release_windows_console()
 
     # Prefer offscreen when capturing or when no display.
     if args.screenshot_dir and not os.environ.get("QT_QPA_PLATFORM"):

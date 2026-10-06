@@ -100,6 +100,11 @@ QPushButton#primary:hover {{
   background: {ACCENT_HOVER};
   border-color: {ACCENT_HOVER};
 }}
+QPushButton#primary:disabled {{
+  background: #E4E4E7;
+  border-color: #E4E4E7;
+  color: {MUTED};
+}}
 QPushButton#danger {{
   color: {BAD};
   border-color: #E5B4AE;

@@ -10,27 +10,71 @@ from apprestore_core.service import AppRestoreError, AppRestoreService
 from apprestore_core.tools import AppRestoreTools, ToolUnavailable
 
 from apprestore_gui import demo
+from apprestore_gui.auth_pty import KeychainRunner
 
 
 class GuiService:
     def __init__(self, *, demo_mode: bool = False) -> None:
         self.demo_mode = demo_mode
+        self.device_error = ""
+        self._keychain_passphrase = ""
         self._service: AppRestoreService | None = None
         if not demo_mode:
-            self._service = AppRestoreService()
+            self._attach_service(AppRestoreService())
+
+    def keychain_passphrase(self) -> str:
+        return self._keychain_passphrase
+
+    def keychain_ready(self) -> bool:
+        return bool(self._keychain_passphrase)
+
+    def remember_keychain_passphrase(self, passphrase: str, *, session_open: bool = True) -> None:
+        cleaned = passphrase.replace("\r", "").replace("\n", "")
+        if not cleaned:
+            return
+        self._keychain_passphrase = cleaned
+        if self._service is not None:
+            self._service.tools._ipatool_session_authenticated = session_open
+
+    def clear_keychain_passphrase(self) -> None:
+        self._keychain_passphrase = ""
+        if self._service is not None:
+            self._service.tools._ipatool_session_authenticated = False
+
+    def _attach_service(self, service: AppRestoreService) -> AppRestoreService:
+        service.tools.runner = KeychainRunner(self.keychain_passphrase)
+        if self._keychain_passphrase:
+            service.tools._ipatool_session_authenticated = True
+        self._service = service
+        return service
 
     @property
     def core(self) -> AppRestoreService:
         if self._service is None:
-            self._service = AppRestoreService()
+            self._attach_service(AppRestoreService())
+        assert self._service is not None
         return self._service
 
+    def connected_udids(self) -> list[str]:
+        """USB serials only. Cheap enough to poll while the window is open."""
+
+        self.device_error = ""
+        if self.demo_mode:
+            return [demo.demo_device().udid]
+        try:
+            return self.core.tools.list_udids()
+        except Exception as exc:
+            self.device_error = str(exc).strip() or type(exc).__name__
+            raise
+
     def devices(self) -> list[Device]:
+        self.device_error = ""
         if self.demo_mode:
             return [demo.demo_device()]
         try:
             return self.core.devices()
-        except Exception:
+        except Exception as exc:
+            self.device_error = str(exc).strip() or type(exc).__name__
             return []
 
     def doctor(self) -> list[DoctorCheck]:
@@ -108,6 +152,7 @@ class GuiService:
         app: OffloadedApp,
         *,
         acquire_license: bool = False,
+        try_device_redownload: bool = True,
         progress: Any = None,
     ) -> str:
         if self.demo_mode:
@@ -118,7 +163,10 @@ class GuiService:
                 progress("Проверка иконки")
             return f"demo restored {app.name}"
         return self.core.restore_offloaded(
-            udid, app, acquire_license=acquire_license
+            udid,
+            app,
+            acquire_license=acquire_license,
+            try_device_redownload=try_device_redownload,
         )
 
     def restore_missing(
