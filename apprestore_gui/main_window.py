@@ -969,7 +969,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(table, 1)
         actions = QHBoxLayout()
         refresh = QPushButton("Обновить")
-        refresh.clicked.connect(self.reload_doctor)
+        refresh.clicked.connect(lambda: (self.reload_doctor(), self.refresh_device()))
         setup = QPushButton("Починить на Windows")
         setup.clicked.connect(self._run_setup)
         to_auth = QPushButton("Ко входу")
@@ -1011,14 +1011,18 @@ class MainWindow(QMainWindow):
         def job() -> list[str]:
             return self.service.setup()
 
+        def done(notes: list[str]) -> None:
+            self.log("setup " + "; ".join(notes))
+            self.reload_doctor()
+            self.refresh_device()
+            self.refresh_overview_meta()
+            QMessageBox.information(self, "Проверки", "\n".join(notes))
+
         run_in_thread(
             self,
             job,
-            on_finished=lambda notes: (
-                self.log("setup " + "; ".join(notes)),
-                self.reload_doctor(),
-            ),
-            on_failed=lambda m: QMessageBox.warning(self, "Setup", m),
+            on_finished=done,
+            on_failed=lambda m: QMessageBox.warning(self, "Проверки", m),
         )
 
     def _build_account(self) -> QWidget:

@@ -20,15 +20,16 @@ class AuthResult:
 
 
 def _which_ipatool() -> str | None:
-    path = shutil.which("ipatool")
-    if path:
-        return path
+    # resolve_tool prefers the ipatool bundled next to the app, then PATH.
     try:
         from apprestore_core.paths import resolve_tool
 
-        return resolve_tool("ipatool")
+        path = resolve_tool("ipatool")
+        if path:
+            return path
     except Exception:
-        return None
+        pass
+    return shutil.which("ipatool")
 
 
 def login_with_prompts(
@@ -154,6 +155,16 @@ def _login_posix(
     return AuthResult(False, f"Вход не удался (код {proc.returncode})")
 
 
+def _load_pty_process():
+    """pywinpty is installed as the ``winpty`` import package."""
+
+    try:
+        from winpty import PtyProcess  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    return PtyProcess
+
+
 def _login_windows(
     cmd: list[str],
     password: str,
@@ -162,26 +173,46 @@ def _login_windows(
     timeout: float,
     on_output: Callable[[str], None] | None,
 ) -> AuthResult:
-    try:
-        from pywinpty import PtyProcess  # type: ignore
-    except ImportError:
+    import queue
+    import threading
+
+    PtyProcess = _load_pty_process()
+    if PtyProcess is None:
         return AuthResult(
             False,
             "На Windows для входа из окна нужен пакет pywinpty. "
             "Пока выполните: apprestore auth --email … в терминале.",
         )
     proc = PtyProcess.spawn(cmd)
+    chunks: "queue.Queue[str]" = queue.Queue()
+
+    def reader() -> None:
+        # PtyProcess.read() blocks and has no timeout argument; read in a
+        # thread and poll the queue so the deadline below is honoured.
+        while True:
+            try:
+                data = proc.read(1024)
+            except Exception:  # noqa: BLE001 - EOF / closed pty
+                break
+            if not data:
+                if not proc.isalive():
+                    break
+                continue
+            chunks.put(data)
+
+    threading.Thread(target=reader, name="ipatool-conpty-reader", daemon=True).start()
+
     sent_password = False
     sent_code = False
     sent_passphrase = False
     buf = ""
     deadline = time.monotonic() + timeout
-    while proc.isalive() and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
         try:
-            text = proc.read(timeout=0.4)
-        except Exception:
-            text = ""
-        if not text:
+            text = chunks.get(timeout=0.4)
+        except queue.Empty:
+            if not proc.isalive():
+                break
             continue
         if on_output:
             on_output(text)
@@ -201,11 +232,16 @@ def _login_windows(
             proc.write(passphrase + "\r\n")
             sent_passphrase = True
             buf = ""
+    timed_out = proc.isalive()
+    exit_status = getattr(proc, "exitstatus", None)
     try:
-        proc.close(force=True)
-    except Exception:
+        proc.terminate(force=True)
+    except Exception:  # noqa: BLE001
         pass
-    # PtyProcess may not expose returncode reliably; treat exit as soft success if password sent
-    if sent_password:
+    if timed_out:
+        return AuthResult(False, "Вход не завершился вовремя. Попробуйте ещё раз.")
+    if exit_status == 0:
+        return AuthResult(True, "Вход выполнен")
+    if exit_status is None and sent_password:
         return AuthResult(True, "Сеанс входа завершён. Проверьте статус в проверках.")
-    return AuthResult(False, "Не удалось ответить на запросы входа")
+    return AuthResult(False, f"Вход не удался (код {exit_status})")

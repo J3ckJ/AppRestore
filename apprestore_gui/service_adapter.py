@@ -46,12 +46,20 @@ class GuiService:
             return ["Демо: setup пропущен"]
         notes: list[str] = []
         tools = self.core.tools
-        if hasattr(tools, "ensure_windows_bridge"):
-            try:
-                tools.ensure_windows_bridge()  # type: ignore[attr-defined]
-                notes.append("Проверка USB-моста выполнена")
-            except Exception as exc:
-                notes.append(str(exc))
+        try:
+            notes.extend(tools.ensure_windows_bridge())
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"USB-мост: {exc}")
+        # Same follow-up as `apprestore setup`: show what still blocks the phone.
+        try:
+            udids = tools.list_udids()
+            notes.append(
+                f"Найдено iPhone по USB: {len(udids)}"
+                if udids
+                else "iPhone по USB не найден: разблокируйте его, нажмите «Доверять» и переподключите кабель"
+            )
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"Поиск iPhone не удался: {exc}")
         return notes or ["Перепроверка зависимостей завершена"]
 
     def offloaded(self, udid: str) -> list[OffloadedApp]:

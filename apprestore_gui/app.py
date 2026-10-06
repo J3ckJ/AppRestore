@@ -6,6 +6,16 @@ import sys
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+
+    # A frozen bundle is also the "interpreter" for pymobiledevice3 child
+    # processes.  Handle that before argparse or Qt so no window appears.
+    from apprestore_core.frozen import maybe_dispatch
+
+    dispatched = maybe_dispatch(raw)
+    if dispatched is not None:
+        return dispatched
+
     parser = argparse.ArgumentParser(prog="apprestore-gui")
     parser.add_argument(
         "--demo",
@@ -18,7 +28,25 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="capture offscreen PNGs of main pages into this directory and exit",
     )
-    args = parser.parse_args(argv)
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="print JSON diagnostics of the bundle (no window) and exit",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="",
+        help="with --self-test: also write the JSON report to this file",
+    )
+    args = parser.parse_args(raw)
+
+    if args.self_test:
+        from pathlib import Path
+
+        from apprestore_gui.selftest import run_self_test
+
+        return run_self_test(Path(args.output) if args.output else None)
 
     # Prefer offscreen when capturing or when no display.
     if args.screenshot_dir and not os.environ.get("QT_QPA_PLATFORM"):

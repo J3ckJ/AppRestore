@@ -4,18 +4,76 @@
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
+
 block_cipher = None
 root = Path(SPECPATH).resolve().parent
 datas = [
     (str(root / "apprestore_gui" / "resources"), "apprestore_gui/resources"),
+    (str(root / "LICENSE"), "."),
+    (str(root / "THIRD_PARTY_NOTICES.md"), "."),
+]
+binaries = []
+
+hidden = [
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
+    "PySide6.QtSvg",
+    *collect_submodules("apprestore_core"),
+    *collect_submodules("apprestore_gui"),
 ]
 
-hidden = ["PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets", "apprestore_core", "apprestore_gui"]
+# importlib.metadata is used by the doctor (AppRestore runtime) and by
+# pymobiledevice3 and its dependencies at import time.  PyInstaller does not
+# ship *.dist-info unless asked, which produced "package metadata missing".
+def _metadata_tree(*roots):
+    """copy_metadata(recursive=True) that warns instead of failing on a gap."""
+
+    from importlib import metadata as importlib_metadata
+
+    from packaging.requirements import Requirement
+
+    seen = set()
+    collected = []
+    stack = list(roots)
+    while stack:
+        name = stack.pop()
+        key = name.lower().replace("_", "-")
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            collected += copy_metadata(name)
+            requires = importlib_metadata.requires(name) or []
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARNING: no package metadata for {name}: {exc}")
+            continue
+        for raw in requires:
+            requirement = Requirement(raw)
+            if requirement.marker and not requirement.marker.evaluate({"extra": ""}):
+                continue
+            stack.append(requirement.name)
+    return collected
+
+
+datas += _metadata_tree("apprestore", "pymobiledevice3")
+
+# pymobiledevice3 loads its CLI subcommands and services lazily and ships
+# data files (resources/*); static analysis alone misses them.
+for package in ("pymobiledevice3",):
+    pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
+    datas += pkg_datas
+    binaries += pkg_binaries
+    hidden += pkg_hidden
+
+if sys.platform == "win32":
+    hidden += ["winpty"]
 
 a = Analysis(
     [str(root / "apprestore_gui" / "app.py")],
     pathex=[str(root)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hidden,
     hookspath=[],
