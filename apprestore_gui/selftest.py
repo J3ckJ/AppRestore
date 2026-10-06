@@ -113,6 +113,25 @@ def _gui_resources() -> dict[str, Any]:
     return {"fonts": fonts, "icons": len(icons)}
 
 
+def _app_icon() -> dict[str, Any]:
+    from apprestore_gui.theme import resources_dir
+
+    root = resources_dir() / "icons"
+    found = sorted(p.name for p in root.glob("app-icon-*.png"))
+    if not found:
+        raise FileNotFoundError(f"app icon missing under {root}")
+    return {"files": found}
+
+
+def _winpty_import() -> str:
+    from apprestore_gui.auth_pty import _load_pty_process
+
+    pty = _load_pty_process()
+    if pty is None:
+        raise ImportError("winpty (pywinpty) is not bundled")
+    return f"{pty.__module__}.{pty.__name__}"
+
+
 def _qt_import() -> str:
     from PySide6 import QtCore, QtSvg, QtWidgets  # noqa: F401
 
@@ -136,9 +155,12 @@ def run_self_test(output: Path | None = None) -> int:
         _check("pymobiledevice3 subprocess dispatch", _dispatcher),
         _check("ipatool", _ipatool),
         _check("gui resources", _gui_resources),
+        _check("app icon", _app_icon),
         _check("qt import", _qt_import),
         _check("doctor", _doctor, required=False),
     ]
+    if sys.platform == "win32":
+        checks.insert(-1, _check("winpty (Apple ID login)", _winpty_import))
     report = {
         "ok": all(c["ok"] or not c["required"] for c in checks),
         "frozen": is_frozen(),

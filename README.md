@@ -49,31 +49,77 @@ iPhone по USB
 
 - **Windows 10/11 x64** или **macOS** (Apple Silicon или Intel);
 - iPhone по **USB**, с разблокированным экраном и доверием к компьютеру;
-- Python 3.10-3.13 (bootstrap ставит свой, если нужно);
+- для варианта «Для терминала»: Python 3.10-3.13 (bootstrap ставит свой, если нужно);
+  программе с окном Python не нужен;
 - интернет для установки, поиска и входа в Apple ID;
 - Apple ID, у которого есть право на нужное приложение (или уже свой законный IPA).
 
 ## Установка
 
 Канонический источник: [GitHub Releases](https://github.com/J3ckJ/AppRestore/releases/latest).
+Есть два варианта, выберите один:
+
+| Вариант | Кому подходит | Что скачать |
+|---|---|---|
+| **Программа с окном** | обычная работа мышкой | `AppRestore-GUI-Windows.zip` или `AppRestore-GUI-macOS.zip` |
+| **Для терминала** | меню в консоли, скрипты | `install.ps1` или `install.sh` (одна команда) |
+
+Суммы SHA-256 всех файлов релиза лежат в `SHA256SUMS.txt`.
+
+### Программа с окном
+
+**Windows 10/11 x64**
+
+1. Скачайте `AppRestore-GUI-Windows.zip` со страницы релиза.
+2. Распакуйте в свою папку, например `C:\Users\<вы>\AppRestore`
+   (не в `Program Files`, иначе обновление в один клик не сможет заменить файлы).
+3. Запустите `AppRestore\AppRestore.exe`. Если Windows SmartScreen предупредит
+   о неизвестном издателе: **Подробнее** → **Выполнить в любом случае**.
+
+**macOS (Apple Silicon)**
+
+1. Скачайте `AppRestore-GUI-macOS.zip`, откройте его: появится `AppRestore.app`.
+2. Перенесите `AppRestore.app` в «Программы».
+3. Первый запуск: правый клик по программе → **Открыть** → **Открыть**
+   (сборка не нотарифицирована Apple). На Mac с Intel используйте вариант
+   «Для терминала».
+
+Внутри уже есть всё нужное: pymobiledevice3 и проверенный ipatool 2.6.0, Python
+ставить не надо. Проверить сумму вручную:
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\AppRestore-GUI-Windows.zip
+```
+
+```bash
+shasum -a 256 AppRestore-GUI-macOS.zip
+```
+
+**Обновление:** «Настройки» → **Проверить обновления**. Программа покажет, что
+нового, и спросит разрешения. После нажатия **Обновить** она скачает новую
+сборку, сверит SHA-256 по `SHA256SUMS.txt`, закроется, заменит себя и
+запустится снова. Если новая версия не запустится, вернётся прежняя.
+
+### Для терминала
+
 Bootstrap скачивает versioned source ZIP, сверяет **SHA-256** и ставит AppRestore
 в user-scope.
 
-### Windows (одна строка)
+#### Windows (одна строка)
 
 ```powershell
 irm https://github.com/J3ckJ/AppRestore/releases/latest/download/install.ps1 | iex
 apprestore
 ```
 
-### macOS (одна строка)
+#### macOS (одна строка)
 
 ```bash
 curl -fsSL https://github.com/J3ckJ/AppRestore/releases/latest/download/install.sh | /bin/bash && export PATH="$HOME/.local/bin:$PATH"
 apprestore
 ```
 
-### Сначала посмотреть установщик и хеш
+#### Сначала посмотреть установщик и хеш
 
 **Windows:**
 
@@ -93,7 +139,7 @@ apprestore
 **macOS:** скачайте `install.sh` и `SHA256SUMS.txt` со страницы релиза, сверьте
 `shasum -a 256 install.sh`, прочитайте скрипт, затем запустите его.
 
-### Из исходников релиза
+#### Из исходников релиза
 
 ```powershell
 .\install-windows.ps1
@@ -109,6 +155,12 @@ apprestore
 в staging и только потом подменяет текущую.
 
 ## Быстрый старт
+
+**Программа с окном:** подключите iPhone по USB, нажмите **Доверять** на телефоне
+и откройте AppRestore. На «Обзоре» видно телефон и сгруженные приложения; если
+iPhone не виден, откройте «Проверки».
+
+**Для терминала:**
 
 1. Подключите iPhone по USB, разблокируйте, нажмите **Доверять**.
 2. Запустите `apprestore` без аргументов: откроется меню.

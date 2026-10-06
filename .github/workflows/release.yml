@@ -183,6 +183,108 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q apprestore.py apprestore_core scripts tests
 
+  gui-windows:
+    name: GUI app / Windows
+    needs:
+      - validate-tag
+      - windows-tests
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install locked runtime and pinned GUI build tools
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements/build.lock
+          python -m pip install --require-hashes --only-binary=:all: --no-deps --find-links requirements/wheels -r requirements/runtime.lock
+          python -m pip install --no-deps --no-build-isolation .
+          python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements/test.lock
+          python -m pip install --only-binary=:all: -r requirements/gui-build.txt
+
+      - name: GUI tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py
+
+      - name: Build, self-test and zip the GUI app
+        shell: pwsh
+        run: |
+          pyinstaller packaging/apprestore-gui.spec --noconfirm --clean
+          if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed" }
+          python packaging/package_gui.py --out gui-dist --expect-version "${{ needs.validate-tag.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) { throw "GUI packaging failed" }
+
+      - name: Upload GUI asset
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: apprestore-gui-windows-${{ needs.validate-tag.outputs.version }}
+          path: gui-dist/AppRestore-GUI-Windows.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  gui-macos:
+    name: GUI app / macOS
+    needs:
+      - validate-tag
+      - macos-tests
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install locked runtime and pinned GUI build tools
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements/build.lock
+          python -m pip install --require-hashes --only-binary=:all: --no-deps --find-links requirements/wheels -r requirements/runtime.lock
+          python -m pip install --no-deps --no-build-isolation .
+          python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements/test.lock
+          python -m pip install --only-binary=:all: -r requirements/gui-build.txt
+
+      - name: GUI tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py
+
+      - name: Build, self-test and zip the GUI app
+        run: |
+          set -euo pipefail
+          pyinstaller packaging/apprestore-gui.spec --noconfirm --clean
+          python packaging/package_gui.py --out gui-dist --expect-version "${{ needs.validate-tag.outputs.version }}"
+
+      - name: Upload GUI asset
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: apprestore-gui-macos-${{ needs.validate-tag.outputs.version }}
+          path: gui-dist/AppRestore-GUI-macOS.zip
+          if-no-files-found: error
+          retention-days: 7
+
   release-assets:
     name: Reproducible release assets
     needs:
@@ -255,6 +357,8 @@ jobs:
     needs:
       - validate-tag
       - release-assets
+      - gui-windows
+      - gui-macos
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -267,6 +371,18 @@ jobs:
           name: apprestore-release-${{ needs.validate-tag.outputs.version }}
           path: ${{ runner.temp }}/apprestore-release
 
+      - name: Download Windows GUI app
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: apprestore-gui-windows-${{ needs.validate-tag.outputs.version }}
+          path: ${{ runner.temp }}/apprestore-release
+
+      - name: Download macOS GUI app
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: apprestore-gui-macos-${{ needs.validate-tag.outputs.version }}
+          path: ${{ runner.temp }}/apprestore-release
+
       - name: Create draft, upload assets, then publish
         shell: bash
         env:
@@ -277,10 +393,27 @@ jobs:
           set -euo pipefail
           tag="v${VERSION}"
           archive="AppRestore-${VERSION}-source.zip"
-          for asset in "$archive" install.ps1 install.sh SHA256SUMS.txt; do
+          gui_windows="AppRestore-GUI-Windows.zip"
+          gui_macos="AppRestore-GUI-macOS.zip"
+          for asset in "$archive" install.ps1 install.sh SHA256SUMS.txt "$gui_windows" "$gui_macos"; do
             test -f "${ASSET_DIR}/${asset}"
           done
-          [[ "$(find "$ASSET_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 4 ]]
+          [[ "$(find "$ASSET_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 6 ]]
+          # One SHA256SUMS.txt for both variants (terminal and app with a window).
+          (
+            cd "$ASSET_DIR"
+            sha256sum "$gui_windows" "$gui_macos" >> SHA256SUMS.txt
+            sha256sum -c SHA256SUMS.txt
+          )
+          notes_file="${RUNNER_TEMP}/release-notes.md"
+          {
+            echo "Два варианта, выберите один:"
+            echo ""
+            echo "* Программа с окном: Windows \`${gui_windows}\`, macOS \`${gui_macos}\`."
+            echo "* Для терминала: \`install.ps1\` (Windows) или \`install.sh\` (macOS)."
+            echo ""
+            echo "Суммы SHA-256 всех файлов в \`SHA256SUMS.txt\`."
+          } > "$notes_file"
 
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $tag already exists; refusing to overwrite it" >&2
@@ -314,6 +447,7 @@ jobs:
             --verify-tag \
             --draft \
             --generate-notes \
+            --notes-file "$notes_file" \
             --title "AppRestore ${VERSION}"
           created_draft=true
           gh release upload "$tag" \
@@ -321,6 +455,8 @@ jobs:
             "${ASSET_DIR}/install.ps1" \
             "${ASSET_DIR}/install.sh" \
             "${ASSET_DIR}/SHA256SUMS.txt" \
+            "${ASSET_DIR}/${gui_windows}" \
+            "${ASSET_DIR}/${gui_macos}" \
             --repo "$GITHUB_REPOSITORY"
           gh release edit "$tag" \
             --repo "$GITHUB_REPOSITORY" \

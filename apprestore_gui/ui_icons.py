@@ -79,3 +79,18 @@ TILE_ICON_NAMES = {
     "doctor": "tile-doctor",
     "log": "tile-log",
 }
+
+
+def app_icon() -> "QIcon":
+    """Application/window icon rendered by packaging/make_icons.py."""
+
+    from PySide6.QtGui import QIcon
+
+    from apprestore_gui.theme import resources_dir
+
+    icon = QIcon()
+    for size in (64, 256):
+        path = resources_dir() / "icons" / f"app-icon-{size}.png"
+        if path.exists():
+            icon.addFile(str(path))
+    return icon

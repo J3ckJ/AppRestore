@@ -16,6 +16,13 @@ def main(argv: list[str] | None = None) -> int:
     if dispatched is not None:
         return dispatched
 
+    # Used by the updater on the freshly installed copy before the old one is
+    # removed: imports only, no window, no network.
+    if raw[:1] == ["--update-health-check"]:
+        from apprestore_gui.updater import health_check
+
+        return health_check()
+
     parser = argparse.ArgumentParser(prog="apprestore-gui")
     parser.add_argument(
         "--demo",
@@ -58,9 +65,12 @@ def main(argv: list[str] | None = None) -> int:
     from apprestore_gui.main_window import MainWindow, NAV
     from apprestore_gui.service_adapter import GuiService
     from apprestore_gui.theme import STYLESHEET, load_fonts
+    from apprestore_gui.ui_icons import app_icon
     from apprestore_gui import demo
 
     app = QApplication(sys.argv)
+    app.setApplicationName("AppRestore")
+    app.setWindowIcon(app_icon())
     family = load_fonts()
     app.setStyle("Fusion")
     app.setStyleSheet(STYLESHEET)

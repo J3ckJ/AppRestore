@@ -87,6 +87,14 @@ a = Analysis(
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+def _app_version() -> str:
+    import re as _re
+
+    text = (root / "apprestore_core" / "__init__.py").read_text(encoding="utf-8")
+    match = _re.search(r'__version__\s*=\s*"([^"]+)"', text)
+    return match.group(1) if match else "0.0.0"
+
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -98,6 +106,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+    icon=str(root / "packaging" / "icons" / ("AppRestore.icns" if sys.platform == "darwin" else "AppRestore.ico")),
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -120,7 +129,13 @@ if sys.platform == "darwin":
     app = BUNDLE(
         coll,
         name="AppRestore.app",
-        icon=None,
+        icon=str(root / "packaging" / "icons" / "AppRestore.icns"),
         bundle_identifier="ru.j3ckj.apprestore",
-        info_plist={"NSHighResolutionCapable": True},
+        version=_app_version(),
+        info_plist={
+            "NSHighResolutionCapable": True,
+            "CFBundleDisplayName": "AppRestore",
+            "CFBundleShortVersionString": _app_version(),
+            "CFBundleVersion": _app_version(),
+        },
     )

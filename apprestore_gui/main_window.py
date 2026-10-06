@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QApplication,
 )
 
+from apprestore_core import __version__ as APP_VERSION
 from apprestore_core.models import MissingApp, OffloadedApp
 from apprestore_gui import demo
 from apprestore_gui.auth_pty import login_with_prompts
@@ -1136,7 +1137,7 @@ class MainWindow(QMainWindow):
 
     def _build_settings(self) -> QWidget:
         page, layout, meta = self._page_shell("Настройки")
-        meta.setText("0.2.4")
+        meta.setText(f"Версия {APP_VERSION}")
         layout.addWidget(_muted_label("Папка с файлами IPA", 12))
         ipa = QLineEdit(str(Path.home() / "AppRestore" / "ipa"))
         layout.addWidget(ipa)
@@ -1155,11 +1156,51 @@ class MainWindow(QMainWindow):
         save.clicked.connect(
             lambda: QMessageBox.information(self, "Настройки", "Сохранено локально в этом сеансе.")
         )
-        check = QPushButton("Проверить обновление")
+        check = QPushButton("Проверить обновления")
+        check.setObjectName("checkUpdates")
+        check.clicked.connect(self.check_updates)
+        self.update_check_button = check
         row = QHBoxLayout()
         row.addWidget(check)
         row.addStretch(1)
         row.addWidget(save)
         layout.addLayout(row)
+        self.update_status = QLabel("")
+        self.update_status.setWordWrap(True)
+        self.update_status.setStyleSheet(f"color:{MUTED};font-size:12px;font-weight:400;border:none;")
+        layout.addWidget(self.update_status)
         layout.addStretch(1)
         return page
+
+    # ----- updates -------------------------------------------------------
+    def check_updates(self) -> None:
+        from apprestore_gui import updater
+
+        self.update_check_button.setEnabled(False)
+        self.update_status.setText("Проверяю новую версию на GitHub…")
+        self._update_thread = run_in_thread(
+            self,
+            updater.check_for_update,
+            on_finished=self._on_update_checked,
+            on_failed=self._on_update_check_failed,
+        )
+
+    def _on_update_check_failed(self, message: str) -> None:
+        self.update_check_button.setEnabled(True)
+        self.update_status.setText(f"Не удалось проверить обновления: {message}")
+
+    def _on_update_checked(self, info: Any) -> None:
+        self.update_check_button.setEnabled(True)
+        if not info.newer:
+            self.update_status.setText(
+                f"У вас последняя версия ({info.current}). На GitHub сейчас {info.latest}."
+            )
+            return
+        self.update_status.setText(f"Доступна версия {info.latest}.")
+        self.show_update_dialog(info)
+
+    def show_update_dialog(self, info: Any) -> None:
+        from apprestore_gui.update_dialog import UpdateDialog
+
+        self._update_dialog = UpdateDialog(info, self)
+        self._update_dialog.open()
