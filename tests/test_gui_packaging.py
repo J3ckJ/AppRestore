@@ -85,7 +85,7 @@ def test_gui_release_jobs_use_locked_runtime():
 
 def test_readme_offers_both_install_paths():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "Программа с окном" in readme
-    assert "Для терминала" in readme
+    assert "Графическая версия" in readme
+    assert "Терминальная версия" in readme
     for name in GUI_NAMES:
         assert name in readme

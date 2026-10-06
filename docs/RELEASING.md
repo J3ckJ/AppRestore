@@ -83,7 +83,9 @@ commit.
 2. запускает полный test suite на Windows (Python 3.10, 3.12.13 и 3.13) и macOS;
 3. проверяет PowerShell/Bash syntax;
 4. воспроизводит vendored wheel из закреплённого source и toolchain;
-5. дважды собирает все четыре assets и сравнивает их побайтно;
+5. дважды собирает четыре терминальных assets и сравнивает их побайтно;
+   отдельно собирает графическую версию для Windows и macOS (PyInstaller),
+   запускает её self-test и упаковывает в `AppRestore-GUI-*.zip`;
 6. проверяет, что распакованный source ZIP без `.git` воспроизводит сборку;
 7. проверяет ZIP и `SHA256SUMS.txt`;
 8. передаёт ровно эти assets в publish-job;
@@ -99,10 +101,16 @@ Publish-job отказывается перезаписывать уже сущ�
 
 ```text
 AppRestore-<version>-source.zip
+AppRestore-GUI-Windows.zip
+AppRestore-GUI-macOS.zip
 install.ps1
 install.sh
 SHA256SUMS.txt
 ```
+
+Имена `AppRestore-GUI-Windows.zip` и `AppRestore-GUI-macOS.zip` не меняйте:
+по ним «Проверить обновления» в графической версии находит свой файл, а сумму
+берёт из `SHA256SUMS.txt`.
 
 После публикации проверьте установку на чистом пользовательском профиле обеих
 платформ и команды:
