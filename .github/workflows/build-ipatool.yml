@@ -1,0 +1,62 @@
+name: Build pinned ipatool
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: windows-amd64
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Go 1.25.0
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: false
+
+      - name: Build the archive
+        shell: bash
+        run: bash packaging/build-ipatool.sh windows-amd64
+
+      - name: Upload archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ipatool-2.6.0-windows-amd64
+          path: dist/ipatool/ipatool-2.6.0-windows-amd64.tar.gz
+          if-no-files-found: error
+
+  macos:
+    name: macos
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Go 1.25.0
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: false
+
+      - name: Build arm64 and amd64 archives
+        run: |
+          set -euo pipefail
+          bash packaging/build-ipatool.sh macos-arm64
+          bash packaging/build-ipatool.sh macos-amd64
+
+      - name: Upload archives
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ipatool-2.6.0-macos
+          path: |
+            dist/ipatool/ipatool-2.6.0-macos-arm64.tar.gz
+            dist/ipatool/ipatool-2.6.0-macos-amd64.tar.gz
+          if-no-files-found: error
