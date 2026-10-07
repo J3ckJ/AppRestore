@@ -332,12 +332,33 @@ exit 0
 """.replace("__HEALTH__", HEALTH_FLAG)
 
 
+# DETACHED_PROCESS (0x8) makes Windows PowerShell 5.1 exit before -File runs.
+# CREATE_NO_WINDOW keeps a console attached but hidden, which PowerShell needs.
+WINDOWS_SWAP_CREATIONFLAGS = 0x00000200 | 0x08000000  # CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+
 WINDOWS_SWAP_SCRIPT = r"""param(
   [int]$ProcessId, [string]$Target, [string]$New, [string]$Staging, [string]$Log
 )
 $ErrorActionPreference = "Stop"
-function Log($m) { Add-Content -LiteralPath $Log -Value ("{0} {1}" -f (Get-Date -Format s), $m) }
-try { Wait-Process -Id $ProcessId -Timeout 120 -ErrorAction SilentlyContinue } catch {}
+function Log($m) {
+  try { Add-Content -LiteralPath $Log -Value ("{0} {1}" -f (Get-Date -Format s), $m) } catch {}
+}
+Log "swap script start: $Target"
+$deadline = (Get-Date).AddSeconds(20)
+while ((Get-Date) -lt $deadline) {
+  if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) { break }
+  Start-Sleep -Milliseconds 500
+}
+$alive = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+if ($alive) {
+  if ($alive.ProcessName -ne "AppRestore") {
+    Log "refusing to stop process $ProcessId ($($alive.ProcessName))"
+    exit 1
+  }
+  Log "old process still running, stopping it"
+  Stop-Process -Id $ProcessId -Force
+  try { Wait-Process -Id $ProcessId -Timeout 30 -ErrorAction SilentlyContinue } catch {}
+}
 Start-Sleep -Milliseconds 500
 $Backup = "$Target.old-$PID"
 Log "swap start: $Target"
@@ -352,7 +373,6 @@ for ($i = 0; $i -lt 20 -and -not $moved; $i++) {
 }
 if (-not $moved) {
   Log "cannot move old app aside (files still in use)"
-  Remove-Item -LiteralPath $Staging -Recurse -Force -ErrorAction SilentlyContinue
   Start-Process -FilePath (Join-Path $Target "AppRestore.exe")
   exit 1
 }
@@ -365,14 +385,13 @@ try {
   Log "update failed, rolling back: $_"
   if (Test-Path -LiteralPath $Target) { Remove-Item -LiteralPath $Target -Recurse -Force -ErrorAction SilentlyContinue }
   Rename-Item -LiteralPath $Backup -NewName (Split-Path $Target -Leaf)
-  Remove-Item -LiteralPath $Staging -Recurse -Force -ErrorAction SilentlyContinue
   Start-Process -FilePath (Join-Path $Target "AppRestore.exe")
   exit 1
 }
-Remove-Item -LiteralPath $Backup -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $Staging -Recurse -Force -ErrorAction SilentlyContinue
 Log "swap done"
 Start-Process -FilePath (Join-Path $Target "AppRestore.exe")
+Remove-Item -LiteralPath $Backup -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $Staging -Recurse -Force -ErrorAction SilentlyContinue
 exit 0
 """.replace("__HEALTH__", HEALTH_FLAG)
 
@@ -396,13 +415,15 @@ def launch_swap(
     relaunch: str | None = None,
     popen: Callable[..., Any] = subprocess.Popen,
 ) -> list[str]:
-    """Start the detached swap script; the caller must quit right after."""
+    """Start the swap script in its own process; the caller must quit right after."""
 
     platform = platform or sys.platform
     pid = os.getpid() if pid is None else pid
     log = update_log_path()
     if platform == "win32":
-        script = staged.staging_dir / "apply-update.ps1"
+        # Keep the script outside the staging directory: the script deletes
+        # that directory, and PowerShell stops if its own -File is removed.
+        script = log.parent / "apply-update.ps1"
         script.write_text(WINDOWS_SWAP_SCRIPT, encoding="utf-8-sig")
         from apprestore_core.paths import resolve_windows_system_tool
 
@@ -428,8 +449,7 @@ def launch_swap(
             "-Log",
             str(log),
         ]
-        flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED | NEW_GROUP | NO_WINDOW
-        popen(command, creationflags=flags, close_fds=True)
+        popen(command, creationflags=WINDOWS_SWAP_CREATIONFLAGS, close_fds=True)
     else:
         script = staged.staging_dir / "apply-update.sh"
         script.write_text(POSIX_SWAP_SCRIPT, encoding="utf-8")

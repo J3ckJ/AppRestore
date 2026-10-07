@@ -111,6 +111,9 @@ def test_publish_only_consumes_verified_artifact_and_never_overwrites() -> None:
     assert "--draft" in publish
     assert "gh release edit" in publish
     assert "--draft=false" in publish
+    assert "CHANGELOG.md" in publish
+    assert "CHANGELOG.md has no notes for" in publish
+    assert "--generate-notes" not in publish
     assert "--json isDraft" in publish
     assert '[[ "$draft_state" == "true" ]]' in publish
     create = publish.index('gh release create "$tag"')

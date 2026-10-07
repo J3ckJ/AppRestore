@@ -193,8 +193,26 @@ class UpdateDialog(QDialog):
             shutil.rmtree(staged.staging_dir, ignore_errors=True)
             self._on_failed(str(exc))
             return
+        self._finish_worker()
         self.accept()
         self._quit()
+
+    def _finish_worker(self) -> None:
+        """Let the download thread exit before Qt tears the process down.
+
+        Quitting while this QThread is still running hides the window and
+        then blocks in the thread destructor, so the old exe stays locked
+        and the swap script cannot replace it.
+        """
+
+        thread = self._thread
+        if thread is None:
+            return
+        thread.quit()
+        if thread.wait(5000):
+            return
+        thread.terminate()
+        thread.wait(1000)
 
     def wait_for_worker(self, timeout_ms: int = 10000) -> None:
         if self._thread is not None:

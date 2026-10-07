@@ -59,10 +59,10 @@ class InstallRequestState(str, Enum):
 
 
 IPATOOL_VERSION = "2.6.0"
-# Хеш официального windows-amd64.tar.gz (проверяется установщиком до распаковки).
-# Не использовать для сверки извлечённого ipatool.exe — это разные файлы.
+# Хеш windows-amd64.tar.gz со сборки, которая принимает HTTP 301 при входе.
+# Проверяется установщиком до распаковки. Не сверять им извлечённый ipatool.exe.
 IPATOOL_WINDOWS_AMD64_ARCHIVE_SHA256 = (
-    "3ee48adc7c4aa84a8cc8ff9399d387c25f9b8593b2c212da29e966047a08ad21"
+    "639d9cd7f22cea2975fd8263b0a8cbd7a36e7ee742e4c3e3a910b85f05b4df14"
 )
 # ipatool >= 2.4 подписывает запросы авторизации App Store через SAP, а сам
 # подписчик исполняется в эмуляторе Unicorn. Его shared library не входит в

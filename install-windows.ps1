@@ -13,8 +13,8 @@ $AppRestoreVersion = "0.3.1"
 $ManagedInstallMarkerName = ".apprestore-managed"
 $ManagedInstallMarkerValue = "AppRestore managed installation v1"
 $IpaToolVersion = "2.6.0"
-$IpaToolSha256 = "3ee48adc7c4aa84a8cc8ff9399d387c25f9b8593b2c212da29e966047a08ad21"
-$IpaToolUrl = "https://github.com/majd/ipatool/releases/download/v$IpaToolVersion/ipatool-$IpaToolVersion-windows-amd64.tar.gz"
+$IpaToolSha256 = "639d9cd7f22cea2975fd8263b0a8cbd7a36e7ee742e4c3e3a910b85f05b4df14"
+$IpaToolUrl = "https://github.com/J3ckJ/AppRestore/releases/download/ipatool-2.6.0-redirect/ipatool-$IpaToolVersion-windows-amd64.tar.gz"
 $PythonInstallerVersion = "3.12.10"
 $PythonInstallerSha256 = "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb"
 $PythonInstallerUrl = "https://www.python.org/ftp/python/$PythonInstallerVersion/python-$PythonInstallerVersion-amd64.exe"
@@ -1145,7 +1145,7 @@ $BackupRoot = Join-Path $ProgramsRoot "AppRestore.backup-$TransactionId"
 try {
     New-Item -ItemType Directory -Path $ExtractPath -Force | Out-Null
 
-    Write-Host "Скачивание официального ipatool v$IpaToolVersion..."
+    Write-Host "Скачивание проверенного ipatool v$IpaToolVersion..."
     $PreviousSecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol
     try {
         [System.Net.ServicePointManager]::SecurityProtocol = (

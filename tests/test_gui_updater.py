@@ -190,25 +190,67 @@ def test_installed_app_path_requires_app_bundle_on_macos(tmp_path):
 
 def test_windows_script_waits_checks_health_and_rolls_back():
     script = updater.WINDOWS_SWAP_SCRIPT
-    assert "Wait-Process -Id $ProcessId" in script
+    assert "swap script start" in script
+    assert script.index("swap script start") < script.index("Stop-Process")
+    assert "old process still running, stopping it" in script
+    assert 'ProcessName -ne "AppRestore"' in script
     assert "--update-health-check" in script
     assert "rolling back" in script
     assert script.index("Rename-Item -LiteralPath $Target") < script.index("Move-Item -LiteralPath $New")
+    assert script.index('Log "swap done"') < script.index("Remove-Item -LiteralPath $Staging")
     assert "Remove-Item -LiteralPath $Backup" in script
 
 
-def test_windows_launch_command_is_hidden_and_detached(tmp_path, monkeypatch):
+def test_windows_launch_command_is_hidden_without_detaching_powershell(tmp_path, monkeypatch):
     app, exe = _frozen_layout(tmp_path, "win32")
     staging = tmp_path / "Apps" / ".AppRestore-update-x"
     (staging / "AppRestore").mkdir(parents=True)
     staged = updater.StagedUpdate(info=None, staging_dir=staging, new_app=staging / "AppRestore", target_app=app)
     monkeypatch.setattr("apprestore_core.paths.resolve_windows_system_tool", lambda name: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+    monkeypatch.setattr(updater, "update_log_path", lambda: tmp_path / "update.log")
     calls = []
     cmd = updater.launch_swap(staged, pid=1234, platform="win32", popen=lambda c, **kw: calls.append((c, kw)))
-    assert calls[0][1]["creationflags"] & 0x08000000
-    assert calls[0][1]["creationflags"] & 0x00000008
+    flags = calls[0][1]["creationflags"]
+    assert flags == updater.WINDOWS_SWAP_CREATIONFLAGS
+    assert flags & 0x08000000  # CREATE_NO_WINDOW
+    assert not flags & 0x00000008  # DETACHED_PROCESS exits PowerShell 5.1 before -File
     assert "-File" in cmd and "1234" in cmd and str(app) in cmd
-    assert (staging / "apply-update.ps1").read_text(encoding="utf-8-sig").startswith("param(")
+    script = tmp_path / "apply-update.ps1"
+    assert script.is_file()
+    assert not (staging / "apply-update.ps1").exists()
+    assert script.read_text(encoding="utf-8-sig").startswith("param(")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell launch flags")
+def test_windows_swap_flags_actually_run_the_script(tmp_path):
+    script = tmp_path / "probe.ps1"
+    log = tmp_path / "probe.log"
+    script.write_text(
+        "param([string]$Log)\r\nAdd-Content -LiteralPath $Log -Value started\r\n",
+        encoding="utf-8-sig",
+    )
+    subprocess.Popen(
+        [
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+            str(script),
+            "-Log",
+            str(log),
+        ],
+        creationflags=updater.WINDOWS_SWAP_CREATIONFLAGS,
+        close_fds=True,
+    )
+    deadline = time.time() + 15
+    while time.time() < deadline and not log.exists():
+        time.sleep(0.1)
+    assert log.is_file()
+    assert "started" in log.read_text(encoding="utf-8")
 
 
 posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX swap script")

@@ -383,6 +383,11 @@ jobs:
           name: apprestore-gui-macos-${{ needs.validate-tag.outputs.version }}
           path: ${{ runner.temp }}/apprestore-release
 
+      - name: Check out tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+
       - name: Create draft, upload assets, then publish
         shell: bash
         env:
@@ -406,19 +411,63 @@ jobs:
             sha256sum -c SHA256SUMS.txt
           )
           notes_file="${RUNNER_TEMP}/release-notes.md"
-          {
-            echo "Два варианта, выберите один:"
-            echo ""
-            echo "* Программа с окном: Windows \`${gui_windows}\`, macOS \`${gui_macos}\`."
-            echo "* Для терминала: \`install.ps1\` (Windows) или \`install.sh\` (macOS)."
-            echo ""
-            echo "Суммы SHA-256 всех файлов в \`SHA256SUMS.txt\`."
-          } > "$notes_file"
-
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $tag already exists; refusing to overwrite it" >&2
             exit 1
           fi
+          prev="$(
+            gh release list \
+              --repo "$GITHUB_REPOSITORY" \
+              --limit 20 \
+              --json tagName,isPrerelease \
+              --jq '[.[] | select(.isPrerelease | not) | .tagName | select(test("^v[0-9]+[.][0-9]+[.][0-9]+$"))] | .[0] // ""' || true
+          )"
+          export NOTES_FILE="$notes_file"
+          export GUI_WINDOWS="$gui_windows"
+          export GUI_MACOS="$gui_macos"
+          export PREV_TAG="$prev"
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          match = re.search(
+              rf"(?ms)^## {re.escape(version)}[^\n]*\n(.*?)(?=^## |\Z)",
+              text,
+          )
+          section = match.group(1).strip() if match else ""
+          if not section:
+              sys.exit(f"CHANGELOG.md has no notes for {version}")
+          lines = [
+              section,
+              "",
+              (
+                  "Сборки: программа с окном — "
+                  f"`{os.environ['GUI_WINDOWS']}` и `{os.environ['GUI_MACOS']}`, "
+                  "терминал — `install.ps1` (Windows) или `install.sh` (macOS). "
+                  "Суммы SHA-256 в `SHA256SUMS.txt`."
+              ),
+          ]
+          prev = os.environ.get("PREV_TAG", "").strip()
+          tag = f"v{version}"
+          if prev and prev != tag:
+              repo = os.environ["GITHUB_REPOSITORY"]
+              lines.extend(
+                  [
+                      "",
+                      (
+                          "**Список коммитов:** "
+                          f"https://github.com/{repo}/compare/{prev}...{tag}"
+                      ),
+                  ]
+              )
+          Path(os.environ["NOTES_FILE"]).write_text(
+              "\n".join(lines) + "\n", encoding="utf-8"
+          )
+          PY
 
           created_draft=false
           cleanup_draft() {
@@ -446,7 +495,6 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --draft \
-            --generate-notes \
             --notes-file "$notes_file" \
             --title "AppRestore ${VERSION}"
           created_draft=true

@@ -1,9 +1,13 @@
-"""Download the pinned official ipatool and place it next to the GUI bundle.
+"""Download the pinned ipatool build and place it next to the GUI bundle.
 
-Used by .github/workflows/gui-build.yml.  The SHA-256 values are the same
-archive hashes the installers pin (install-windows.ps1 / install-macos.sh);
-tests/test_frozen_runtime.py keeps them in sync.  ``resolve_tool("ipatool")``
-looks next to ``sys.executable`` first, so a frozen app finds this copy.
+Official ipatool 2.6.0 follows only HTTP 302 during Apple ID login. Apple
+sometimes answers 301, and that login fails before the password is checked.
+These archives are AppRestore's build of majd/ipatool commit
+``IPATOOL_SOURCE_COMMIT``, which follows 301, 302, 307 and 308. The reported
+version stays 2.6.0. The SHA-256 values match the installers
+(install-windows.ps1 / install-macos.sh); tests/test_frozen_runtime.py keeps
+them in sync. ``resolve_tool("ipatool")`` looks next to ``sys.executable``
+first, so a frozen app finds this copy.
 """
 
 from __future__ import annotations
@@ -20,10 +24,13 @@ import urllib.request
 from pathlib import Path
 
 IPATOOL_VERSION = "2.6.0"
+# majd/ipatool commit that follows authentication redirects. Not a GitHub release.
+IPATOOL_SOURCE_COMMIT = "cde7d00355e152714377b953ec57438626d3cb5a"
+ARCHIVE_BASE = "https://github.com/J3ckJ/AppRestore/releases/download/ipatool-2.6.0-redirect"
 ARCHIVE_SHA256 = {
-    "windows-amd64": "3ee48adc7c4aa84a8cc8ff9399d387c25f9b8593b2c212da29e966047a08ad21",
-    "macos-arm64": "2f03bbe36def30943597164865991197c1f585a8dd19781542031c76e9f5346f",
-    "macos-amd64": "6b9dcb890c9dad1961fd59827a1ac88687757a6f731a0079c00f443cd1a74e01",
+    "windows-amd64": "639d9cd7f22cea2975fd8263b0a8cbd7a36e7ee742e4c3e3a910b85f05b4df14",
+    "macos-arm64": "faf98ef8067f1ef4783123d00561b4ece10dc7419631eb9555d88a1da2f61f3f",
+    "macos-amd64": "576bde4baf04365fcdea46eb7f3e5bb6ea143d0d9e53d6e2711136cc608aac84",
 }
 MAX_BINARY_BYTES = 64 * 1024 * 1024
 
@@ -39,10 +46,7 @@ def current_asset() -> str:
 
 def fetch(asset: str, destinations: list[Path]) -> None:
     expected = ARCHIVE_SHA256[asset]
-    url = (
-        f"https://github.com/majd/ipatool/releases/download/v{IPATOOL_VERSION}/"
-        f"ipatool-{IPATOOL_VERSION}-{asset}.tar.gz"
-    )
+    url = f"{ARCHIVE_BASE}/ipatool-{IPATOOL_VERSION}-{asset}.tar.gz"
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "ipatool.tar.gz"
         with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310 - pinned https URL
@@ -73,7 +77,10 @@ def fetch(asset: str, destinations: list[Path]) -> None:
             target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         print(f"ipatool {IPATOOL_VERSION} ({asset}) -> {target}")
     # ipatool is MIT licensed: ship its license text next to the binary.
-    license_url = f"https://raw.githubusercontent.com/majd/ipatool/v{IPATOOL_VERSION}/LICENSE"
+    license_url = (
+        "https://raw.githubusercontent.com/majd/ipatool/"
+        f"{IPATOOL_SOURCE_COMMIT}/LICENSE"
+    )
     with urllib.request.urlopen(license_url, timeout=60) as response:  # noqa: S310
         license_text = response.read()
     for destination in destinations:
