@@ -17,6 +17,7 @@ from .catalog import (
     load_imazing_app_records,
     load_imazing_catalog,
     lookup_itunes_store_id,
+    parse_installed_apps,
     parse_missing_apps,
     parse_offloaded_apps,
     search_app_catalogs,
@@ -27,6 +28,7 @@ from .known_apps import load_known_apps, parse_app_store_id, remember_known_app
 from .models import (
     Device,
     DeviceAppState,
+    InstalledApp,
     IpaMetadata,
     MissingApp,
     OffloadedApp,
@@ -169,6 +171,14 @@ class AppRestoreService:
         catalog = load_imazing_catalog(imazing_catalog_candidates())
         payload = self.tools.list_apps(udid)
         return parse_offloaded_apps(payload, local, catalog)
+
+    def installed(self, udid: str) -> list[InstalledApp]:
+        """Fully installed user apps, with a store id when the device has one."""
+
+        local, _ = self.scan_local()
+        catalog = load_imazing_catalog(imazing_catalog_candidates())
+        payload = self.tools.list_apps(udid)
+        return parse_installed_apps(payload, local, catalog)
 
     def missing(self, udid: str) -> list[MissingApp]:
         """

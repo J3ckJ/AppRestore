@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QFontDatabase
+from PySide6.QtWidgets import QApplication
 
 BG = "#E8E8ED"
 PANEL = "#FFFFFF"
@@ -40,6 +42,16 @@ def load_fonts() -> str:
     return family
 
 
+def pin_light_native_chrome(app: QApplication) -> None:
+    """Keep system menus light, matching the window.
+
+    macOS draws the right-click menu in the system appearance. A dark menu
+    plus the dark text from the application stylesheet is unreadable.
+    """
+
+    app.styleHints().setColorScheme(Qt.ColorScheme.Light)
+
+
 def app_font(family: str, size: int = 13, weight: int = QFont.Weight.Normal) -> QFont:
     font = QFont(family)
     font.setPixelSize(size)
@@ -56,6 +68,23 @@ QMainWindow, QDialog {{
 }}
 QWidget {{
   color: {INK};
+}}
+QMenu {{
+  background: {PANEL};
+  color: {INK};
+  border: 1px solid {LINE};
+}}
+QMenu::item {{
+  background: transparent;
+  color: {INK};
+  padding: 4px 24px;
+}}
+QMenu::item:selected {{
+  background: {BG};
+  color: {INK};
+}}
+QMenu::item:disabled {{
+  color: {MUTED};
 }}
 QLabel {{
   border: none;

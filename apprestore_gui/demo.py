@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from apprestore_core.models import Device, DoctorCheck, MissingApp, OffloadedApp
+from apprestore_core.models import (
+    Device,
+    DoctorCheck,
+    InstalledApp,
+    MissingApp,
+    OffloadedApp,
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,26 @@ DEMO_LIBRARY: list[tuple[str, str, str]] = [
 
 def demo_device() -> Device:
     return Device(udid="DEMO-UDID-0001", name="iPhone 14", ios_version="18.2")
+
+
+def demo_installed() -> list[InstalledApp]:
+    """Installed apps for the library export picker, including one sideload."""
+
+    rows = [
+        DemoApp("com.google.chrome.ios", "Chrome", "128.0", "535886823"),
+        DemoApp("com.amazon.Kindle", "Kindle", "7.0", "405399194"),
+        DemoApp("com.example.sideload", "Side Tool", "1.0", None),
+    ]
+    return [
+        InstalledApp(
+            bundle_id=app.bundle_id,
+            name=app.name,
+            version=app.version,
+            store_id=app.store_id,
+            store_match="demo" if app.store_id else "none",
+        )
+        for app in rows
+    ]
 
 
 def demo_offloaded() -> list[OffloadedApp]:

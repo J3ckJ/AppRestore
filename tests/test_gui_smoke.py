@@ -8,7 +8,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("pytestqt")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QPushButton
+
+from apprestore_gui.export_dialog import ExportFromDeviceDialog
 
 from apprestore_gui.icons_cache import ArtworkCache
 from apprestore_gui.main_window import MainWindow, NAV
@@ -41,6 +44,9 @@ def test_store_acquire_checkbox_is_off_by_default(qapp, qtbot) -> None:
     window = MainWindow(service, ArtworkCache())
     qtbot.addWidget(window)
     assert window.acquire.isChecked() is False
+    export_button = window.pages["library"].findChild(QPushButton, "export_from_device")
+    assert export_button is not None
+    assert export_button.text() == "Выгрузить с устройства"
     table = window.pages["install"].findChild(QTableWidget, "install_table")
     assert table is not None
     assert table.wordWrap() is False
@@ -48,3 +54,38 @@ def test_store_acquire_checkbox_is_off_by_default(qapp, qtbot) -> None:
         table.horizontalHeader().sectionResizeMode(2)
         == QHeaderView.ResizeMode.ResizeToContents
     )
+
+
+def test_export_dialog_lists_installed_apps_and_skips_sideloads(qapp, qtbot) -> None:
+    service = GuiService(demo_mode=True)
+    window = MainWindow(service, ArtworkCache())
+    qtbot.addWidget(window)
+    dialog = ExportFromDeviceDialog(
+        window,
+        service=service,
+        artwork=window.artwork,
+        udid="DEMO-UDID-0001",
+        signed_in=False,
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitUntil(
+        lambda: dialog.table.rowCount() == 3 and dialog._fill_at == 3,
+        timeout=3000,
+    )
+    checkable = 0
+    sideload_locked = False
+    for row in range(dialog.table.rowCount()):
+        item = dialog.table.item(row, 0)
+        assert item is not None
+        app = item.data(Qt.ItemDataRole.UserRole)
+        if app.bundle_id == "com.example.sideload":
+            sideload_locked = not bool(item.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+            assert dialog.table.item(row, 2).text() == "не из App Store"
+        elif app.store_id:
+            checkable += 1
+            item.setCheckState(Qt.CheckState.Checked)
+    assert sideload_locked
+    assert checkable == 2
+    assert dialog.go.isEnabled()
+    assert "2" in dialog.go.text()

@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 from apprestore_core import __version__ as APP_VERSION
 from apprestore_core.models import MissingApp, OffloadedApp
 from apprestore_gui import demo
+from apprestore_gui.export_dialog import ExportFromDeviceDialog
 from apprestore_gui.auth_pty import (
     AppleLogin,
     AuthResult,
@@ -1513,14 +1514,38 @@ class MainWindow(QMainWindow):
         scan.clicked.connect(self.reload_library)
         pick = QPushButton("Выбрать файл")
         pick.clicked.connect(self._pick_ipa)
+        export_from_device = QPushButton("Выгрузить с устройства")
+        export_from_device.setObjectName("export_from_device")
+        export_from_device.clicked.connect(self._export_from_device)
         install = QPushButton("Установить")
         install.setObjectName("primary")
         actions.addWidget(scan)
         actions.addWidget(pick)
+        actions.addWidget(export_from_device)
         actions.addStretch(1)
         actions.addWidget(install)
         layout.addLayout(actions)
         return page
+
+    def _export_from_device(self) -> None:
+        if not self._device_udid:
+            QMessageBox.information(
+                self,
+                "Нет iPhone",
+                "Подключите iPhone по USB и разблокируйте его.",
+            )
+            return
+        dialog = ExportFromDeviceDialog(
+            self,
+            service=self.service,
+            artwork=self.artwork,
+            udid=self._device_udid,
+            signed_in=self._apple_session == "in" or self._apple_signed_in,
+        )
+        dialog.exec()
+        if dialog.saved_any:
+            self.reload_library()
+            self.log(f"ok  в библиотеку сохранено: {dialog.saved_any}")
 
     def reload_library(self) -> None:
         table = self.pages["library"].findChild(QTableWidget, "library_table")
