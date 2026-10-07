@@ -5,7 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from apprestore_core.models import Device, DoctorCheck, MissingApp, OffloadedApp
+from apprestore_core.models import (
+    Device,
+    DoctorCheck,
+    InstalledApp,
+    MissingApp,
+    OffloadedApp,
+)
 from apprestore_core.service import AppRestoreError, AppRestoreService
 from apprestore_core.tools import AppRestoreTools, ToolUnavailable
 
@@ -110,6 +116,31 @@ class GuiService:
         if self.demo_mode:
             return demo.demo_offloaded()
         return self.core.offloaded(udid)
+
+    def installed_apps(self, udid: str) -> list[InstalledApp]:
+        if self.demo_mode:
+            return demo.demo_installed()
+        return self.core.installed(udid)
+
+    def download_to_library(
+        self,
+        app: InstalledApp,
+        *,
+        acquire_license: bool = False,
+    ) -> str:
+        """Save the App Store IPA for an installed app. Does not install it."""
+
+        if self.demo_mode:
+            return f"{app.name}.ipa"
+        if not app.store_id:
+            raise AppRestoreError("у приложения нет номера в App Store")
+        path = self.core.download(
+            app.bundle_id,
+            store_id=app.store_id,
+            lookup_store_id=False,
+            acquire_license=acquire_license,
+        )
+        return path.name
 
     def missing(self, udid: str) -> list[MissingApp]:
         if self.demo_mode:

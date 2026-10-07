@@ -15,7 +15,7 @@ from typing import Any, Callable, TypeVar
 from . import __version__
 from .ipa import IpaError, validate_bundle_id
 from .known_apps import parse_app_store_id
-from .models import IpaMetadata, MissingApp, OffloadedApp
+from .models import InstalledApp, IpaMetadata, MissingApp, OffloadedApp
 
 ADAM_ID_KEYS = {
     "adamid",
@@ -1259,6 +1259,58 @@ def parse_offloaded_apps(
                 ),
                 static_size=_safe_int(enriched.get("StaticDiskUsage")),
                 dynamic_size=_safe_int(enriched.get("DynamicDiskUsage")),
+                store_id=store_id,
+                store_match=store_match,
+                local_ipa=local_by_bundle.get(bundle_id),
+            )
+        )
+
+    apps.sort(key=lambda item: item.name.casefold())
+    return apps
+
+
+def parse_installed_apps(
+    payload: object,
+    local_ipas: list[IpaMetadata],
+    imazing_catalog: Mapping[str, str] | None = None,
+) -> list[InstalledApp]:
+    """User apps that are present on the device, not offloaded placeholders."""
+
+    local_by_bundle: dict[str, Path] = {}
+    for ipa in local_ipas:
+        local_by_bundle.setdefault(ipa.bundle_id, ipa.path)
+
+    imazing_catalog = imazing_catalog or {}
+    apps: list[InstalledApp] = []
+    for bundle_id, info in _app_records(payload):
+        if _is_placeholder(info):
+            continue
+        application_type = str(info.get("ApplicationType") or "")
+        if application_type and application_type.casefold() != "user":
+            continue
+
+        enriched = enrich_app_record(info)
+        direct_store_id = find_store_id(enriched)
+        store_id: str | None
+        if direct_store_id:
+            store_id = direct_store_id
+            store_match = "device"
+        else:
+            store_id = _store_id_from_value(imazing_catalog.get(bundle_id))
+            store_match = "exact-imazing" if store_id else "none"
+
+        apps.append(
+            InstalledApp(
+                bundle_id=bundle_id,
+                name=_clean_text(
+                    enriched.get("CFBundleDisplayName") or enriched.get("CFBundleName"),
+                    bundle_id,
+                ),
+                version=_clean_text(
+                    enriched.get("CFBundleShortVersionString")
+                    or enriched.get("CFBundleVersion"),
+                    "?",
+                ),
                 store_id=store_id,
                 store_match=store_match,
                 local_ipa=local_by_bundle.get(bundle_id),

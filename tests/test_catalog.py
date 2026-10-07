@@ -8,6 +8,7 @@ from unittest import mock
 from apprestore_core.catalog import (
     CatalogError,
     lookup_itunes_store_id,
+    parse_installed_apps,
     parse_json_output,
     parse_offloaded_apps,
     parse_udids,
@@ -167,6 +168,51 @@ class PlaceholderParsingTests(unittest.TestCase):
                 lookup_itunes_store_id("com.example.alpha", countries=("",)),
                 "42424242",
             )
+
+    def test_parse_installed_apps_skips_placeholders_and_keeps_store_ids(self) -> None:
+        local = read_ipa_metadata(
+            make_ipa(self.root / "normal.ipa", bundle_id="com.example.normal", name="Normal")
+        )
+        payload = {
+            "com.example.alpha": {
+                "CFBundleIdentifier": "com.example.alpha",
+                "CFBundleDisplayName": "Alpha",
+                "ApplicationType": "User",
+                "IsPlaceholder": True,
+                "iTunesMetadata": {"itemId": 11111111},
+            },
+            "com.example.normal": {
+                "CFBundleIdentifier": "com.example.normal",
+                "CFBundleDisplayName": "Normal",
+                "CFBundleShortVersionString": "2.0",
+                "ApplicationType": "User",
+                "iTunesMetadata": {"itemId": 22222222},
+            },
+            "com.example.side": {
+                "CFBundleIdentifier": "com.example.side",
+                "CFBundleDisplayName": "Side",
+                "ApplicationType": "User",
+            },
+            "com.apple.MobileSMS": {
+                "CFBundleIdentifier": "com.apple.MobileSMS",
+                "CFBundleDisplayName": "Messages",
+                "ApplicationType": "System",
+            },
+        }
+        apps = parse_installed_apps(
+            payload,
+            [local],
+            {"com.example.side": "33333333"},
+        )
+        by_id = {app.bundle_id: app for app in apps}
+        self.assertEqual(set(by_id), {"com.example.normal", "com.example.side"})
+        self.assertEqual(by_id["com.example.normal"].store_id, "22222222")
+        self.assertEqual(by_id["com.example.normal"].store_match, "device")
+        self.assertEqual(by_id["com.example.normal"].version, "2.0")
+        self.assertEqual(by_id["com.example.normal"].local_ipa, local.path)
+        self.assertEqual(by_id["com.example.side"].store_id, "33333333")
+        self.assertEqual(by_id["com.example.side"].store_match, "exact-imazing")
+        self.assertIsNone(by_id["com.example.side"].local_ipa)
 
     def test_find_store_id_decodes_binary_itunes_metadata(self) -> None:
         import plistlib

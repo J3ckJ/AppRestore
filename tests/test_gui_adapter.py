@@ -6,6 +6,8 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import Qt
+
 from apprestore_core.models import CommandResult
 from apprestore_gui.auth_pty import (
     KeychainRunner,
@@ -16,6 +18,7 @@ from apprestore_gui.auth_pty import (
 )
 from apprestore_gui.main_window import file_install_prompt, friendly_restore_error
 from apprestore_gui.service_adapter import GuiService
+from apprestore_gui.theme import INK, PANEL, STYLESHEET, pin_light_native_chrome
 
 
 def test_offloaded_redownload_prompt_matches_cli_fallback() -> None:
@@ -42,6 +45,34 @@ def test_offloaded_redownload_prompt_matches_cli_fallback() -> None:
     assert "Apple ID" in friendly_restore_error(
         "ipatool is not authenticated; run `apprestore auth`"
     )
+
+
+def test_pin_light_native_chrome_requests_a_light_menu() -> None:
+    class _Hints:
+        def __init__(self) -> None:
+            self.scheme = None
+
+        def setColorScheme(self, scheme: Qt.ColorScheme) -> None:
+            self.scheme = scheme
+
+    class _App:
+        def __init__(self) -> None:
+            self.hints = _Hints()
+
+        def styleHints(self) -> _Hints:
+            return self.hints
+
+    app = _App()
+    pin_light_native_chrome(app)  # type: ignore[arg-type]
+    assert app.hints.scheme == Qt.ColorScheme.Light
+
+
+def test_context_menu_stylesheet_pairs_background_with_text() -> None:
+    menu = STYLESHEET.split("QMenu {", 1)[1].split("}", 1)[0]
+    assert PANEL in menu
+    assert INK in menu
+    item = STYLESHEET.split("QMenu::item {", 1)[1].split("}", 1)[0]
+    assert INK in item
 
 
 def test_pty_transcript_keeps_the_json_document() -> None:
@@ -79,6 +110,15 @@ def test_keychain_runner_does_not_touch_other_tools() -> None:
         result = runner.run(["pymobiledevice3", "version"], timeout=5)
     assert result.returncode == 3
     run.assert_called_once()
+
+
+def test_demo_installed_apps_keep_store_ids_for_library_export() -> None:
+    service = GuiService(demo_mode=True)
+    apps = service.installed_apps("DEMO-UDID-0001")
+    by_id = {app.bundle_id: app for app in apps}
+    assert by_id["com.google.chrome.ios"].store_id == "535886823"
+    assert by_id["com.example.sideload"].store_id is None
+    assert service.download_to_library(by_id["com.amazon.Kindle"]) == "Kindle.ipa"
 
 
 def test_passphrase_stays_in_memory_for_the_session() -> None:

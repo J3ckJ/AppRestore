@@ -9,7 +9,7 @@ check version -> zip as AppRestore-GUI-Windows.zip / AppRestore-GUI-macOS.zip
 -> unpack the zip with the updater's own code and run --update-health-check
 on the unpacked copy.
 
-    python packaging/package_gui.py --out gui-dist [--expect-version 0.3.0]
+    python packaging/package_gui.py --out gui-dist [--expect-version 0.3.1]
 """
 
 from __future__ import annotations
