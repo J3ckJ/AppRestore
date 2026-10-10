@@ -42,6 +42,7 @@ GUARD_PARAM = "region_unavailable"
 _lock = threading.Lock()
 _flags: dict[str, str] = {}
 _paid_seen: set[str] = set()
+_max_price: dict[str, float] = {}
 _attempted: set[str] = set()
 _account = ""
 _session: object | None = None
@@ -85,17 +86,44 @@ def flag_for(store_id: str) -> str:
         return _flags.get(str(store_id), "")
 
 
+def _finite(price: object) -> float | None:
+    if isinstance(price, bool):
+        return None
+    try:
+        value = float(price)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if value != value or value in (float("inf"), float("-inf")) or value < 0:
+        return None
+    return value
+
+
 def record_prices(prices: Mapping[str, object]) -> None:
-    """Every price any lookup showed (account or reference storefront)."""
+    """Every price any lookup showed (account storefront, or region_probe's
+    ``RegionResult.known_price`` from the reference storefronts). The MAX is kept."""
 
     with _lock:
         for sid, price in prices.items():
-            try:
-                value = float(price)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
+            value = _finite(price)
+            if value is None:
                 continue
+            key = str(sid)
+            _max_price[key] = max(value, _max_price.get(key, value))
             if value > 0:
-                _paid_seen.add(str(sid))
+                _paid_seen.add(key)
+
+
+def max_known_price(store_id: str, account_price: object = None) -> float | None:
+    """Макс's contract: price for license_guard = MAX of all known prices; None only
+    if no lookup gave one."""
+
+    known = [p for p in (_finite(account_price), _max_price_of(store_id)) if p is not None]
+    return max(known) if known else None
+
+
+def _max_price_of(store_id: str) -> float | None:
+    with _lock:
+        return _max_price.get(str(store_id))
 
 
 def paid_seen(store_id: str) -> bool:
@@ -141,6 +169,7 @@ def forget_all() -> None:
     reset_session()
     with _lock:
         _paid_seen.clear()
+        _max_price.clear()
         _account = ""
 
 

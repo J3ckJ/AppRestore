@@ -84,6 +84,12 @@ LEGAL.md §1.14 — удалённое приложение с НЕИЗВЕСТ�
   * Цена в запросе — фиксированный 0 у ipatool; гард цену не подставляет, в журнал
     пишет ``price: null`` и ``price_source: "apple_fixed_0"``.
   * Согласие/шлюз (preflight) и лимиты 5/сутки, 15/всего — до попытки, как обычно.
+  * preflight на этом пути ОБЯЗАТЕЛЕН (§1.14 п.3): без него отказ
+    code=REGION_PREFLIGHT_REQUIRED до журнала и purchase(). На обычном пути
+    preflight=None по-прежнему допустим.
+  * Цена для гарда — МАКСИМУМ всех известных цен: витрина аккаунта + все эталонные
+    витрины region_probe (RegionStatus.known_price). Любая известная цена > 0 —
+    отказ «платное»; price=None только если цена неизвестна нигде.
   * Исход purchase() на этом пути:
       "acquired"/True              -> запись "acquired" (+ price_source), считается;
       "refused"/"failed"/False     -> явный отказ Apple (FailureType): НЕ пишем, НЕ
@@ -123,7 +129,8 @@ __all__ = ["Verdict", "AcquireResult", "check_can_acquire", "record_acquire",
            "DEFAULT_TOTAL_LIMIT", "ACQUIRED_STATUSES", "VOID_STATUS",
            "next_daily_slot", "NEVER", "PREFLIGHT_BLOCKED",
            "RegionAttemptSession", "PRICE_SOURCE_APPLE_FIXED_0", "APPLE_REFUSED",
-           "REGION_ALREADY_ATTEMPTED", "REGION_SESSION_REQUIRED"]
+           "REGION_ALREADY_ATTEMPTED", "REGION_SESSION_REQUIRED",
+           "REGION_PREFLIGHT_REQUIRED"]
 
 DEFAULT_DAILY_LIMIT = 5
 #: AcquireResult.code, когда preflight (например, IpatoolClient.license_preflight)
@@ -139,6 +146,10 @@ APPLE_REFUSED = "apple_refused"
 REGION_ALREADY_ATTEMPTED = "region_already_attempted"
 #: AcquireResult.code: acquire_and_record(region_unavailable=True) без region_session.
 REGION_SESSION_REQUIRED = "region_session_required"
+#: AcquireResult.code: путь §1.14 (region_unavailable=True, price=None) без preflight.
+#: LEGAL.md §1.14 п.3: попытка только через патченый ipatool после preflight
+#: (фиксированный price=0) — без preflight отказ до журнала и purchase().
+REGION_PREFLIGHT_REQUIRED = "region_preflight_required"
 JOURNAL_ENV = "APPRESTORE_LICENSE_JOURNAL"
 # next_daily_slot(): «слот не освободится сам» (окно держат записи без даты).
 NEVER = dt.datetime.max.replace(tzinfo=dt.timezone.utc)
@@ -845,7 +856,8 @@ def acquire_and_record(track_id: Any, price: Any, *,
 
     LEGAL.md §1.14 (``region_unavailable=True`` и ``price is None``):
     ``region_session`` ОБЯЗАТЕЛЕН (иначе отказ code=REGION_SESSION_REQUIRED, до
-    preflight и журнала). Порядок прежний: preflight → блокировка → цена/лимиты →
+    preflight и журнала), ``preflight`` тоже ОБЯЗАТЕЛЕН (иначе отказ
+    code=REGION_PREFLIGHT_REQUIRED, до журнала и purchase(); §1.14 п.3). Порядок прежний: preflight → блокировка → цена/лимиты →
     отметка попытки в сессии → purchase(). Исход трактует
     _region_status_from_purchase(): взяли → "acquired", неясно → "purchase_uncertain"
     (обе с price_source="apple_fixed_0", считаются); явный отказ → без записи,
@@ -859,6 +871,11 @@ def acquire_and_record(track_id: Any, price: Any, *,
         return AcquireResult(False, False, None,
                              "для удалённого приложения нужна сессия попыток (region_session)",
                              -1, -1, None, code=REGION_SESSION_REQUIRED)
+    if region_path and preflight is None:
+        return AcquireResult(False, False, None,
+                             "для удалённого приложения нужен preflight "
+                             "(патченый ipatool, фиксированный price=0)",
+                             -1, -1, None, code=REGION_PREFLIGHT_REQUIRED)
 
     if preflight is not None:
         gate = preflight()

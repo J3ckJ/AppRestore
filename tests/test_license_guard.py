@@ -643,6 +643,10 @@ def _lines(path: Path):
     return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
 
 
+def _ok_preflight():
+    return True
+
+
 def _region(path, outcome="acquired", *, price=None, session=None, flag=True, **kw):
     calls = []
 
@@ -653,6 +657,7 @@ def _region(path, outcome="acquired", *, price=None, session=None, flag=True, **
         return outcome
 
     sess = lg.RegionAttemptSession() if session is None else session
+    kw.setdefault("preflight", _ok_preflight)  # §1.14 п.3: на пути исключения обязателен
     res = lg.acquire_and_record("555000111", price, purchase=purchase, journal_path=path,
                                 region_unavailable=flag, region_session=sess,
                                 bundle_id="ru.bank.app", storefront="143469", mode="gui",
@@ -789,6 +794,7 @@ def test_region_one_attempt_per_app_per_session(tmp_path):
     assert not v.allowed and v.code == lg.REGION_ALREADY_ATTEMPTED
     # другое приложение в той же сессии — можно
     other = lg.acquire_and_record("555000222", None, purchase=lambda: "acquired",
+                                  preflight=_ok_preflight,
                                   journal_path=path, region_unavailable=True,
                                   region_session=sess, now=_now)
     assert other.recorded
@@ -841,9 +847,11 @@ def test_region_entries_count_toward_limit_for_normal_path(tmp_path):
     sess = lg.RegionAttemptSession()
     for i in range(3):
         lg.acquire_and_record(f"70000{i}", None, purchase=lambda: "acquired", journal_path=path,
+                              preflight=_ok_preflight,
                               region_unavailable=True, region_session=sess, now=_now)
     for i in range(2):
         lg.acquire_and_record(f"80000{i}", None, purchase=lambda: None, journal_path=path,
+                              preflight=_ok_preflight,
                               region_unavailable=True, region_session=sess, now=_now)
     assert lg.read_counts(path, now=_now) == (5, 5)
     v = lg.check_can_acquire("389801252", 0, journal_path=path, now=_now)
@@ -884,6 +892,7 @@ def test_parallel_region_attempts_respect_limit(tmp_path):
     def worker(i):
         results.append(lg.acquire_and_record(f"9000{i:02d}", None, purchase=lambda: "acquired",
                                              journal_path=path, region_unavailable=True,
+                                             preflight=_ok_preflight,
                                              region_session=sess, daily_limit=5, now=_now))
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(12)]
@@ -893,3 +902,76 @@ def test_parallel_region_attempts_respect_limit(tmp_path):
         t.join()
     assert sum(r.recorded for r in results) == 5
     assert lg.read_counts(path, now=_now) == (5, 5)
+
+
+# ------------------------------------------------- §1.14 п.3: preflight обязателен
+
+def test_region_requires_preflight(tmp_path):
+    """region_unavailable=True + price=None + preflight=None -> отказ до журнала/purchase."""
+    path = tmp_path / "j.jsonl"
+    called = []
+    sess = lg.RegionAttemptSession()
+    res = lg.acquire_and_record("555000111", None, purchase=lambda: called.append(1),
+                                journal_path=path, region_unavailable=True,
+                                region_session=sess, now=_now)
+    assert not res.allowed and not res.recorded and res.status is None
+    assert res.code == lg.REGION_PREFLIGHT_REQUIRED == "region_preflight_required"
+    assert res.entry is None and res.used_today == -1 and res.used_total == -1
+    assert called == []
+    assert not path.exists()
+    assert len(sess) == 0 and not sess.attempted("555000111")
+
+
+def test_region_explicit_none_preflight_refused_via_helper(tmp_path):
+    path = tmp_path / "j.jsonl"
+    res, calls, sess = _region(path, "acquired", preflight=None)
+    assert not res.allowed and res.code == lg.REGION_PREFLIGHT_REQUIRED and calls == []
+    assert not path.exists() and len(sess) == 0
+
+
+def test_region_session_checked_before_preflight_requirement(tmp_path):
+    """Без сессии и без preflight — прежний код REGION_SESSION_REQUIRED."""
+    path = tmp_path / "j.jsonl"
+    res = lg.acquire_and_record("555000111", None, purchase=lambda: 1 / 0,
+                                journal_path=path, region_unavailable=True, now=_now)
+    assert res.code == lg.REGION_SESSION_REQUIRED and not path.exists()
+
+
+def test_region_with_preflight_proceeds(tmp_path):
+    path = tmp_path / "j.jsonl"
+    pf = []
+    res, calls, sess = _region(path, "acquired", preflight=lambda: pf.append(1) or True)
+    assert res.allowed and res.recorded and res.status == "acquired"
+    assert pf == [1] and calls == [1]
+    assert res.entry["price_source"] == lg.PRICE_SOURCE_APPLE_FIXED_0
+    assert sess.attempted("555000111")
+
+
+def test_normal_path_without_preflight_unchanged(tmp_path):
+    path = tmp_path / "j.jsonl"
+    res = lg.acquire_and_record("389801252", 0, purchase=lambda: "acquired",
+                                journal_path=path, now=_now)
+    assert res.allowed and res.recorded and res.status == "acquired" and res.code is None
+    # и с флагом, но известной ценой 0 — обычный путь, preflight не требуется
+    res2 = lg.acquire_and_record("389801253", 0, purchase=lambda: "acquired",
+                                 journal_path=path, region_unavailable=True,
+                                 region_session=lg.RegionAttemptSession(), now=_now)
+    assert res2.recorded and "price_source" not in res2.entry
+
+
+def test_flag_off_unknown_price_without_preflight_is_plain_refusal(tmp_path):
+    path = tmp_path / "j.jsonl"
+    res = lg.acquire_and_record("555000111", None, purchase=lambda: 1 / 0,
+                                journal_path=path, now=_now)
+    assert not res.allowed and "цена не подтверждена" in res.reason
+    assert res.code != lg.REGION_PREFLIGHT_REQUIRED
+
+
+@pytest.mark.parametrize("price", [0.99, 149.0])
+def test_known_paid_price_with_flag_no_preflight_refused_as_paid(tmp_path, price):
+    """Цена известна (max известных > 0): не путь §1.14, отказ «платное»."""
+    path = tmp_path / "j.jsonl"
+    res = lg.acquire_and_record("555000111", price, purchase=lambda: 1 / 0,
+                                journal_path=path, region_unavailable=True,
+                                region_session=lg.RegionAttemptSession(), now=_now)
+    assert not res.allowed and "платное" in res.reason

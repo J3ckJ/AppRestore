@@ -251,6 +251,13 @@ def run_with_free_license(
         except Exception:  # noqa: BLE001 - no price means no license
             offer = None
     price = offer.get("price") if offer else None
+    from .delisted_attempt import max_known_price
+
+    if price is None or isinstance(price, (int, float)):
+        # Макс §1.14 п.2: MAX of the account lookup and region_probe's reference
+        # prices; any > 0 makes the guard refuse «платное» (also with the flag).
+        best = max_known_price(store_id, price)
+        price = best if best is not None else price
     path = journal or journal_path()
     fields = {
         "bundle_id": str((offer or {}).get("bundleId") or ""),

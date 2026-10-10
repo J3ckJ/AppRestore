@@ -22,9 +22,31 @@
 Вызывающий код обязан передать известную цену > 0 из ЛЮБОГО lookup, даже если витрина аккаунта
 цены не дала. Для `NOT_IN_REGION` это главный случай (Лена, усл. 2).
 
-## Порядок (не изменился)
+**Контракт цены (§1.14 п.2):** `price` = МАКСИМУМ всех известных цен: цена витрины аккаунта (если
+есть) и `RegionResult.known_price` из `region_probe.classify_detailed()` (это уже максимум по
+`known_prices` эталонных витрин). Любая известная цена > 0 → гард отказывает «платное».
+`price=None` передаётся, только если цена неизвестна везде; лишь тогда с `region_unavailable=True`
+открывается путь §1.14. Известная `0` — обычный путь (без исключения).
 
-`acquire_and_record`: проверка `region_session` → preflight (патченый ipatool) → `journal_lock` →
+```python
+known = [p for p in (account_price, rr.known_price) if p is not None]
+price = max(known) if known else None
+flag = rr.status in (RegionStatus.DELISTED, RegionStatus.NOT_IN_REGION)
+```
+
+## preflight обязателен на пути §1.14 (§1.14 п.3)
+
+Если `region_unavailable=True` и `price is None` (исключение применяется), а `preflight is None`,
+`acquire_and_record` отказывает: `allowed=False`, `code="region_preflight_required"`
+(`REGION_PREFLIGHT_REQUIRED`), `used_today/used_total = -1`. `purchase()` не вызывается, журнал не
+открывается, попытка в сессии не отмечается. Так вызов из CLI или старого окна не дойдёт до ipatool
+без патченого preflight с фиксированным `price=0`. На обычном пути (цена известна или флага нет)
+`preflight=None` по-прежнему допустим.
+
+## Порядок
+
+`acquire_and_record`: проверка `region_session` → проверка, что `preflight` передан (только путь
+§1.14) → preflight (патченый ipatool) → `journal_lock` →
 track_id / цена / сессия / лимиты 15 всего и 5 за сутки → отметка попытки в сессии → `purchase()` →
 запись. Экран согласия и шлюз в GUI идут до вызова, как раньше. Гард никакую цену в запрос не
 передаёт: `purchase()` без аргументов, ipatool шлёт фиксированный `price=0`.
@@ -69,10 +91,13 @@ RegionAttemptSession(): attempted(track_id), mark(track_id), reset(), len()
 PRICE_SOURCE_APPLE_FIXED_0 = "apple_fixed_0"
 APPLE_REFUSED = "apple_refused"; REGION_ALREADY_ATTEMPTED = "region_already_attempted"
 REGION_SESSION_REQUIRED = "region_session_required"
+REGION_PREFLIGHT_REQUIRED = "region_preflight_required"   # путь §1.14 без preflight
 ```
 
-Все новые параметры имеют значения по умолчанию, старые вызовы работают как раньше.
+Сигнатуры не изменились. Все новые параметры имеют значения по умолчанию, старые вызовы
+обычного пути работают как раньше; вызовы пути §1.14 без `preflight` теперь отказываются.
 
 ## Тесты
 
-`test_license_guard.py`: 100 passed (было 56, +44 на §1.14). Весь `maks-share`: 281 passed.
+`test_license_guard.py`: 108 passed (было 100, +8: обязательный preflight на пути §1.14,
+обычный путь без preflight, известная цена > 0 с флагом). Весь `maks-share`: 307 passed.

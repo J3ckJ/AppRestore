@@ -25,8 +25,10 @@ def no_network(monkeypatch):
 class FakeStore:
     """catalog: country -> set(track_id). fail: set стран, где lookup падает."""
 
-    def __init__(self, catalog, fail=()):
+    def __init__(self, catalog, fail=(), prices=None):
         self.catalog = {k.upper(): set(v) for k, v in catalog.items()}
+        # prices: country -> {track_id: значение поля "price"} (как в ответе lookup)
+        self.prices = {k.upper(): dict(v) for k, v in (prices or {}).items()}
         self.fail = {c.upper() for c in fail}
         self.calls = []  # (country, [ids], headers)
 
@@ -41,7 +43,14 @@ class FakeStore:
         if country in self.fail:
             raise rp.LookupError_("HTTP 503")
         have = self.catalog.get(country, set())
-        res = [{"trackId": i, "kind": "software"} for i in ids if i in have]
+        cp = self.prices.get(country, {})
+        res = []
+        for i in ids:
+            if i in have:
+                item = {"trackId": i, "kind": "software"}
+                if i in cp:
+                    item["price"] = cp[i]
+                res.append(item)
         return json.dumps({"resultCount": len(res), "results": res}).encode()
 
 
@@ -354,3 +363,118 @@ def test_labels_overridable():
     assert titles[RegionStatus.NOT_IN_REGION] == "Нет в вашей стране"
     with pytest.raises(ValueError):
         rp.make_labels({"bogus": "x"})
+
+
+# --- §1.14 п.2: известная цена из тех же lookup ------------------------------
+def test_not_in_region_exposes_reference_price():
+    store = FakeStore({"RU": set(), "US": {2}}, prices={"US": {2: 4.99}})
+    probe, _ = make(store)
+    [r] = probe.classify_detailed([2], "RU").values()
+    assert r.status is RegionStatus.NOT_IN_REGION
+    assert r.known_price == 4.99 and r.known_prices == {"US": 4.99}
+    assert [c[0] for c in store.calls] == ["RU", "US"]  # новых запросов нет
+
+
+def test_not_in_region_via_second_reference_price():
+    store = FakeStore({"DE": set(), "US": set(), "RU": {3}}, prices={"RU": {3: 149.0}})
+    probe, _ = make(store)
+    r = probe.classify_detailed([3], "DE")[3]
+    assert r.status is RegionStatus.NOT_IN_REGION
+    assert r.known_price == 149.0 and r.known_prices == {"RU": 149.0}
+
+
+def test_not_in_region_free_reference_price_is_zero_not_none():
+    store = FakeStore({"RU": set(), "US": {2}}, prices={"US": {2: 0.0}})
+    probe, _ = make(store)
+    r = probe.classify_detailed([2], "RU")[2]
+    assert r.known_price == 0.0 and r.known_prices == {"US": 0.0}
+
+
+def test_not_in_region_without_price_field_is_unknown_price():
+    store = FakeStore({"RU": set(), "US": {2}})
+    probe, _ = make(store)
+    r = probe.classify_detailed([2], "RU")[2]
+    assert r.status is RegionStatus.NOT_IN_REGION
+    assert r.known_price is None and r.known_prices == {}
+
+
+@pytest.mark.parametrize("bad", ["4.99", None, True, float("nan"), float("inf"), -1, {"x": 1}])
+def test_garbage_price_is_ignored(bad):
+    store = FakeStore({"RU": set(), "US": {2}}, prices={"US": {2: bad}})
+    probe, _ = make(store)
+    r = probe.classify_detailed([2], "RU")[2]
+    assert r.status is RegionStatus.NOT_IN_REGION and r.known_price is None
+
+
+def test_delisted_has_no_known_price():
+    store = FakeStore({"DE": set(), "US": set(), "RU": set()},
+                      prices={"US": {4: 9.99}, "RU": {4: 99.0}})  # цены у отсутствующих не видны
+    probe, _ = make(store)
+    r = probe.classify_detailed([4], "DE")[4]
+    assert r.status is RegionStatus.DELISTED
+    assert r.known_price is None and r.known_prices == {}
+
+
+def test_unknown_on_error_has_no_known_price():
+    store = FakeStore({"US": {5}}, fail={"RU"}, prices={"US": {5: 1.0}})
+    probe, _ = make(store)
+    r = probe.classify_detailed([5], "RU")[5]
+    assert r.status is RegionStatus.UNKNOWN and r.known_price is None
+
+
+def test_available_exposes_account_price():
+    store = FakeStore({"RU": {1}}, prices={"RU": {1: 379.0}})
+    probe, _ = make(store)
+    r = probe.classify_detailed([1], "ru")[1]
+    assert r.status is RegionStatus.AVAILABLE and r.known_prices == {"RU": 379.0}
+    assert [c[0] for c in store.calls] == ["RU"]
+
+
+def test_known_price_is_cached_with_presence():
+    store = FakeStore({"RU": set(), "US": {2}}, prices={"US": {2: 2.99}})
+    probe, _ = make(store)
+    first = probe.classify_detailed([2], "RU")[2]
+    n = len(store.calls)
+    second = probe.classify_detailed([2], "RU")[2]
+    assert len(store.calls) == n  # из кэша, без сети
+    assert second == first and second.known_price == 2.99
+
+
+def test_classify_unchanged_shape_with_prices():
+    store = FakeStore({"DE": {1}, "US": {2}, "RU": set()}, prices={"US": {2: 5.0}, "DE": {1: 0}})
+    probe, _ = make(store)
+    assert probe.classify([1, 2, 3], "DE") == {1: RegionStatus.AVAILABLE,
+                                               2: RegionStatus.NOT_IN_REGION,
+                                               3: RegionStatus.DELISTED}
+
+
+def test_detailed_same_requests_and_headers_as_classify():
+    cat = {"DE": {1}, "US": {2}, "RU": set()}
+    a, b = FakeStore(cat, prices={"US": {2: 5.0}}), FakeStore(cat, prices={"US": {2: 5.0}})
+    pa, _ = make(a)
+    pb, _ = make(b)
+    pa.classify([1, 2, 3], "DE")
+    pb.classify_detailed([1, 2, 3], "DE")
+    assert a.calls == b.calls
+    for _, _, headers in b.calls:
+        assert headers == dict(rp.HEADERS)
+
+
+def test_max_known_price_contract_with_license_guard(tmp_path):
+    """Контракт для Димы: price = max(известных) -> платное отказ, None -> путь §1.14."""
+    try:
+        from apprestore_core import license_guard as lg
+    except ImportError:
+        import license_guard as lg
+    store = FakeStore({"DE": set(), "US": {2}, "RU": set()}, prices={"US": {2: 1.99}})
+    probe, _ = make(store)
+    r = probe.classify_detailed([2, 3], "DE")
+    path = tmp_path / "j.jsonl"
+    paid = lg.check_can_acquire("2", r[2].known_price, journal_path=path,
+                                region_unavailable=r[2].status in (RegionStatus.DELISTED,
+                                                                   RegionStatus.NOT_IN_REGION))
+    assert not paid.allowed and "платное" in paid.reason
+    assert r[3].status is RegionStatus.DELISTED and r[3].known_price is None
+    unknown = lg.check_can_acquire("3", r[3].known_price, journal_path=path,
+                                   region_unavailable=True)
+    assert unknown.allowed and unknown.region_exception is True

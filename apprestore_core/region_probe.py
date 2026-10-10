@@ -19,6 +19,15 @@
    витрине аккаунта, ни в КАЖДОЙ из двух эталонных; при одной эталонной — UNKNOWN. Модуль ничего
    не покупает и не предлагает действий (никаких «купить там», смены региона, VPN).
 
+5. ИЗВЕСТНАЯ ЦЕНА (LEGAL.md §1.14 п.2). classify_detailed() возвращает для каждого
+   id RegionResult(status, known_price, known_prices): цены, которые вернули ТЕ ЖЕ
+   публичные lookup (поле `price` ответа), без новых запросов и витрин. Контракт
+   для вызывающего (Дима): в license_guard передаётся price = МАКСИМУМ всех
+   известных цен (витрина аккаунта + known_prices эталонных). Любая > 0 — гард
+   откажет «платное». Только если цены нет нигде (price=None) и статус
+   DELISTED/NOT_IN_REGION — путь §1.14 с region_unavailable=True. classify() не
+   изменился (dict[int, RegionStatus]).
+
 Логи: только счётчики (сколько id, сколько запросов, сколько ошибок), без track_id,
 без страны аккаунта и без тел ответов.
 """
@@ -27,13 +36,14 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import math
 import re
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping, Optional
 
 log = logging.getLogger("apprestore.region_probe")
@@ -61,6 +71,21 @@ class RegionStatus(str, enum.Enum):
     NOT_IN_REGION = "not_in_region"  # нет в витрине аккаунта, есть в эталонной
     DELISTED = "delisted"            # нет ни в аккаунте, ни в эталонных
     UNKNOWN = "unknown"              # сеть/ошибка/неоднозначно — не блокировать
+
+
+@dataclass(frozen=True)
+class RegionResult:
+    """Результат classify_detailed() для одного track_id.
+
+    known_prices: витрина (ISO2) -> цена из публичного lookup, только там, где
+    приложение нашлось и `price` — конечное число >= 0. Только витрины, которые
+    region_probe и так опрашивал (аккаунт + фиксированные эталонные; после
+    первой эталонной, где приложение нашлось, следующие не опрашиваются).
+    known_price: max(known_prices.values()) или None, если цены нет нигде.
+    """
+    status: RegionStatus
+    known_price: Optional[float] = None
+    known_prices: Mapping[str, float] = field(default_factory=dict)
 
 
 # Только подписи, без действий (§1.10 п.4, R5). Классификация косвенная (1–2
@@ -135,6 +160,14 @@ def _norm_country(value: str) -> str:
     return c
 
 
+def _norm_price(value: object) -> Optional[float]:
+    """Цена из ответа lookup: конечное число >= 0, иначе None (неизвестна)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    p = float(value)
+    return p if math.isfinite(p) and p >= 0 else None
+
+
 def _norm_track_id(value: object) -> Optional[int]:
     try:
         n = int(str(value).strip())
@@ -147,6 +180,7 @@ def _norm_track_id(value: object) -> Optional[int]:
 class _Entry:
     present: bool
     expires: float
+    price: Optional[float] = None
 
 
 class RegionProbe:
@@ -183,18 +217,20 @@ class RegionProbe:
         self.requests_made = 0  # для тестов/диагностики
 
     # --- кэш -----------------------------------------------------------------
-    def _cached(self, tid: int, country: str) -> Optional[bool]:
+    def _cached(self, tid: int, country: str) -> Optional[_Entry]:
         e = self._cache.get((tid, country))
         if e is None:
             return None
         if self._clock() >= e.expires:
             del self._cache[(tid, country)]
             return None
-        return e.present
+        return e
 
-    def _store(self, tid: int, country: str, present: bool) -> None:
+    def _store(self, tid: int, country: str, present: bool,
+               price: Optional[float] = None) -> None:
         ttl = self._pos_ttl if present else self._neg_ttl
-        self._cache[(tid, country)] = _Entry(present, self._clock() + ttl)
+        self._cache[(tid, country)] = _Entry(present, self._clock() + ttl,
+                                             price if present else None)
 
     def clear_cache(self) -> None:
         with self._lock:
@@ -208,7 +244,7 @@ class RegionProbe:
                 self._sleep(wait)
         self._last_request = self._clock()
 
-    def _lookup_batch(self, ids: list[int], country: str) -> set[int]:
+    def _lookup_batch(self, ids: list[int], country: str) -> dict[int, Optional[float]]:
         query = urllib.parse.urlencode({"id": ",".join(str(i) for i in ids),
                                         "country": country.lower()})
         self._throttle()
@@ -222,17 +258,25 @@ class RegionProbe:
         except (ValueError, KeyError, TypeError, UnicodeDecodeError):
             raise LookupError_("bad JSON") from None
         wanted = set(ids)
-        found: set[int] = set()
+        found: dict[int, Optional[float]] = {}
         for item in results:
             if not isinstance(item, dict):
                 continue
             tid = _norm_track_id(item.get("trackId"))
             if tid in wanted:
-                found.add(tid)
+                price = _norm_price(item.get("price"))
+                prev = found.get(tid)
+                # дубликаты в ответе: берём большую известную цену (осторожнее)
+                found[tid] = price if prev is None else (prev if price is None else max(prev, price))
         return found
 
-    def _presence(self, ids: list[int], country: str) -> dict[int, Optional[bool]]:
-        """track_id -> True/False (есть/нет в витрине) или None (ошибка)."""
+    def _presence(self, ids: list[int], country: str,
+                  prices: Optional[dict[int, Optional[float]]] = None
+                  ) -> dict[int, Optional[bool]]:
+        """track_id -> True/False (есть/нет в витрине) или None (ошибка).
+
+        prices (если передан) заполняется ценой для найденных id (None — нет цены).
+        """
         out: dict[int, Optional[bool]] = {}
         todo: list[int] = []
         for tid in ids:
@@ -240,7 +284,9 @@ class RegionProbe:
             if hit is None:
                 todo.append(tid)
             else:
-                out[tid] = hit
+                out[tid] = hit.present
+                if prices is not None and hit.present:
+                    prices[tid] = hit.price
         errors = 0
         for i in range(0, len(todo), self._batch):
             chunk = todo[i:i + self._batch]
@@ -253,8 +299,11 @@ class RegionProbe:
                 continue
             for tid in chunk:
                 present = tid in found
-                self._store(tid, country, present)
+                price = found.get(tid)
+                self._store(tid, country, present, price)
                 out[tid] = present
+                if prices is not None and present:
+                    prices[tid] = price
         if errors:
             log.info("region_probe: %d lookup batch(es) failed", errors)
         return out
@@ -266,6 +315,17 @@ class RegionProbe:
 
         account_country — ISO2 страны Apple ID (AccountInfo/auth info countryCode).
         Невалидные track_id пропускаются; невалидная страна -> ValueError.
+        """
+        return {t: r.status for t, r in self.classify_detailed(track_ids, account_country).items()}
+
+    def classify_detailed(self, track_ids: Iterable[object], account_country: str
+                          ) -> dict[int, RegionResult]:
+        """Как classify(), но track_id -> RegionResult(status, known_price, known_prices).
+
+        Те же запросы, кэш и rate-limit, что у classify(); цены берутся из уже
+        сделанных публичных lookup (§1.14 п.2). Вызывающий передаёт в
+        license_guard price = max(цена витрины аккаунта, known_price); None — только
+        если цена неизвестна везде.
         """
         account = _norm_country(account_country)
         ids: list[int] = []
@@ -281,7 +341,12 @@ class RegionProbe:
             return {}
         with self._lock:
             before = self.requests_made
-            acc = self._presence(ids, account)
+            prices: dict[int, dict[str, float]] = {t: {} for t in ids}
+            acc_prices: dict[int, Optional[float]] = {}
+            acc = self._presence(ids, account, acc_prices)
+            for t, p in acc_prices.items():
+                if p is not None:
+                    prices[t][account] = p
             result: dict[int, RegionStatus] = {}
             pending = [t for t in ids if acc[t] is False]
             for t in ids:
@@ -302,8 +367,12 @@ class RegionProbe:
                 need = [t for t in pending if True not in ref_state[t]]
                 if not need:
                     break
-                for t, v in self._presence(need, ref).items():
+                ref_prices: dict[int, Optional[float]] = {}
+                for t, v in self._presence(need, ref, ref_prices).items():
                     ref_state[t].append(v)
+                for t, p in ref_prices.items():
+                    if p is not None:
+                        prices[t][ref] = p
             for t in pending:
                 states = ref_state[t]
                 if True in states:
@@ -315,7 +384,10 @@ class RegionProbe:
                     result[t] = RegionStatus.UNKNOWN   # мало данных / ошибка
             log.info("region_probe: %d ids, %d requests", len(ids),
                      self.requests_made - before)
-            return result
+            return {t: RegionResult(result[t],
+                                    max(prices[t].values()) if prices[t] else None,
+                                    dict(prices[t]))
+                    for t in ids}
 
 
 _default_probe: Optional[RegionProbe] = None
@@ -334,3 +406,9 @@ def classify_region(track_ids: Iterable[object], account_country: str
                     ) -> dict[int, RegionStatus]:
     """Удобная обёртка над общим RegionProbe (общий кэш и rate-limit на процесс)."""
     return default_probe().classify(track_ids, account_country)
+
+
+def classify_region_detailed(track_ids: Iterable[object], account_country: str
+                             ) -> dict[int, RegionResult]:
+    """classify_detailed() общего RegionProbe (известные цены, §1.14 п.2)."""
+    return default_probe().classify_detailed(track_ids, account_country)

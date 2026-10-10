@@ -71,13 +71,14 @@ def apply_statuses(items: Iterable[RestoreItem], statuses: Mapping[str, object])
 
 
 def load_classifier() -> Callable[[list[str], str], Mapping[object, object]] | None:
-    """Макс's ``region_probe.classify_region`` (batch: track ids + account country)."""
+    """Макс's ``region_probe.classify_region_detailed`` (status + known reference
+    price, §1.14 п.2), else ``classify_region`` (batch: track ids + account country)."""
 
     try:
-        from apprestore_core.region_probe import classify_region
+        from apprestore_core import region_probe
     except Exception:  # noqa: BLE001
         return None
-    return classify_region
+    return getattr(region_probe, "classify_region_detailed", None) or getattr(region_probe, "classify_region", None)
 
 
 def classify(classifier: Callable[..., Mapping[object, object]] | None, store_ids: list[str],
@@ -91,4 +92,16 @@ def classify(classifier: Callable[..., Mapping[object, object]] | None, store_id
         result = classifier(ids, country)
     except Exception:  # noqa: BLE001 - ValueError on a bad country, network: nothing shown
         return {}
-    return {str(k): to_status(v) for k, v in dict(result).items()}
+    out: dict[str, object] = {}
+    prices: dict[str, object] = {}
+    for k, v in dict(result).items():
+        status = getattr(v, "status", v)  # RegionResult or a bare RegionStatus
+        out[str(k)] = to_status(status)
+        known = getattr(v, "known_price", None)
+        if known is not None:
+            prices[str(k)] = known
+    if prices:
+        from apprestore_core.delisted_attempt import record_prices
+
+        record_prices(prices)  # any > 0 → no «Поставить», guard refuses «платное»
+    return out
