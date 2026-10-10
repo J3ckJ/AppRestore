@@ -369,6 +369,18 @@ class QuickSession(QObject):
         rows.sort(key=lambda row: (not bool(row["active"]), str(row["email"]).lower()))
         return rows
 
+    def offloaded_snapshot(self) -> list[OffloadedApp]:
+        """Offloaded apps of the selected device, in list order (4b window)."""
+
+        with self._lock:
+            rows = list(self._rows)
+            by_key = dict(self._by_key)
+        return [by_key[str(row["storeId"])] for row in rows if str(row.get("storeId")) in by_key]
+
+    def current_udid(self) -> str:
+        with self._lock:
+            return self._udid
+
     @Property("QVariantList", notify=changed)
     def apps(self) -> list[dict[str, str]]:
         return list(self._snapshot()["apps"])  # type: ignore[arg-type]
