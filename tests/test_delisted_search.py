@@ -15,7 +15,8 @@ except ImportError:
     import delisted_search as ds
 
 SIRIUS, VTB, ALFA, DELIM, DRIVE = 6749962031, 472951966, 353127685, 6739035108, 6760469916
-TIER_A = {VTB, ALFA, DELIM, DRIVE}
+SBER, TINK = 492224193, 455652438          # оригиналы, добавлены по §1.13 (Лена, вопрос 2)
+TIER_A = {VTB, ALFA, DELIM, DRIVE, SBER, TINK}
 
 
 @pytest.fixture(autouse=True)
@@ -134,7 +135,8 @@ def test_builtin_layout_vtb():
     ids = [h.track_id for h in ds.search_builtin("dn,", strict=False)]
     assert ids[:2] == [VTB, SIRIUS]
     assert {h.brand for h in ds.search_builtin("ыиук", strict=False)} >= {"СберБанк Онлайн"}
-    assert ds.search_builtin("ыиук") == []                     # Сбер — уровень B
+    # strict: из Сбера только оригинал (уровень A); «Активы Онлайн» — уровень B, выключен
+    assert [h.track_id for h in ds.search_builtin("ыиук")] == [SBER]
 
 
 def test_builtin_bank_synonym_and_order():
@@ -190,11 +192,43 @@ def test_entry_without_archive_copy_is_dropped(monkeypatch):
     assert all(h.track_id != DELIM for h in ds.search_builtin("делим вместе"))
 
 
+def test_archive_must_be_copy_of_that_post(monkeypatch):
+    """§1.13 п.1: снимок другого поста/страницы не считается архивной копией."""
+    import dataclasses
+    e = next(e for e in ds.BUILTIN if e.track_id == DRIVE)
+    assert e.archive_of_post and e.tier_a_ok
+    other = dataclasses.replace(
+        e, archive_url="https://web.archive.org/web/20260421032214/https://t.me/tbank/10590")
+    not_wb = dataclasses.replace(e, archive_url="https://archive.ph/abcd/https://t.me/tbank/10591")
+    no_date = dataclasses.replace(e, checked_date=None)
+    for bad in (other, not_wb, no_date):
+        assert not bad.tier_a_ok
+    monkeypatch.setattr(ds, "BUILTIN", tuple(other if x.track_id == DRIVE else x
+                                             for x in ds.BUILTIN))
+    assert DRIVE not in {x.track_id for x in ds.builtin_entries()}
+    assert all(h.track_id != DRIVE for h in ds.search_builtin("drive transit"))
+
+
+def test_originals_sber_tbank_tier_a():
+    """Оригиналы Сбера и Т-Банка: разработчик — банк, ссылка с официального сайта на id."""
+    for tid, dev, host in ((SBER, "Сбербанк России", "www.sberbank.ru"),
+                           (TINK, "Tinkoff Bank", "www.tinkoff.ru")):
+        e = next(e for e in ds.builtin_entries() if e.track_id == tid)
+        assert e.tier_a_ok and e.developer_is_bank and e.developer == dev
+        assert urllib.parse.urlparse(e.post_url).netloc == host
+        assert f"id{tid}" in e.evidence
+    t = next(e for e in ds.BUILTIN if e.track_id == TINK)
+    assert f"id{TINK}" in t.link_archive_url          # архив трекера appsflyer → id
+    # оригинал выше клона при одинаковом совпадении
+    assert [h.track_id for h in ds.search_builtin("т банк")][:2] == [TINK, DRIVE]
+    assert ds.search_builtin("сбербанк")[0].track_id == SBER
+
+
 def test_developer_is_bank_flag():
-    want = {VTB: True, ALFA: True, DELIM: False, DRIVE: False}
+    want = {VTB: True, ALFA: True, DELIM: False, DRIVE: False, SBER: True, TINK: True}
     assert {e.track_id: e.developer_is_bank for e in ds.builtin_entries()} == want
     for q, tid in (("втб", VTB), ("альфа банк", ALFA), ("делим вместе", DELIM),
-                   ("drive transit", DRIVE)):
+                   ("drive transit", DRIVE), ("сбербанк онлайн", SBER), ("тинькофф", TINK)):
         h = next(h for h in ds.search_builtin(q) if h.track_id == tid)
         assert h.developer_is_bank is want[tid] and h.to_dict()["developer_is_bank"] is want[tid]
     # Сириус (если когда-нибудь включат B): разработчик — физлицо, не банк
@@ -264,7 +298,8 @@ def test_builtin_data_integrity():
     assert len(ids) == len(set(ids))
     for e in ds.BUILTIN:
         # официальный источник банка и дата — обязательны (правило Лены)
-        assert re.search(r"t\.me/(bankvtb|AlfaBank|sberbank|tbank)/\d+|vtb\.ru|alfabank\.ru",
+        assert re.search(r"t\.me/(bankvtb|AlfaBank|sberbank|tbank)/\d+|vtb\.ru|alfabank\.ru|"
+                         r"sberbank\.ru|tinkoff\.ru",
                          e.evidence), e.name
         assert re.search(r"\d{2}\.\d{2}\.20\d{2}", e.evidence), e.name
         assert "Wayback" in e.evidence and e.developer

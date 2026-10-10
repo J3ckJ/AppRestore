@@ -1,6 +1,6 @@
 # delisted_search: поиск удалённых приложений по названию
 
-Макс, 10.10.2026. Модуль `delisted_search.py`, только stdlib, тесты в `test_delisted_search.py` (58, без сети). Обновлено 10.10.2026 вечером под LEGAL.md §1.13: `BUILTIN_STRICT=True` по умолчанию, у записей уровня A есть архивная копия поста, новое поле `developer_is_bank`, «сириус» кириллицей находит «Cириус» и в архиве.
+Макс, 10.10.2026. Модуль `delisted_search.py`, только stdlib, тесты в `test_delisted_search.py` (60, без сети). Обновлено 10.10.2026 вечером под LEGAL.md §1.13: `BUILTIN_STRICT=True` по умолчанию, у записей уровня A есть архивная копия поста, новое поле `developer_is_bank`, «сириус» кириллицей находит «Cириус» и в архиве.
 
 Задача Евгения: во вкладке «Найти» человек вписывает «Сириус» (или «втб», «альфа», «dn,») и находит удалённое приложение, а не только по номеру или ссылке.
 
@@ -70,9 +70,13 @@ hits = search_delisted("сириус", allow_network=True,     # + Wayback, то
 | ВТБ Онлайн 472951966 | https://www.vtb.ru/personal/online-servisy/vtb-online/ (официальный сайт) | https://web.archive.org/web/20200101102720/https://www.vtb.ru/personal/online-servisy/vtb-online/ | ссылка `itunes.apple.com/ru/app/id472951966` | True (VTB Bank (PJSC)) |
 | Альфа-Банк 353127685 | https://alfabank.ru/everyday/online/ (официальный сайт) | https://web.archive.org/web/20200106203459/https://alfabank.ru/everyday/online/ | ссылка `itunes.apple.com/ru/app/id353127685` | True (AO ALFA-BANK) |
 | Делим Вместе 6739035108 | https://t.me/AlfaBank/2896 | https://web.archive.org/web/20250711101351/https://t.me/s/AlfaBank/2896 | текст «Установите на айфон приложение Делим вместе» и ссылка `trk.mail.ru/c/g5rzb1`; её снимок https://web.archive.org/web/20250711070157/https://trk.mail.ru/c/g5rzb1 — 302 на `apps.apple.com/ru/app/id6739035108` | False (Eyup KECIYOKUSU) |
+| Сбербанк Онлайн 492224193 (оригинал) | https://www.sberbank.ru/ru/person/dist_services/inner_apps (официальный сайт, «Мобильное приложение») | https://web.archive.org/web/20190724082459/https://www.sberbank.ru/ru/person/dist_services/inner_apps | кнопка «Скачайте приложение» → `itunes.apple.com/ru/app/sberbank-onlajn/id492224193` (то же на снимке 20180802025141). Страница приложения, Wayback 20190618225127: «Сбербанк Онлайн», Сбербанк России | True (Сбербанк России) |
+| Тинькофф 455652438 (оригинал) | https://www.tinkoff.ru/apps/ (официальный сайт) | https://web.archive.org/web/20200106202720/https://www.tinkoff.ru/apps/ | иконка App Store → `app.appsflyer.com/id455652438?pid=tinkoff.ru&c=apps_page…`; снимок трекера https://web.archive.org/web/20180309213604/https://app.appsflyer.com/id455652438?pid=tinkoff.ru&c=apps_page&af_cost_model=prm.unp — 302 на `itunes.apple.com/RU/app/id455652438`. Страница приложения, Wayback 20201208194931: «Тинькофф», Tinkoff Bank | True (Tinkoff Bank) |
 | Drive Transit 6760469916 | https://t.me/tbank/10591 | https://web.archive.org/web/20260421032214/https://t.me/tbank/10591 | текст «…называется Drive Transit» и ссылка `l.tbank.ru/tg_ios`; её снимок https://web.archive.org/web/20260421024133/https://l.tbank.ru/tg_ios — 302 на `apps.apple.com/app/id6760469916` | False (Amitabh Kulkarni) |
 
-У ВТБ и Альфы источник — страница официального сайта, а не пост в канале (у оригиналов прямую ссылку давал сайт). Если по §1.13 нужен именно пост, это вопрос к Лене.
+У ВТБ, Альфы, Сбера и Т-Банка (оригиналы) источник — страница официального сайта, а не пост в канале (у оригиналов прямую ссылку давал сайт). Если по §1.13 нужен именно пост, это вопрос к Лене.
+
+Сбер и Т-Банк (оригиналы) добавлены 10.10.2026 по ответу Лены на вопрос 2: разработчик — банк, ссылка с официального сайта прямо на id, есть архивная копия страницы и дата проверки. Раньше их не было, потому что проверялись не те страницы (sberbank.ru 2020 и главная tinkoff.ru); нужные страницы — `inner_apps` (2018–2019, позже там смартлинки onelink) и `tinkoff.ru/apps/`. Удалённость: Сбер 492224193 — публичный lookup/MDM пуст (см. storefront-swap-research.md §2.3); для 455652438 lookup в этом проходе не повторял (сеть была ограничена web.archive.org), метку «Удалено» GUI всё равно ставит только после `region_probe`.
 
 ### «Сириус» (6749962031): остаётся уровнем B
 
@@ -96,7 +100,6 @@ hits = search_delisted("сириус", allow_network=True,     # + Wayback, то
 
 ### Не включено (подтверждения по правилу нет), только Wayback-поиск по названию
 
-- **СберБанк Онлайн (492224193)** и **Тинькофф (455652438)**: оригиналы, на снимках Wayback разработчик сам банк («Сбербанк России», «Tinkoff Bank»). Но ссылки с официального сайта на этот id в архиве не нашлось (проверены страницы sberbank.ru 2020 и tinkoff.ru 2019–2021). По запросу «сбербанк онлайн» Wayback-поиск находит 492224193 первым.
 - **Toastmas (Т-Банк, 6774629936)**: официальный пост https://t.me/tbank/10833 (23.06.2026), но в архиве нет снимка со статусом 200, поэтому разработчика не сверить. Ссылка t.tb.ru/public_june сейчас ведёт на «app_unavailable».
 - **«Семейный Онлайн», «Актив» (Сбер, 2026)**: Сбер в официальном канале сообщил только об удалении (t.me/sberbank/5852, 5874). track_id в архиве не нашёлся.
 - **Kafario (ВТБ Мои Инвестиции, 6803519628)**: официальный пост https://t.me/bankvtb/3828 (02.10.2026) с прямой ссылкой. Но приложение сейчас **живое** (lookup: SAMUEL COMPANY LIMITED), его найдёт обычный поиск App Store. В список удалённых не вносил.

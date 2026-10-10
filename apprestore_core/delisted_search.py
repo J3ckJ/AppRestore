@@ -142,16 +142,29 @@ class BuiltinEntry:
     checked_date: Optional[str] = None  # YYYY-MM-DD, когда архивная копия сверена
 
     @property
+    def archive_of_post(self) -> bool:
+        """archive_url — снимок Wayback именно post_url (t.me/<c>/<n> ≡ t.me/s/<c>/<n>)."""
+        if not (self.post_url and self.archive_url):
+            return False
+        m = _ARCHIVE_URL_RE.match(self.archive_url)
+        if not m:
+            return False
+        orig = self.archive_url.split("/", 5)[5]   # https://web.archive.org/web/<ts>/<orig>
+        return orig.replace("://t.me/s/", "://t.me/") == self.post_url
+
+    @property
     def tier_a_ok(self) -> bool:
         """Уровень A по §1.13: прямая ссылка + архивная копия поста + дата проверки."""
-        return bool(self.link_verified and self.post_url
-                    and self.archive_url and _ARCHIVE_URL_RE.match(self.archive_url)
+        return bool(self.link_verified and self.archive_of_post
                     and self.checked_date and _DATE_RE.match(self.checked_date))
 
 
 # ---------------------------------------------------------------------------
 # ВСТРОЕННЫЙ СПИСОК. Проверено 10.10.2026, см. delisted-search.md (таблица).
-# Все track_id: публичный lookup ru и us → resultCount 0 (удалены).
+# track_id клонов и Сбера: публичный lookup ru и us → resultCount 0 (удалены).
+# Архивные копии постов/страниц уровня A сверены 10.10.2026 анонимным GET к
+# web.archive.org: на снимке есть прямая ссылка на track_id (или на трекер, чей
+# архивный 302 ведёт на этот id — link_archive_url).
 # ---------------------------------------------------------------------------
 _MZ = "https://is1-ssl.mzstatic.com/image/thumb/"
 BUILTIN: tuple[BuiltinEntry, ...] = (
@@ -211,8 +224,9 @@ BUILTIN: tuple[BuiltinEntry, ...] = (
         True,
         "Официальный канал Альфа-Банка t.me/AlfaBank/2896 (11.07.2025 09:00 МСК): «Установите "
         "на айфон приложение Делим вместе»; ссылка поста trk.mail.ru/c/g5rzb1 → "
-        "apps.apple.com/ru/app/id6739035108 (проверено 10.10.2026). Wayback 15.07.2025: "
-        "та же страница с mt_click_id=mt-g5rzb1…, «Делим Вместе», Eyup KECIYOKUSU.",
+        "apps.apple.com/ru/app/id6739035108 (архив редиректа 11.07.2025 → "
+        "apps.apple.com/ru/app/делим-вместе/id6739035108?mt_click_id=mt-g5rzb1…). Страница "
+        "приложения (Wayback 11.07.2025 06:58 UTC): «Делим Вместе», Eyup KECIYOKUSU.",
         "com.splitactivities.app",
         icon_url=_MZ + "Purple221/v4/67/a4/7e/67a47e74-9e24-4cf5-b7e5-fa357143397b/"
         "AppIcon-0-0-1x_U007epad-0-1-85-220.png/512x512bb.png",
@@ -234,6 +248,24 @@ BUILTIN: tuple[BuiltinEntry, ...] = (
         icon_url=_MZ + "Purple221/v4/1d/2c/b4/1d2cb41f-bf59-916a-8fee-e87370ac1a41/"
         "AppIcon-0-0-1x_U007epad-0-1-85-220.png/512x512bb.png",
         post_url="https://t.me/AlfaBank/2998", checked_date="2026-10-10"),
+    BuiltinEntry(
+        492224193, "Сбербанк Онлайн", "Сбербанк России", "СберБанк Онлайн", "Сбер",
+        ("сбер", "сбербанк", "sber", "sberbank", "сбербанк онлайн", "sberbank online", "сбол",
+         "сбер онлайн"),
+        True,
+        "Официальный сайт: sberbank.ru/ru/person/dist_services/inner_apps («Сбербанк — "
+        "Мобильное приложение», снимок Wayback 24.07.2019): кнопка «Скачайте приложение» → "
+        "itunes.apple.com/ru/app/sberbank-onlajn/id492224193 (то же на снимке 02.08.2018). "
+        "Страница приложения (Wayback 18.06.2019): «Сбербанк Онлайн», Сбербанк России.",
+        None,
+        icon_url="https://is3-ssl.mzstatic.com/image/thumb/Purple113/v4/6e/e4/b7/6ee4b781-de52-"
+        "77d5-3801-abed0b19c53a/AppIcon-0-1x_U007emarketing-0-0-GLES2_U002c0-512MB-sRGB-0-0-0-"
+        "85-220-0-0-0-7.png/512x512bb.png",
+        developer_is_bank=True,
+        post_url="https://www.sberbank.ru/ru/person/dist_services/inner_apps",
+        archive_url="https://web.archive.org/web/20190724082459/"
+                    "https://www.sberbank.ru/ru/person/dist_services/inner_apps",
+        checked_date="2026-10-10"),
     BuiltinEntry(
         6742457200, "Активы Онлайн", "Aidai Zamirbekova", "СберБанк Онлайн", "Сбер",
         ("активы онлайн", "aktivy online", "сбер", "сбербанк", "sber", "sberbank",
@@ -262,6 +294,25 @@ BUILTIN: tuple[BuiltinEntry, ...] = (
         icon_url=_MZ + "Purple221/v4/d6/ea/a7/d6eaa7ae-6fd0-a042-c6ed-d2168892d128/"
         "AppIcon_appstore-0-0-1x_U007ephone-0-1-85-220.png/512x512bb.png",
         post_url="https://t.me/sberbank/4490", checked_date="2026-10-10"),
+    BuiltinEntry(
+        455652438, "Тинькофф", "Tinkoff Bank", "Т-Банк", "Т-Банк",
+        ("т банк", "тбанк", "t bank", "tbank", "тинькофф", "tinkoff", "тинькофф банк",
+         "tinkoff bank"),
+        True,
+        "Официальный сайт: tinkoff.ru/apps/ (снимок Wayback 06.01.2020): иконка App Store → "
+        "app.appsflyer.com/id455652438?pid=tinkoff.ru&c=apps_page; архив этого трекера "
+        "(Wayback 09.03.2018) — 302 на itunes.apple.com/RU/app/id455652438. Страница "
+        "приложения (Wayback 08.12.2020): «Тинькофф», Tinkoff Bank.",
+        None,
+        icon_url="https://is2-ssl.mzstatic.com/image/thumb/Purple124/v4/66/6a/77/666a7775-d874-"
+        "a271-6cf4-9ea64cd1ce0a/AppIcon-0-0-1x_U007emarketing-0-0-0-7-0-0-sRGB-0-0-0-GLES2_"
+        "U002c0-512MB-85-220-0-0.png/512x512bb.png",
+        developer_is_bank=True,
+        post_url="https://www.tinkoff.ru/apps/",
+        archive_url="https://web.archive.org/web/20200106202720/https://www.tinkoff.ru/apps/",
+        link_archive_url="https://web.archive.org/web/20180309213604/https://app.appsflyer.com/"
+                         "id455652438?pid=tinkoff.ru&c=apps_page&af_cost_model=prm.unp",
+        checked_date="2026-10-10"),
     BuiltinEntry(
         6760469916, "Drive Transit", "Amitabh Kulkarni", "Т-Банк", "Т-Банк",
         ("drive transit", "драйв транзит", "т банк", "тбанк", "t bank", "tbank",
