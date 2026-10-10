@@ -126,8 +126,9 @@ Column {
     Item { width: 1; height: root.step === 4 ? 26 : (root.step === 3 ? 20 : 30) }
     InfoLine { visible: root.step === 4; text: "Телефоном можно пользоваться, только не отключайте кабель." }
     Links {
-        visible: root.step !== 4
-        items: root.step === 1 ? ["Как это работает"] : root.step === 2 ? ["Не получается подключить"] : ["Позже", "Исходный код"]
+        // only links that lead somewhere that exists (Евгений): «Позже» on step 3
+        visible: root.step === 3
+        items: ["Позже"]
         onActivated: function(name) { if (name === "Позже") ui.onboardingLater() }
     }
 }

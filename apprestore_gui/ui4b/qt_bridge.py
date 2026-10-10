@@ -25,7 +25,7 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from apprestore_gui.ui4b.catalog import GROUP_REGION, RestoreItem, build_items
+from apprestore_gui.ui4b.catalog import ACTION_IPA, GROUP_REGION, GROUP_REMOVED, RestoreItem, build_items
 from apprestore_gui.ui4b.flow import RestoreFlow
 from apprestore_gui.ui4b.formatting import format_size
 from apprestore_gui.ui4b.licenses import (
@@ -39,7 +39,8 @@ from apprestore_gui.ui4b.licenses import (
     slot_text,
 )
 from apprestore_gui.ui4b.licenses import candidates as license_candidates
-from apprestore_gui.ui4b.home import STATE_DONE, STATE_STORE_MISMATCH, HomeInput, PhoneApp, home_view
+from apprestore_gui.ui4b.home import STATE_DONE, STATE_STORE_MISMATCH, HomeInput, PhoneApp, home_view, link_action
+from apprestore_gui.ui4b.region import apply_statuses, load_classifier, to_status
 from apprestore_gui.ui4b.onboarding import Onboarding
 from apprestore_core.license_guard import DEFAULT_TOTAL_LIMIT
 from apprestore_gui.ui4b.queue import LIMIT_ERROR
@@ -232,6 +233,10 @@ class SessionSource(SourceBase):
         session.restoreSettled.connect(self.restoreSettled)
         session.installSettled.connect(self.installSettled)
         session.copySettled.connect(self.copySettled)
+        if hasattr(session, "filesChanged"):
+            session.filesChanged.connect(self.changed)  # phoneApps (installed apps, pymobiledevice3)
+        self._phone_udid = ""
+        self._statuses: dict[str, object] = {}
         self._missingReady.connect(self._on_missing)
         self._spaceReady.connect(self._on_space)
 
@@ -259,7 +264,11 @@ class SessionSource(SourceBase):
         if self.connected and udid and udid != self._space_udid:
             self._space_udid = udid
             threading.Thread(target=self._load_space, args=(udid,), daemon=True, name="ui4b-space").start()
+        if self.connected and udid and udid != self._phone_udid and hasattr(s, "loadPhone"):
+            self._phone_udid = udid
+            s.loadPhone()
         if not self.connected:
+            self._phone_udid = ""
             self._missing_udid = ""
             self._space_udid = ""
             self._space = UNKNOWN_SPACE
@@ -270,7 +279,28 @@ class SessionSource(SourceBase):
             apps = self.session.service.missing(udid)
         except Exception:  # noqa: BLE001 - the list just stays without them
             apps = []
+        self._statuses = self._classify(apps)
         self._missingReady.emit(udid, apps)
+
+    def _classify(self, apps: object) -> dict[str, object]:
+        """Макс's classifier when present (read-only); otherwise nothing (group hidden)."""
+
+        classify = load_classifier()
+        if classify is None or not self.online:
+            return {}
+        try:
+            country = str(self.session.service.core.tools.account_country() or "").strip().lower()
+        except Exception:  # noqa: BLE001
+            country = ""
+        out: dict[str, object] = {}
+        for app in apps or []:  # type: ignore[union-attr]
+            sid = str(getattr(app, "store_id", "") or "")
+            if sid:
+                try:
+                    out[sid] = to_status(classify(sid, country))
+                except Exception:  # noqa: BLE001 - UNKNOWN: no guessing
+                    pass
+        return out
 
     def _on_missing(self, udid: str, apps: object) -> None:
         if udid == self.session.current_udid():
@@ -286,7 +316,14 @@ class SessionSource(SourceBase):
             self.changed.emit()
 
     def items(self) -> list[RestoreItem]:
-        return build_items(self.session.offloaded_snapshot(), self._missing)
+        return apply_statuses(build_items(self.session.offloaded_snapshot(), self._missing), self._statuses)
+
+    def phone_apps(self) -> list[PhoneApp]:
+        rows = list(getattr(self.session, "phoneApps", []) or [])
+        return [
+            PhoneApp(str(r.get("name") or ""), store_id=str(r.get("storeId") or ""), bundle_id=str(r.get("bundleId") or ""))
+            for r in rows
+        ]
 
     def space(self) -> DeviceSpace:
         return self._space
@@ -791,6 +828,41 @@ class Restore4b(QObject):
     def openSignIn(self) -> None:
         self._signin_open = True
         self.signInRequested.emit()
+        self._refresh()
+
+    pickIpaRequested = Signal()
+
+    @Slot(str)
+    def link(self, name: str) -> None:
+        action = link_action(name)
+        if action == "stop":
+            self.stop()
+        elif action == "ipa":
+            self.pickIpaRequested.emit()  # QML FileDialog: only a file already on this computer
+        elif action == "signin":
+            self.openSignIn()
+        elif action == "picker":
+            self.openPicker()
+
+    @Slot(str)
+    def installIpaFile(self, url_or_path: str) -> None:
+        """Install a local .ipa chosen by the user (QuickSession.installSaved)."""
+
+        from pathlib import Path
+
+        from PySide6.QtCore import QUrl
+
+        text = str(url_or_path or "")
+        path = QUrl(text).toLocalFile() if text.startswith("file:") else text
+        if not path or not path.lower().endswith(".ipa") or self.flow.running:
+            return
+        item = RestoreItem(
+            key=f"ipa:{path}", name=Path(path).stem, group=GROUP_REMOVED, action=ACTION_IPA, ipa_path=path
+        )
+        plan = self.flow.begin([item], self.source.space())
+        if not plan.blocked:
+            self._picker_open = False
+            self._done_dismissed = False
         self._refresh()
 
     @Slot()

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Dialogs
 import QtQuick.Window
 import "theme"
 import "components"
@@ -76,7 +77,7 @@ Window {
         view: win.home
         onPrimary: ui.primaryAction()
         onSecondary: ui.secondaryAction()
-        onLink: function(name) { if (name === "Остановить") ui.stop() }
+        onLink: function(name) { ui.link(name) }
     }
     Onboarding {
         visible: win.onboarding
@@ -121,5 +122,17 @@ Window {
         active: !!ui.consent.open
         focus: active
         sourceComponent: ConsentSheet {}
+    }
+
+    // «Файлы IPA» / «Есть файл IPA для …»: only a file already on this computer
+    FileDialog {
+        id: ipaDialog
+        title: "Файл IPA на этом компьютере"
+        nameFilters: ["Файлы IPA (*.ipa)"]
+        onAccepted: ui.installIpaFile(selectedFile.toString())
+    }
+    Connections {
+        target: ui
+        function onPickIpaRequested() { ipaDialog.open() }
     }
 }

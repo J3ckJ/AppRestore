@@ -155,6 +155,20 @@ def phone_pages(total: int) -> int:
     return min(PAGES_MAX, max(1, math.ceil(total / PAGE_SIZE))) if total > 0 else 0
 
 
+def link_action(name: str) -> str:
+    """What a home-screen link does, or "" (then it is not shown)."""
+
+    if name == "Остановить":
+        return "stop"
+    if name == "Файлы IPA" or name.startswith("Есть файл IPA"):
+        return "ipa"  # a file already on this computer → install (installSaved)
+    if name == "Apple ID":
+        return "signin"
+    if name == "Найти другое приложение":
+        return "picker"
+    return ""
+
+
 def home_view(inp: HomeInput) -> dict[str, object]:
     noun = inp.noun or "iPhone"
     over = inp.device_name or noun
@@ -405,4 +419,6 @@ def home_view(inp: HomeInput) -> dict[str, object]:
         if inp.connected
         else f"Экран {noun} выключен"
     )
+    # Only links that lead to something that exists (Евгений); the rest are hidden.
+    view["links"] = [name for name in view.get("links") or [] if link_action(str(name))]
     return view

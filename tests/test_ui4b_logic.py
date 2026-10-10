@@ -915,3 +915,55 @@ def test_limit_total_summary_has_no_time_and_explains() -> None:
     v = home_view(HomeInput(connected=True, signed_in=True, items=items, queue=flow.queue, limit_total=True))
     assert "Для Альфа лицензий больше нет." in v["lead"] and "освободится" not in v["lead"]
     assert "сгруженные возвращаются как обычно" in v["fine"]
+
+
+# -- классификатор Макса (приём результата), ссылки, тексты без URL ---------------------------
+
+
+def test_region_adapter_accepts_only_known_statuses() -> None:
+    from apprestore_gui.ui4b import region
+
+    items = removed4()
+    statuses = {
+        items[0].store_id: "NOT_IN_REGION",
+        items[1].store_id: region.StoreStatus.DELISTED,
+        items[2].store_id: "UNKNOWN",
+        items[3].store_id: "something new",
+    }
+    out = region.apply_statuses(items, statuses)
+    assert out[0].group == GROUP_REGION and out[0].note == "нет в App Store вашей страны" and not out[0].selectable
+    assert out[1].group == GROUP_REMOVED and out[1].note == "удалено из App Store"
+    assert out[2] == items[2] and out[3] == items[3]  # UNKNOWN: no guessing
+    assert region.apply_statuses(items, {}) == items
+    # no classification → «Нет в регионе» not shown at all (no «0»)
+    sel = selection.Selection(items)
+    assert "region" not in [r["key"] for r in sel.rail_rows()]
+    assert "region" not in [r["group"] for r in sel.rows() if r["kind"] == "header"]
+
+
+def test_links_only_lead_to_existing_things() -> None:
+    from apprestore_gui.ui4b.home import link_action
+
+    for name in ("Журнал", "Подробнее", "Почему это безопасно", "Как это работает", "Исходный код",
+                 "Войти с другим Apple ID", "Не получается подключить"):
+        assert link_action(name) == ""
+    assert link_action("Есть файл IPA для «Альфа-Банк»") == "ipa"
+    assert link_action("Найти другое приложение") == "picker"
+    v = home.home_view(home.HomeInput(connected=False, signed_in=True, items=removed4()))
+    assert all(link_action(n) for n in v["links"])
+
+
+def test_user_texts_have_no_urls_or_where_to_get_ipa() -> None:
+    import ast
+
+    root = _QML.parent
+    banned = ("http://", "https://", "www.", "скачать ipa", "скачайте ipa", "где взять", "найдите файл")
+    bad = []
+    for path in list((root / "ui4b").rglob("*.py")) + list(_QML.rglob("*.qml")):
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".py":
+            strings = [n.value for n in ast.walk(ast.parse(text)) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+        else:
+            strings = [_strip_comments(text)]
+        bad += [f"{path.name}: {b}" for s in strings for b in banned if b in s.casefold()]
+    assert bad == []

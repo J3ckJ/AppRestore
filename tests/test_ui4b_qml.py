@@ -450,3 +450,29 @@ def test_signin_sheet_relogin_email_is_read_only(qapp) -> None:
     assert field is not None and field.property("readOnly") is True
     assert warnings == []
     del window, engine, icons
+
+
+def test_session_source_phone_apps_from_pymobiledevice3_rows(qapp) -> None:
+    session = FakeSession()
+    session.phoneApps = [{"name": "Telegram", "storeId": "686449807", "bundleId": "ph.telegra.Telegraph"}]
+    session.connected = True
+    session.current_udid = lambda: "UDID-1"  # type: ignore[method-assign]
+    session.loadPhone = lambda: session.calls.append(("loadPhone", None))  # type: ignore[attr-defined]
+    session.service = type("S", (), {"missing": lambda self, udid: [], "core": None})()
+    src = SessionSource(session)
+    session.changed.emit()
+    assert ("loadPhone", None) in session.calls
+    apps = src.phone_apps()
+    assert apps[0].name == "Telegram" and apps[0].store_id == "686449807"
+
+
+def test_ipa_link_installs_only_a_local_file(qapp) -> None:
+    source = FakeSource("missing")
+    controller = Restore4b(source)
+    asked = []
+    controller.pickIpaRequested.connect(lambda: asked.append(True))
+    controller.link("Файлы IPA")
+    assert asked == [True]
+    controller.installIpaFile("file:///tmp/Example.ipa")
+    assert ("install_ipa", "/tmp/Example.ipa") in source.calls
+    controller.link("Журнал")  # hidden link: does nothing
