@@ -166,6 +166,39 @@ def _qt_import() -> str:
     return QtCore.qVersion()
 
 
+def _ui4b_qml() -> str:
+    """The 4b window (default UI) loads from the bundle without QML warnings (offscreen, fake data)."""
+
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtQml import QQmlApplicationEngine
+    from PySide6.QtQuickControls2 import QQuickStyle
+
+    from apprestore_gui.ui4b.fake_data import FakeIconBook, FakeSource
+    from apprestore_gui.ui4b.qt_bridge import Restore4b
+    from apprestore_gui.ui4b.window import load, qml_path
+
+    app = QGuiApplication.instance() or QGuiApplication(["apprestore-selftest"])
+    QQuickStyle.setStyle("Basic")
+    warnings: list[str] = []
+    engine = QQmlApplicationEngine()
+    engine.warnings.connect(lambda ws: warnings.extend(w.toString() for w in ws))
+    source = FakeSource("missing")
+    controller = Restore4b(source)
+    icons = FakeIconBook()
+    if not load(engine, controller, icons):
+        raise RuntimeError("qml4b did not load: " + "; ".join(warnings[:3]))
+    app.processEvents()
+    if warnings:
+        raise RuntimeError("qml4b warnings: " + "; ".join(warnings[:3]))
+    root = engine.rootObjects()[0]
+    name = root.objectName()
+    del root, engine, controller, source, icons
+    return f"{qml_path().name} loaded ({name})"
+
+
 def _doctor() -> list[dict[str, Any]]:
     from apprestore_core.tools import AppRestoreTools
 
@@ -185,6 +218,7 @@ def run_self_test(output: Path | None = None) -> int:
         _check("gui resources", _gui_resources),
         _check("app icon", _app_icon),
         _check("qt import", _qt_import),
+        _check("ui4b qml (default UI)", _ui4b_qml),
         _check("doctor", _doctor, required=False),
     ]
     if sys.platform == "win32":
