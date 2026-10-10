@@ -3,7 +3,7 @@
   "productName": "bench-tauri",
   "version": "0.1.0",
   "identifier": "com.j3ckj.apprestore.bench",
-  "build": { "frontendDist": "dist" },
+  "build": { "frontendDist": "ui" },
   "app": {
     "withGlobalTauri": true,
     "windows": [
