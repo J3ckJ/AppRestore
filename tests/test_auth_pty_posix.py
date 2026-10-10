@@ -45,6 +45,10 @@ def fake_ipatool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     tool.write_text(FAKE_IPATOOL.format(python=sys.executable), encoding="utf-8")
     tool.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
+    # A real bin/ipatool in the checkout (RUN-FROM-SOURCE) must not win over the fake.
+    from apprestore_gui import auth_pty
+
+    monkeypatch.setattr(auth_pty, "_which_ipatool", lambda: str(tool))
     return tool
 
 
