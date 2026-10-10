@@ -1,0 +1,115 @@
+name: UI engine bench
+
+# Research only (docs/research/ui-engine.md): builds "empty window + core call"
+# for Qt Quick, Qt Widgets, Tauri + Python sidecar and Electron + Python
+# sidecar, then measures zip size and launch times. No secrets, no Apple ID.
+on:
+  push:
+    branches: [research/ui-engine]
+    paths:
+      - "bench/ui-engine/**"
+      - ".github/workflows/ui-engine-bench.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: bench (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bench/ui-engine/tauri
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev xvfb \
+            libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-image0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libegl1 libgl1
+      - name: Install Python deps
+        run: |
+          python -m pip install -U pip
+          python -m pip install . -r requirements/gui-build.txt
+      - name: PyInstaller builds (Qt Quick, Qt Widgets, sidecar onedir/onefile)
+        run: |
+          for t in quick widgets sidecar; do
+            BENCH_TARGET=$t pyinstaller bench/ui-engine/bench.spec --noconfirm --distpath out/py --workpath build/$t
+          done
+          BENCH_TARGET=sidecar BENCH_ONEFILE=1 pyinstaller bench/ui-engine/bench.spec --noconfirm --distpath out/py-onefile --workpath build/onefile
+      - name: Tauri build
+        working-directory: bench/ui-engine/tauri
+        run: cargo build --release --locked || cargo build --release
+      - name: Electron download
+        working-directory: bench/ui-engine/electron
+        run: npm install --no-save --no-audit --no-fund electron@latest
+      - name: Assemble candidates
+        run: |
+          ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
+          mkdir -p out/cand
+          cp -a out/py/bench-quick out/cand/qt-quick
+          cp -a out/py/bench-widgets out/cand/qt-widgets
+          mkdir -p out/cand/tauri-onedir out/cand/tauri-onefile out/cand/tauri-shell
+          cp bench/ui-engine/tauri/target/release/bench-tauri$ext out/cand/tauri-onedir/
+          cp -a out/py/apprestore-core out/cand/tauri-onedir/apprestore-core
+          cp bench/ui-engine/tauri/target/release/bench-tauri$ext out/cand/tauri-onefile/
+          cp out/py-onefile/apprestore-core$ext out/cand/tauri-onefile/
+          cp bench/ui-engine/tauri/target/release/bench-tauri$ext out/cand/tauri-shell/
+          cp -a bench/ui-engine/electron/node_modules/electron/dist out/cand/electron-onedir
+          if [ "$RUNNER_OS" = "macOS" ]; then res=out/cand/electron-onedir/Electron.app/Contents/Resources; else res=out/cand/electron-onedir/resources; fi
+          mkdir -p $res/app
+          cp bench/ui-engine/electron/{package.json,main.js,index.html} $res/app/
+          cp -a out/py/apprestore-core $res/apprestore-core
+          du -sh out/cand/* out/py/apprestore-core out/py-onefile/*
+      - name: Measure
+        env:
+          ELECTRON_DISABLE_SANDBOX: "1"
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then el="Electron.app/Contents/MacOS/Electron"; else el="electron"; fi
+          label=$(echo "${{ matrix.os }}" | cut -d- -f1)
+          run=""; [ "$RUNNER_OS" = "Linux" ] && run="xvfb-run -a"
+          $run python bench/ui-engine/measure.py --label "$label" --runs 5 --out bench-results \
+            --candidate "Qt Quick (PySide6)=out/cand/qt-quick:bench-quick" \
+            --candidate "Qt Widgets (PySide6)=out/cand/qt-widgets:bench-widgets" \
+            --candidate "Tauri + sidecar onedir=out/cand/tauri-onedir:bench-tauri" \
+            --candidate "Tauri + sidecar onefile=out/cand/tauri-onefile:bench-tauri" \
+            --candidate "Electron + sidecar onedir=out/cand/electron-onedir:$el" \
+            --candidate "Tauri shell only, no core=out/cand/tauri-shell:bench-tauri"
+      - name: Sidecar alone (onedir / onefile)
+        run: |
+          ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
+          python - <<PY
+          import subprocess, time, json, statistics
+          for name, exe in (("onedir", "out/py/apprestore-core/apprestore-core$ext"), ("onefile", "out/py-onefile/apprestore-core$ext")):
+              times = []
+              for _ in range(6):
+                  t = time.time(); subprocess.run([exe], check=True, capture_output=True); times.append(round((time.time() - t) * 1000))
+              print(name, "first", times[0], "warm median", statistics.median(times[1:]))
+              open("bench-results/sidecar-" + name + ".txt", "w").write(json.dumps(times))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-engine-bench-${{ matrix.os }}
+          path: bench-results/
+          if-no-files-found: warn

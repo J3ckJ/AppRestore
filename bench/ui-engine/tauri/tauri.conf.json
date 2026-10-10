@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "bench-tauri",
+  "version": "0.1.0",
+  "identifier": "com.j3ckj.apprestore.bench",
+  "build": { "frontendDist": "dist" },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      { "title": "AppRestore engine bench (Tauri)", "width": 960, "height": 640 }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": { "active": false, "icon": ["icons/icon.png", "icons/icon.ico"] }
+}
