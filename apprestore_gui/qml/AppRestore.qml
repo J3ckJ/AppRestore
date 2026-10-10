@@ -2126,6 +2126,97 @@ ApplicationWindow {
                                 onClicked: account.submit()
                             }
                         }
+
+                        // Session check and purchase list. Neutral placeholder until
+                        // Ника's layouts are approved; all logic is in Python.
+                        Text {
+                            visible: session.signedIn && session.sessionNote !== ""
+                            width: parent.width
+                            text: session.sessionNote
+                            color: session.sessionState === "expired" ? "#B3261E" : win.muted
+                            font.pixelSize: 14
+                            wrapMode: Text.WordWrap
+                        }
+                        Row {
+                            visible: session.signedIn && session.sessionRelogin
+                            spacing: 10
+                            PillButton {
+                                implicitWidth: 180
+                                text: "Войти заново"
+                                onClicked: session.loginPrompt(session.accountEmail)
+                            }
+                        }
+                        Column {
+                            id: purchasesBox
+                            visible: session.signedIn
+                            width: parent.width
+                            spacing: 8
+                            onVisibleChanged: if (visible) session.loadPurchases()
+
+                            Row {
+                                width: parent.width
+                                spacing: 10
+                                Text {
+                                    text: "Покупки"
+                                    color: win.ink
+                                    font.pixelSize: 17
+                                    font.weight: 600
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                Text {
+                                    text: session.purchasesProgress
+                                    color: win.muted
+                                    font.pixelSize: 14
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                Rectangle {
+                                    width: 96
+                                    height: 32
+                                    radius: 10
+                                    color: "#F2F2F4"
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: session.purchasesBusy ? "Отмена" : "Обновить"
+                                        color: win.ink
+                                        font.pixelSize: 14
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: session.purchasesBusy ? session.cancelPurchases() : session.loadPurchases()
+                                    }
+                                }
+                            }
+                            Text {
+                                visible: session.purchasesNote !== ""
+                                width: parent.width
+                                text: session.purchasesNote
+                                color: win.muted
+                                font.pixelSize: 14
+                                wrapMode: Text.WordWrap
+                            }
+                            ListView {
+                                width: parent.width
+                                height: Math.min(contentHeight, 280)
+                                clip: true
+                                model: session.purchases
+                                delegate: Item {
+                                    required property var modelData
+                                    width: ListView.view.width
+                                    height: 40
+                                    Column {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        Text { text: modelData.name; color: win.ink; font.pixelSize: 14; elide: Text.ElideRight }
+                                        Text {
+                                            text: modelData.bundleId + (modelData.date ? " · " + modelData.date : "")
+                                            color: win.muted
+                                            font.pixelSize: 12
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

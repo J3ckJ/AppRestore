@@ -32,6 +32,17 @@ from apprestore_core.license_gate import LicenseDenied, run_with_free_license
 from apprestore_gui.popular_apps import POPULAR_APPS
 from apprestore_gui.service_adapter import GuiService
 from apprestore_gui.shelf_probe import probe_store
+from apprestore_core.ipatool_api import ErrorCode, IpatoolClient, IpatoolError
+from apprestore_core.paths import resolve_tool
+from apprestore_core.purchases_cache import PurchasesCache
+from apprestore_gui.purchases import (
+    SESSION_UNKNOWN,
+    PurchasesLoader,
+    PurchasesView,
+    SessionChecker,
+    SessionView,
+    gui_runner,
+)
 
 _PROGRESS = re.compile(r"downloading\s+(\d+)\s*%", re.IGNORECASE)
 
@@ -123,6 +134,8 @@ class QuickSession(QObject):
     keychainPrompt = Signal(str)
     loginPrompt = Signal(str)
     followAccount = Signal(str)
+    sessionChanged = Signal()
+    purchasesChanged = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -170,6 +183,101 @@ class QuickSession(QObject):
         self._files_busy = False
         self._phone_loading = False
         self._files_mode = False
+        self._session_view: SessionView = SESSION_UNKNOWN
+        self._purchases_view = PurchasesView()
+        self._session_checker = SessionChecker(self._ipatool_client, self._on_session_view)
+        self._purchases = PurchasesLoader(PurchasesCache(), self._ipatool_client, self._on_purchases_view)
+
+    # -- session check and purchase list (logic in apprestore_gui.purchases) --
+
+    def _ipatool_client(self) -> IpatoolClient:
+        binary = resolve_tool("ipatool")
+        if not binary:
+            raise IpatoolError(ErrorCode.BINARY_MISSING, "ipatool binary not found")
+        tools = self.service.core.tools
+        # keychain_passphrase="" keeps the passphrase out of argv; gui_runner
+        # answers ipatool's prompt on the hidden terminal instead.
+        return IpatoolClient(
+            binary,
+            keychain_passphrase="",
+            runner=gui_runner(self.service.keychain_passphrase, tools._ipatool_env),
+        )
+
+    def _on_session_view(self, view: SessionView) -> None:
+        with self._lock:
+            before = self._session_view
+            self._session_view = view
+            email = self._account_email
+        self.sessionChanged.emit()
+        if view.relogin and not before.relogin:
+            self.loginPrompt.emit(email)
+
+    def _on_purchases_view(self, view: PurchasesView) -> None:
+        with self._lock:
+            self._purchases_view = view
+        self.purchasesChanged.emit()
+        if view.session_problem:
+            self._on_session_view(SessionView("expired", view.note, relogin=True))
+
+    def _follow_purchases_account(self, email: str) -> None:
+        self._purchases.set_account(email)
+
+    @Property(str, notify=sessionChanged)
+    def sessionState(self) -> str:
+        with self._lock:
+            return self._session_view.state
+
+    @Property(str, notify=sessionChanged)
+    def sessionNote(self) -> str:
+        with self._lock:
+            return self._session_view.note
+
+    @Property(bool, notify=sessionChanged)
+    def sessionRelogin(self) -> bool:
+        with self._lock:
+            return self._session_view.relogin
+
+    @Property("QVariantList", notify=purchasesChanged)
+    def purchases(self) -> list[dict[str, object]]:
+        with self._lock:
+            return [dict(row) for row in self._purchases_view.rows]
+
+    @Property(bool, notify=purchasesChanged)
+    def purchasesBusy(self) -> bool:
+        with self._lock:
+            return self._purchases_view.busy
+
+    @Property(str, notify=purchasesChanged)
+    def purchasesProgress(self) -> str:
+        with self._lock:
+            return self._purchases_view.progress
+
+    @Property(str, notify=purchasesChanged)
+    def purchasesNote(self) -> str:
+        with self._lock:
+            return self._purchases_view.note
+
+    @Property(bool, notify=purchasesChanged)
+    def purchasesFromCache(self) -> bool:
+        with self._lock:
+            return self._purchases_view.from_cache
+
+    @Slot()
+    def checkSession(self) -> None:
+        with self._lock:
+            signed = self._signed
+        if signed:
+            self._session_checker.start()
+
+    @Slot()
+    def loadPurchases(self) -> None:
+        """Cached list at once, then a refresh page by page."""
+
+        self._purchases.start()
+
+    @Slot()
+    def cancelPurchases(self) -> None:
+        self._purchases.cancel()
 
     def _noun_now(self) -> str:
         with self._lock:
@@ -582,6 +690,8 @@ class QuickSession(QObject):
                 self._passphrases.pop(email.lower(), None)
         if email:
             forget_session(email)
+        self._purchases.forget()
+        self._on_session_view(SESSION_UNKNOWN)
         self.changed.emit()
 
     def _set_auth(self, phase: str, status: str) -> None:
@@ -727,6 +837,11 @@ class QuickSession(QObject):
                 self._after_unlock = ""
         if state == "in" and saved:
             save_session(saved)
+            self._follow_purchases_account(saved)
+            self._session_checker.start()
+        elif state == "out":
+            # No saved session at all: nothing may stay cached.
+            self._follow_purchases_account("")
         if state == "in" and saved and udid:
             remember_binding(udid, saved)
             with self._lock:
@@ -809,6 +924,8 @@ class QuickSession(QObject):
         if not restore_session(email):
             self.loginPrompt.emit(email)
             return
+        self._follow_purchases_account(email)
+        self._on_session_view(SESSION_UNKNOWN)
         secret = self._passphrases.get(email.lower(), "")
         with self._lock:
             self._pending_email = email

@@ -103,3 +103,17 @@ def explain_update_error(message: str) -> str:
     if _has_cyrillic(text) and len(text) <= 240:
         return text
     return "Обновление не установилось."
+
+
+def explain_ipatool_error(error: BaseException) -> str:
+    """Text for a typed ``ipatool_api.IpatoolError`` (or anything else).
+
+    Only the fixed Russian sentence for the error code is shown. ``detail``
+    (the raw ipatool text, already without email/guid) stays out of the
+    window, so nothing from the account leaks into a screenshot.
+    """
+
+    message = getattr(error, "message_ru", "")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+    return explain_user_error(str(error))
