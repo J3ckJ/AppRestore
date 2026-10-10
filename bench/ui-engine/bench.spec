@@ -61,7 +61,7 @@ if target == "quick" and os.environ.get("BENCH_TRIM") == "1":
         r"Qt63D|Scene2D|Scene3D|WebEngine|WebView|WebChannel|WebSockets|Quick3D|Qt3D|3DCore|3DRender|3DInput|3DLogic|3DAnimation|3DExtras"
         r"|Pdf|Graphs|Charts|DataVisualization|Multimedia|SpatialAudio|Positioning|Location|Sensors|Scxml"
         r"|StateMachine|RemoteObjects|VirtualKeyboard|Wayland|Qt5Compat|ShaderTools|TextToSpeech|Lottie"
-        r"|Bluetooth|Nfc|SerialPort|Designer|QtHelp|Qt6Help|QuickTest|Qt6Test|QtTest|Sql|Svg Widgets|HttpServer|Protobuf|Grpc",
+        r"|Bluetooth|Nfc|SerialPort|Designer|QtHelp|Qt6Help|QuickTest|Qt6Test|QtTest|QtSql|Qt6Sql|sqldrivers|HttpServer|Protobuf|Grpc",
         re.IGNORECASE,
     )
 

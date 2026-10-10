@@ -93,7 +93,7 @@ def main() -> int:
     parser.add_argument("--label", required=True)
     parser.add_argument("--candidate", action="append", required=True)
     parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument("--timeout", type=float, default=180)
+    parser.add_argument("--timeout", type=float, default=90)
     parser.add_argument("--out", default="bench-results")
     args = parser.parse_args()
 

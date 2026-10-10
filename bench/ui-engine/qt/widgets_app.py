@@ -42,7 +42,11 @@ class Window(QWidget):
         QTimer.singleShot(0, self._call_core)
 
     def _call_core(self) -> None:
-        mark("core_answer", **core_call())
+        try:
+            answer = core_call()
+        except Exception as exc:  # noqa: BLE001 - report, never hang the bench
+            answer = {"error": f"{type(exc).__name__}: {exc}"}
+        mark("core_answer", **answer)
         flush()
         if os.environ.get("BENCH_OUT"):
             self._app.quit()

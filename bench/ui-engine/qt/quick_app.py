@@ -44,7 +44,11 @@ def main() -> int:
         QTimer.singleShot(0, call_core)
 
     def call_core() -> None:
-        mark("core_answer", **core_call())
+        try:
+            answer = core_call()
+        except Exception as exc:  # noqa: BLE001 - report, never hang the bench
+            answer = {"error": f"{type(exc).__name__}: {exc}"}
+        mark("core_answer", **answer)
         flush()
         if os.environ.get("BENCH_OUT"):
             app.quit()

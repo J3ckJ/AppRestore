@@ -60,10 +60,13 @@ jobs:
           BENCH_TARGET=sidecar BENCH_ONEFILE=1 pyinstaller bench/ui-engine/bench.spec --noconfirm --distpath out/py-onefile --workpath build/onefile
       - name: Tauri build
         working-directory: bench/ui-engine/tauri
-        run: cargo build --release --locked || cargo build --release
+        run: cargo build --release
       - name: Electron download
         working-directory: bench/ui-engine/electron
-        run: npm install --no-save --no-audit --no-fund electron@latest
+        run: |
+          npm install --no-save --no-audit --no-fund electron@latest
+          node node_modules/electron/install.js
+          ls node_modules/electron/dist
       - name: Assemble candidates
         run: |
           ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
