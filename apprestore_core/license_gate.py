@@ -28,11 +28,12 @@ AppRestore sends it only from here, and only like this:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from .command import CommandError
-from .error_signal import _AUTH, _LICENSE, _REGION, is_license_missing
+from .error_signal import _AUTH, _LICENSE, _NETWORK, _REGION, is_license_missing
 from .license_guard import DEFAULT_DAILY_LIMIT, DEFAULT_TOTAL_LIMIT, default_journal_path
 from .license_journal import (
     ACQUIRED_DOWNLOAD_FAILED,
@@ -65,6 +66,29 @@ _EXPLICIT_REFUSAL = _AUTH + _REGION + _LICENSE + (
     "command not found",
     "subscription",
 )
+
+
+#: Apple answered and said no (casefolded substrings / regex).
+_STORE_REFUSAL = (
+    "purchase of this item is not currently available",
+    "not currently available",
+)
+#: failureType / FailureType with a numeric code, or a customerMessage field:
+#: only Apple's own answer carries these.
+_STORE_REFUSAL_FIELD = re.compile(r"failuretype\W{0,4}\d+|customermessage")
+#: A bare 2040 counts only inside ipatool's purchase failure line.
+_BARE_2040 = re.compile(r"\b2040\b")
+
+
+def is_store_refusal(message: str) -> bool:
+    """True when Apple explicitly refused the purchase (case-insensitive)."""
+
+    text = (message or "").casefold()
+    if any(hint in text for hint in _STORE_REFUSAL):
+        return True
+    if _STORE_REFUSAL_FIELD.search(text):
+        return True
+    return "failed to purchase" in text and bool(_BARE_2040.search(text))
 
 
 class LicenseDenied(AppRestoreError):
@@ -120,6 +144,16 @@ def purchase_outcome(exc: BaseException) -> str:
         return "refused"
     if isinstance(exc, CommandError):
         return "uncertain"  # timeout or a broken run: the answer was lost
+    # Apple's own "no" (HTTP 200 with failureType/customerMessage, e.g. 2040
+    # "Purchase of this item is not currently available"). ipatool spells the
+    # field FailureType in some places, so everything is matched casefolded.
+    if is_store_refusal(text):
+        return "refused"
+    # ipatool wraps every purchase error, network ones included, in
+    # "failed to purchase item ...": a transport failure means the answer was
+    # lost, so it is uncertain even with that prefix.
+    if any(hint in text for hint in _NETWORK):
+        return "uncertain"
     if any(hint in text for hint in _EXPLICIT_REFUSAL):
         return "refused"
     return "uncertain"

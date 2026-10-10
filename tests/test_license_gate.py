@@ -325,3 +325,103 @@ def test_uncertain_lines_count_toward_the_daily_limit(tmp_path: Path) -> None:
     with pytest.raises(LicenseDenied, match="5/5"):
         run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(0), journal=journal)
     assert tools.purchases == []
+
+
+# ------------------------------------------- Apple's explicit "no" (Макс's live attempt)
+
+# ipatool 2.6.0 on a live account, rc=1: HTTP 200 with failureType 2040 and
+# customerMessage "Purchase of this item is not currently available".
+APPLE_2040_ERROR = "failed to purchase item with param 'STDQ': Purchase of this item is not currently available"
+APPLE_2040_LINE = json.dumps(
+    {"level": "error", "error": APPLE_2040_ERROR, "success": False, "time": "2026-10-10T18:05:00+03:00"}
+)
+
+
+def _real_tools(stdout: str, stderr: str, returncode: int = 1):
+    from unittest.mock import patch
+
+    from apprestore_core.models import CommandResult
+    from apprestore_core.tools import AppRestoreTools
+
+    class Runner:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        def run(self, args, **_kwargs):
+            self.calls.append(tuple(args))
+            return CommandResult(tuple(args), returncode, stdout, stderr)
+
+    class Tools(AppRestoreTools):
+        licensed = False
+
+        def account_country(self) -> str:
+            return "us"
+
+    runner = Runner()
+    tools = Tools(runner)  # type: ignore[arg-type]
+    patches = (
+        patch("apprestore_core.tools.resolve_tool", return_value="ipatool"),
+        patch.object(AppRestoreTools, "_ipatool_env", return_value={}),
+    )
+    return tools, runner, patches
+
+
+@pytest.mark.parametrize(
+    "stdout, stderr",
+    [
+        (APPLE_2040_LINE + "\n", ""),  # hidden terminal: everything on stdout
+        ("", APPLE_2040_LINE + "\n"),  # plain run: ipatool errors go to stderr
+        ("", f'6:05PM ERR error="{APPLE_2040_ERROR}" success=false\n'),  # text format
+    ],
+    ids=["pty-json", "stderr-json", "stderr-text"],
+)
+def test_apple_2040_refusal_exact_output_is_refused_and_not_journaled(tmp_path: Path, stdout, stderr) -> None:
+    journal = tmp_path / "j.jsonl"
+    tools, runner, patches = _real_tools(stdout, stderr)
+    with patches[0], patches[1]:
+        with pytest.raises(ToolUnavailable) as caught:
+            run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(0), journal=journal)  # type: ignore[arg-type]
+    assert [call[-3:] for call in runner.calls] == [("purchase", "--app-id", STORE)]
+    assert not journal.exists(), "Apple's explicit refusal must not be journaled"
+    from apprestore_core.license_gate import purchase_outcome
+
+    assert purchase_outcome(caught.value) == "refused"
+    from apprestore_gui.errors import STORE_REFUSED_TEXT, explain_user_error
+
+    assert explain_user_error(str(caught.value)) == STORE_REFUSED_TEXT
+    assert STORE_REFUSED_TEXT == "Apple сейчас не выдаёт это приложение для вашего аккаунта."
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        APPLE_2040_ERROR,
+        APPLE_2040_ERROR.upper(),
+        "PURCHASE OF THIS ITEM IS NOT CURRENTLY AVAILABLE",
+        '{"FailureType":"2040","customerMessage":"…"}',
+        '{"failureType": 2040}',
+        "failureType=2040",
+        "failed to purchase item: 2040",
+    ],
+)
+def test_store_refusal_is_case_insensitive(message: str) -> None:
+    from apprestore_core.license_gate import is_store_refusal, purchase_outcome
+
+    assert is_store_refusal(message)
+    assert purchase_outcome(ToolUnavailable(message)) == "refused"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "failed to purchase item: failed to send http request: dial tcp: i/o timeout",
+        "failed to purchase item: net/http: TLS handshake timeout",
+        "something nobody has seen before",
+        "listening on port 2040",  # a bare number alone is not Apple's answer
+    ],
+)
+def test_network_wrapped_or_unknown_purchase_errors_stay_uncertain(message: str) -> None:
+    from apprestore_core.license_gate import is_store_refusal, purchase_outcome
+
+    assert not is_store_refusal(message)
+    assert purchase_outcome(ToolUnavailable(message)) == "uncertain"
