@@ -73,8 +73,9 @@ def test_dialog_reports_failure_and_keeps_current_version(qapp, qtbot):
                           launch=launched.append, quit_app=lambda: launched.append("quit"))
     qtbot.addWidget(dialog)
     dialog.update_button.click()
-    qtbot.waitUntil(lambda: "Не получилось" in dialog.status.text(), timeout=5000)
-    assert "Текущая версия не тронута" in dialog.status.text()
+    # The redesign shows the reason itself (explain_update_error), no fixed prefix.
+    qtbot.waitUntil(lambda: "Текущая версия не тронута" in dialog.status.text(), timeout=5000)
+    assert "контрольная сумма не совпала" in dialog.status.text()
     assert launched == []
     assert dialog.update_button.isEnabled()
     dialog.wait_for_worker()
