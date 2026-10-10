@@ -177,6 +177,9 @@ class SourceBase(QObject):
 
         return ()
 
+    def ipatool_version(self) -> str:
+        return ""
+
     def search_store(self, term: str, purchases: list[dict[str, object]]) -> list[dict[str, str]]:
         """Worker thread: App Store + purchases (ui4b.search), no IPA catalogues."""
 
@@ -309,6 +312,8 @@ class SessionSource(SourceBase):
 
         if not self.online:
             return {}
+        if "0001" in self.missing_patches():
+            return {}  # needs-component: region_probe is off (no account country)
         try:
             country = str(self.session.service.core.tools.account_country() or "").strip().upper()
         except Exception:  # noqa: BLE001
@@ -350,6 +355,12 @@ class SessionSource(SourceBase):
             return tuple(self.session.service.core.tools.ipatool_missing_patches())
         except Exception:  # noqa: BLE001 - cannot tell: like the gate, not safe
             return ("0001", "0003")
+
+    def ipatool_version(self) -> str:
+        try:
+            return str(self.session.service.core.tools.ipatool_capabilities().version or "")
+        except Exception:  # noqa: BLE001
+            return ""
 
     def owned_store_ids(self) -> set[str] | None:
         # QuickSession.purchases = purchases.py's list-purchases cache
@@ -521,8 +532,9 @@ class Restore4b(QObject):
                 store_problem_app=self.flow.store_problem_app,
                 limit_note=self._limit_note_for_queue(queue)[0],
                 limit_total=self._limit_note_for_queue(queue)[1],
-                component_details=component.details_text(self._patches_missing)
+                component_details=component.details_text(self._patches_missing, self.source.ipatool_version())
                 if self._component_details and self._patches_missing else "",
+                component=bool(self._patches_missing),
             )
         )
         self.picker.set_rows(self.selection.rows())
@@ -771,7 +783,7 @@ class Restore4b(QObject):
             self.openSignIn()
         elif state in ("many",):
             self.openPicker()
-        elif state in ("missing", "region"):
+        elif state in ("missing", "region", "needs_component"):
             self.selection.set_rail("all")
             self.selection.set_query("")
             for item in self.selection.items:
@@ -906,8 +918,12 @@ class Restore4b(QObject):
 
     @Slot()
     def secondaryAction(self) -> None:
-        """Second button next to the main one («Войти заново» on -128)."""
+        """Second button next to the main one («Войти заново» on -128,
+        «Как установить» when nothing can be returned without the component)."""
 
+        if str(self._home.get("cta2", "")) == component.HOWTO_LINK:
+            self.link(component.HOWTO_LINK)
+            return
         if str(self._home.get("state", "")) == STATE_STORE_MISMATCH:
             self.flow.store_relogin_requested()
             self.openSignIn()

@@ -13,34 +13,42 @@ from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 
-from apprestore_gui.ui4b.catalog import ACTION_NONE, ACTION_STORE, GROUP_REMOVED, RestoreItem
+from apprestore_gui.ui4b.catalog import ACTION_NONE, ACTION_STORE, GROUP_REGION, GROUP_REMOVED, RestoreItem
 
 COMPONENT_NOTE = "Нужен дополнительный компонент"
 HOWTO_LINK = "Как установить"
 DETAILS_LINK = "Подробнее"
-QUIET_LINE = "Для части приложений нужен дополнительный компонент."
+QUIET_TEXT = "Удалённые из App Store пока не вернуть: нужен дополнительный компонент."
+#: The quiet line under the button (02/01 spec): the link is inline, bold.
+QUIET_LINE = f'{QUIET_TEXT} <a href="{HOWTO_LINK}"><b>{HOWTO_LINK}</b></a>' 
 _PATCH_WHAT = {
     "0001": "0001 — страна аккаунта (auth info)",
     "0003": "0003 — пароль связки ключей через stdin",
 }
 
 
-def details_text(missing: Iterable[str]) -> str:
-    parts = [_PATCH_WHAT.get(name, name) for name in missing]
+def details_text(missing: Iterable[str], version: str = "") -> str:
+    """«Подробнее» — the only place with technical words (02-picker §2a)."""
+
+    missing = tuple(missing)
+    what = {
+        "0001": "без дополнения 0001 (страна аккаунта), поэтому цену приложения проверить нельзя",
+        "0003": "без дополнения 0003 (пароль связки ключей через stdin)",
+    }
+    parts = [what.get(name, f"без дополнения {name}") for name in missing] or ["без нужных дополнений"]
+    ver = f" {version}" if version else ""
     return (
-        "Нужна сборка ipatool 2.6.0 с патчами AppRestore: " + "; ".join(parts) + ". "
-        "Без них программа не берёт бесплатные лицензии. Сгруженные и уже купленные "
-        "приложения возвращаются как обычно."
+        "Для удалённых из App Store AppRestore использует ipatool со своими дополнениями. "
+        f"Сейчас установлен ipatool{ver} " + " и ".join(parts) + ", и новые бесплатные лицензии "
+        "не берутся. Сгруженные и уже купленные приложения это не затрагивает."
     )
 
 
 def needs_component(item: RestoreItem, owned: set[str] | None) -> bool:
-    return (
-        item.group == GROUP_REMOVED
-        and item.action == ACTION_STORE
-        and bool(item.store_id)
-        and (owned is None or item.store_id not in owned)
-    )
+    if not item.store_id or (owned is not None and item.store_id in owned):
+        return False
+    # region items are only a classification of removed ones (region_probe is off)
+    return item.group == GROUP_REGION or (item.group == GROUP_REMOVED and item.action == ACTION_STORE)
 
 
 def mark(items: Iterable[RestoreItem], owned: Iterable[str] | None, missing: Iterable[str]) -> list[RestoreItem]:
@@ -51,18 +59,20 @@ def mark(items: Iterable[RestoreItem], owned: Iterable[str] | None, missing: Ite
         return items
     owned_ids = None if owned is None else {str(s) for s in owned}
     return [
-        replace(item, action=ACTION_NONE, note=COMPONENT_NOTE) if needs_component(item, owned_ids) else item
+        # region_probe is off without 0001: the region group is folded back (hidden)
+        replace(item, group=GROUP_REMOVED, action=ACTION_NONE, note=COMPONENT_NOTE)
+        if needs_component(item, owned_ids) else item
         for item in items
     ]
 
 
 def howto_path() -> Path | None:
-    """BUILD-ipatool.md (Макс) or RUN-FROM-SOURCE.md in the checkout; None in a build."""
+    """packaging/BUILD-ipatool.md (Макс) or docs/RUN-FROM-SOURCE.md; None in a build."""
 
     from apprestore_core.paths import project_root
 
     docs = Path(project_root()) / "docs"
-    for name in ("BUILD-ipatool.md", "RUN-FROM-SOURCE.md"):
-        if (docs / name).is_file():
-            return docs / name
+    for path in (Path(project_root()) / "packaging" / "BUILD-ipatool.md", docs / "RUN-FROM-SOURCE.md"):
+        if path.is_file():
+            return path
     return None

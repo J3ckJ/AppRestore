@@ -1270,6 +1270,13 @@ class AppRestoreTools:
 
         return missing_patches(resolve_tool("ipatool"))
 
+    def ipatool_capabilities(self):
+        """``ipatool_caps.capabilities`` of the installed ipatool (Макс's names)."""
+
+        from .ipatool_caps import capabilities
+
+        return capabilities(resolve_tool("ipatool"))
+
     def account_country(self) -> str:
         """Country of the signed-in Apple ID from ``auth info``; ``""`` = unknown.
 

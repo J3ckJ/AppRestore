@@ -39,6 +39,7 @@ STATE_REGION = "region"
 STATE_INSTALLING = "installing"
 STATE_DONE = "done"
 STATE_EMPTY = "empty"
+STATE_NEEDS_COMPONENT = "needs_component"  # ipatool without patch 0001 (variant of missing)
 STATE_STORE_MISMATCH = "store_mismatch"  # -128, temporary look until Ника's part
 
 #: Up to this many apps (and if they fit) the home screen offers «Вернуть все N»;
@@ -86,6 +87,8 @@ class HomeInput:
     limit_total: bool = False
     #: «Подробнее» pressed: the technical text instead of the quiet line.
     component_details: str = ""
+    #: ipatool without AppRestore's patches: no new licenses (needs-component).
+    component: bool = False
 
 
 def _minutes(count: int) -> str:
@@ -340,6 +343,42 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             "Код подтверждения придёт на ваши устройства Apple.",
             links=[IPA_LINK, "Почему это безопасно"],
         )
+    elif inp.component and any(item.note == COMPONENT_NOTE for item in items):
+        # 01 §3.2 needs-component: ordinary main screen, «Вернуть M» = what really goes
+        state = STATE_NEEDS_COMPONENT
+        marked = [item for item in items if item.note == COMPONENT_NOTE]
+        n_all = len(offloaded) + len(removed)
+        m = len(selectable)
+        parts = []
+        off_ok = [item for item in selectable if item.group == GROUP_OFFLOADED]
+        own_ok = [item for item in selectable if item.group != GROUP_OFFLOADED]
+        if off_ok:
+            parts.append(
+                f"<b>{join_names([i.label for i in off_ok])}</b> "
+                + ("сгружено, его можно вернуть сейчас." if len(off_ok) == 1 else "сгружены, их можно вернуть сейчас.")
+            )
+        if own_ok:
+            parts.append(
+                f"<b>{join_names([i.label for i in own_ok])}</b> "
+                + ("уже на вашем Apple ID, его можно вернуть." if len(own_ok) == 1 else "уже на вашем Apple ID, их можно вернуть.")
+            )
+        parts.append(
+            f"<b>{join_names([i.label for i in marked])}</b> "
+            + ("удалено из App Store." if len(marked) == 1 else "удалены из App Store.")
+        )
+        line1, line2 = missing_caption(n_all, noun)
+        view.update(
+            number=n_all,
+            word=line1,
+            word2=line2,
+            a11y=missing_a11y(n_all),
+            lead=" ".join(parts),
+            cta=(f"Вернуть {m}" if m > 1 else "Вернуть") if m else "",
+            cta2="" if m else HOWTO_LINK,
+            fine=inp.component_details or QUIET_LINE,
+            links=["Найти другое приложение", DETAILS_LINK],
+            pages=phone_pages(n_all),
+        )
     elif region and len(selectable) <= RESTORE_ALL_MAX:
         state = STATE_REGION
         names_ok = join_names([item.label for item in selectable])
@@ -424,12 +463,6 @@ def home_view(inp: HomeInput) -> dict[str, object]:
                 hint=hint,
                 links=links,
             )
-    if state in (STATE_MISSING, STATE_MANY, STATE_REGION, STATE_EMPTY) and any(
-        item.note == COMPONENT_NOTE for item in items
-    ):
-        # ipatool without AppRestore's patches: one quiet line, no error screen (Ника)
-        view["fine"] = inp.component_details or QUIET_LINE
-        view["links"] = [*(view.get("links") or []), HOWTO_LINK, DETAILS_LINK]
     view["state"] = state
     view["tiles"] = phone_tiles(inp, state) if inp.connected else []
     slots = sum(1 for tile in view["tiles"] if tile["kind"] == "slot")

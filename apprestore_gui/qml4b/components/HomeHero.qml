@@ -122,7 +122,9 @@ Column {
         visible: (root.view.fine || "") !== ""
         text: root.view.fine || ""
         glyph: root.st === "signin" ? "lock" : "info"
+        color: root.st === "needs_component" ? Theme.ink2 : Theme.ink3Text
         wrap: true
+        onLinkActivated: function(link) { root.link(link) }
     }
     Item { width: 1; height: 30; visible: links.visible }
     Links {

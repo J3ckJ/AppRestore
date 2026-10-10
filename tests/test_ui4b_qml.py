@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -688,13 +689,16 @@ def test_unpatched_ipatool_no_consent_owned_go_marked_listed(qapp, tmp_path) -> 
     rows = [r for r in controller.selection.rows() if r.get("kind") == "app" and r["storeId"] in not_owned]
     assert rows and all(r["ipaHint"] == HOWTO_LINK and r["hasIpaHint"] for r in rows)
     home = controller.home
-    assert home["fine"] == QUIET_LINE and HOWTO_LINK in home["links"] and DETAILS_LINK in home["links"]
-    assert "ipatool" not in home["fine"]  # technical words only behind «Подробнее»
+    assert home["state"] == "needs_component" and home["number"] == 4 and home["cta"] == "Вернуть 2"
+    assert home["fine"] == QUIET_LINE and HOWTO_LINK in home["fine"]
+    assert home["links"] == ["Найти другое приложение", DETAILS_LINK]
+    assert "удалены из App Store" in home["lead"] and "уже на вашем Apple ID" in home["lead"]
+    assert "ipatool" not in home["fine"] + home["lead"]  # technical words only behind «Подробнее»
     controller.link(DETAILS_LINK)
-    assert "0001" in controller.home["fine"] and "0003" in controller.home["fine"]
+    assert "0001" in controller.home["fine"] and "ipatool" in controller.home["fine"]
     before = source.license_counts()
-    controller.selection.select_visible(True)
-    controller.restoreSelected()
+    controller.link(DETAILS_LINK)
+    controller.primaryAction()
     wait(qapp, lambda: any(c[0] == "install_store" for c in source.calls))
     wait(qapp, lambda: not controller.flow.running)
     assert not controller.consent.get("open")
@@ -714,3 +718,48 @@ def test_unpatched_gate_refuses_even_if_called_directly(qapp, tmp_path) -> None:
     source.install_store(sid)
     assert settled == [(sid, False, NEEDS_PATCHED_IPATOOL_TEXT)]
     assert bought == [] and not journal.exists()
+
+
+
+def test_needs_component_nothing_returnable_offers_howto_button(qapp, tmp_path) -> None:
+    from apprestore_gui.ui4b.component import HOWTO_LINK
+
+    source = FakeSource("unpatched")
+    source.owned = set()  # nothing on the account, nothing offloaded
+    source.changed.emit()
+    controller = Restore4b(source)
+    opened = []
+    controller.openDocRequested.connect(opened.append)
+    home = controller.home
+    assert home["state"] == "needs_component" and home["cta"] == "" and home["cta2"] == HOWTO_LINK
+    controller.secondaryAction()
+    # opens packaging/BUILD-ipatool.md or docs/RUN-FROM-SOURCE.md; without them, the details
+    assert (opened and opened[0].endswith(("BUILD-ipatool.md", "RUN-FROM-SOURCE.md"))) or "ipatool" in controller.home["fine"]
+    assert not any(c[0] == "install_store" for c in source.calls)
+
+
+def test_needs_component_hides_region_and_skips_region_probe(qapp) -> None:
+    from apprestore_gui.ui4b.catalog import GROUP_REGION
+    from apprestore_gui.ui4b.component import COMPONENT_NOTE
+
+    source = FakeSource("region")
+    source.patches = ("0001",)
+    source.owned = set()
+    source.changed.emit()
+    controller = Restore4b(source)
+    assert not any(i.group == GROUP_REGION for i in controller.selection.items)
+    assert "region" not in [r["key"] for r in controller.selection.rail_rows()]
+    assert any(i.note == COMPONENT_NOTE for i in controller.selection.items)
+
+    class Tools:
+        def ipatool_missing_patches(self):
+            return ("0001",)
+
+        def account_country(self):
+            raise AssertionError("region_probe must be off without 0001")
+
+    session = FakeSession()
+    session.service = SimpleNamespace(core=SimpleNamespace(tools=Tools()))
+    src = SessionSource(session)
+    src.online = True
+    assert src._classify([SimpleNamespace(store_id="1")]) == {}

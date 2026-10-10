@@ -9,6 +9,7 @@ Row {
     property bool wrap: false
     property int maxWidth: Theme.fineWidth
     property color color: Theme.ink3Text   // спека §5: ink3 мелким не проходит контраст
+    signal linkActivated(string link)
     spacing: wrap ? 8 : 7
     Glyph {
         Accessible.ignored: true
@@ -21,6 +22,9 @@ Row {
         token: "hint"
         color: root.color
         text: root.text
+        textFormat: root.text.indexOf("<") >= 0 ? Text.StyledText : Text.PlainText
+        linkColor: Theme.ink
+        onLinkActivated: function(link) { root.linkActivated(link) }
         width: root.wrap ? root.maxWidth - 22 : implicitWidth
         wrapMode: root.wrap ? Text.WordWrap : Text.NoWrap
         lineHeightMode: root.wrap ? Text.FixedHeight : Text.ProportionalHeight
