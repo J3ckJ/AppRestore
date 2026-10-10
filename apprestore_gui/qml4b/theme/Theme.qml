@@ -309,10 +309,6 @@ QtObject {
     readonly property int rowButtonRadius: isWin ? 4 : 8
     readonly property int rowButtonPadX: 14
     readonly property int tagRadius: 4
-    // настройки (часть 2, §6b)
-    readonly property int settingsRowHeight: isWin ? 56 : 64
-    readonly property int toggleW: isWin ? 40 : 36
-    readonly property int toggleH: 20
 
     // ── Движение
     readonly property int durFast: 150

@@ -6,7 +6,7 @@
 |---|---|---|
 | `0001-ipatool-auth-info-country.patch` | `auth info --format json` отдаёт `storeFront` (сырой `X-Set-Apple-Store-Front`, например `"143441-1,34"`) и `countryCode` (ISO) | `05d87977a554102c9b036306ec2c125febaa62433d2a080d588527a8225b7fb8` |
 | `0002-ipatool-list-purchases-all.patch` | `list-purchases --all`: вся история одним вызовом, без флага поведение прежнее | `025d9919871dba636a80559614a3ca402c37cf2be6965fb7a3203f4088e54445` |
-| `0003-ipatool-keychain-passphrase-env-stdin.patch` | пароль связки из env `IPATOOL_KEYCHAIN_PASSPHRASE` или `--keychain-passphrase-stdin` (первая строка stdin). Приоритет: флаг > stdin (при --keychain-passphrase-stdin) > env. Явный stdin перебивает случайную IPATOOL_KEYCHAIN_PASSPHRASE в окружении. Без них поведение прежнее | `76fdf028e6e6a5c11b9be9f647ab8281e17c2e4bd6ee1a22fa57c7d1c38e115c` |
+| `0003-ipatool-keychain-passphrase-env-stdin.patch` | пароль связки из env `IPATOOL_KEYCHAIN_PASSPHRASE` или `--keychain-passphrase-stdin` (первая строка stdin). Приоритет: флаг → stdin (если задан `--keychain-passphrase-stdin`, env тогда не читается) → env. Без них поведение прежнее | `76fdf028e6e6a5c11b9be9f647ab8281e17c2e4bd6ee1a22fa57c7d1c38e115c` |
 
 Содержимое `0001` совпадает с `maks-share/ipatool-auth-info-country.patch`. Отличается только заголовок `[PATCH 1/2]`, поэтому sha256 у файлов разные. Брать файл отсюда.
 
@@ -44,8 +44,7 @@ ipatool list-purchases --all [--platform iphone|ipad|appletv|visionos|macos] --f
 IPATOOL_KEYCHAIN_PASSPHRASE=… ipatool <команда> --format json --non-interactive          # env
 printf '%s\n' "$PASS" | ipatool <команда> --keychain-passphrase-stdin --non-interactive  # stdin
 ```
-- При `--keychain-passphrase-stdin` переменная `IPATOOL_KEYCHAIN_PASSPHRASE` игнорируется (stdin важнее env). Исправленная версия патча (`v2`, по handoff Макса), sha256 `76fdf028e6e6a5c11b9be9f647ab8281e17c2e4bd6ee1a22fa57c7d1c38e115c`.
-- stdin читается только с явным `--keychain-passphrase-stdin`, один раз и только когда связке нужен пароль. Читается побайтно до `\n`, остальной ввод не трогается.
+- stdin читается только с явным `--keychain-passphrase-stdin`, один раз и только когда связке нужен пароль. Читается побайтно до `\n`, остальной ввод не трогается. Если флаг задан, `IPATOOL_KEYCHAIN_PASSPHRASE` не читается вообще (случайный env не перебивает stdin).
 - Без флага и без env поведение прежнее: в интерактиве prompt, в `--non-interactive` ошибка `keychain passphrase is required …`. Текст ошибки теперь ещё называет env и `--keychain-passphrase-stdin`.
 - Старый ipatool env игнорирует (ошибка «passphrase is required»), а на `--keychain-passphrase-stdin` отвечает `unknown flag`. Поддержку определяем по `ipatool --help`: есть ли там `--keychain-passphrase-stdin`.
 - env дочернего процесса читает только тот же пользователь или root (`/proc/<pid>/environ`, mode 400), а argv (`/proc/<pid>/cmdline`, `ps`) виден всем.
