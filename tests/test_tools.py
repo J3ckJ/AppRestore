@@ -120,24 +120,52 @@ class ToolArgumentTests(unittest.TestCase):
         self.assertEqual(self.runner.calls[0][1].get("capture"), False)
 
     @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
-    def test_purchase_is_explicit_and_not_used_for_store_id(
+    def test_download_never_carries_purchase(
         self,
         _resolve: object,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "out.ipa"
-            self.tools.download_ipa(output, store_id="123", purchase=False)
+            self.tools.download_ipa(output, store_id="123")
             store_args = self.runner.calls[-1][0]
             self.assertNotIn("--purchase", store_args)
             self.assertEqual(self.runner.calls[-1][1].get("capture"), False)
+            self.tools.download_ipa(output, bundle_id="com.example.alpha")
+            self.assertNotIn("--purchase", self.runner.calls[-1][0])
+            with self.assertRaises(TypeError):
+                self.tools.download_ipa(output, store_id="123", purchase=True)  # type: ignore[call-arg]
 
-            self.tools.download_ipa(
-                output,
-                bundle_id="com.example.alpha",
-                purchase=True,
-            )
-            bundle_args = self.runner.calls[-1][0]
-            self.assertIn("--purchase", bundle_args)
+    @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
+    def test_purchase_is_its_own_json_command(self, _resolve: object) -> None:
+        self.runner.stdout = '{"alreadyOwned":false,"level":"info","success":true}\n'
+        payload = self.tools.purchase_license(store_id="1234567890")
+        args = self.runner.calls[-1][0]
+        self.assertEqual(
+            args, ("ipatool", "--format", "json", "purchase", "--app-id", "1234567890")
+        )
+        self.assertNotIn("download", args)
+        self.assertIs(payload["success"], True)
+
+        self.tools.purchase_license(bundle_id="com.example.alpha")
+        self.assertEqual(self.runner.calls[-1][0][-2:], ("--bundle-identifier", "com.example.alpha"))
+        with self.assertRaises(ValueError):
+            self.tools.purchase_license()
+
+    @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
+    def test_purchase_failure_keeps_ipatool_error(self, _resolve: object) -> None:
+        self.runner.returncode = 1
+        self.runner.stdout = (
+            '{"error":"failed to purchase item with param \'STDQ\': failed to purchase app",'
+            '"level":"error","success":false}\n'
+        )
+        with self.assertRaises(ToolUnavailable) as caught:
+            self.tools.purchase_license(store_id="1")
+        self.assertIn("failed to purchase", str(caught.exception))
+
+        self.runner.returncode = 0
+        self.runner.stdout = '{"success":false,"error":"license is required"}'
+        with self.assertRaises(ToolUnavailable):
+            self.tools.purchase_license(store_id="1")
 
     @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
     def test_download_failure_keeps_the_tool_text(self, _resolve: object) -> None:
@@ -265,7 +293,7 @@ class ToolArgumentTests(unittest.TestCase):
     ) -> None:
         tools = AppRestoreTools(self.runner)  # type: ignore[arg-type]
 
-        tools.download_ipa(Path("out.ipa"), store_id="1", purchase=False)
+        tools.download_ipa(Path("out.ipa"), store_id="1")
 
         args = self.runner.calls[-1][0]
         self.assertNotIn("--keychain-passphrase", args)

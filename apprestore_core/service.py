@@ -370,11 +370,18 @@ class AppRestoreService:
             attempt_dir.mkdir(mode=0o700)
             output = attempt_dir / "download.ipa"
             try:
+                if purchase:
+                    # R2: the license is its own `ipatool purchase` step; the
+                    # download below never carries --purchase. The label keeps
+                    # "with --purchase" so errors.py can tell the two apart.
+                    self.tools.purchase_license(
+                        store_id=value if kind == "store" else None,
+                        bundle_id=value if kind == "bundle" else None,
+                    )
                 ok = self.tools.download_ipa(
                     output,
                     store_id=value if kind == "store" else None,
                     bundle_id=value if kind == "bundle" else None,
-                    purchase=purchase,
                 )
             except (ToolUnavailable, ValueError) as exc:
                 errors.append(f"{label}: {exc}")
@@ -983,10 +990,12 @@ class AppRestoreService:
                 attempt_dir.mkdir(mode=0o700)
                 output = attempt_dir / "download.ipa"
                 try:
+                    if purchase:
+                        # R2: separate `ipatool purchase`, then a plain download.
+                        self.tools.purchase_license(store_id=resolved)
                     ok = self.tools.download_ipa(
                         output,
                         store_id=resolved,
-                        purchase=purchase,
                     )
                 except (ToolUnavailable, ValueError) as exc:
                     errors.append(f"{label}: {exc}")

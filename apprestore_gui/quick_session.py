@@ -1039,30 +1039,20 @@ class QuickSession(QObject):
 
     def _restore_store_gated(self, udid: str, store_id: str, acquire: bool) -> None:
         core = self.service.core
-
-        def attempt(with_license: bool) -> object:
-            if with_license:
-                return core.restore_by_store_id(udid, store_id, acquire_license=True)
-            return core.restore_by_store_id(udid, store_id)
-
         run_with_free_license(
             store_id,
-            attempt,
+            lambda: core.restore_by_store_id(udid, store_id),
+            tools=core.tools,
             acquire=acquire,
             notify=lambda text: self.installProgress.emit(-1, text),
         )
 
     def _download_copy_gated(self, app: InstalledApp) -> object:
         service = self.service
-
-        def attempt(with_license: bool) -> object:
-            if with_license:
-                return service.download_to_library(app, acquire_license=True)
-            return service.download_to_library(app)
-
         return run_with_free_license(
             app.store_id or "",
-            attempt,
+            lambda: service.download_to_library(app),
+            tools=service.core.tools,
             acquire=True,
             notify=lambda text: self._set_files_note(f"{app.name}: {text}", busy=True),
         )

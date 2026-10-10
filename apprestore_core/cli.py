@@ -966,7 +966,7 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument(
         "--acquire-license",
         action="store_true",
-        help="explicitly allow ipatool --purchase after read-only attempts fail",
+        help="explicitly allow a separate `ipatool purchase` (free license) after read-only downloads fail",
     )
 
     install = subparsers.add_parser("install", help="verify and install a local IPA")

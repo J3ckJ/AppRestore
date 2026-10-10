@@ -1180,8 +1180,12 @@ class AppRestoreTools:
         *,
         bundle_id: str | None = None,
         store_id: str | None = None,
-        purchase: bool = False,
     ) -> bool:
+        """``ipatool download``. Never carries ``--purchase`` (LEGAL.md R2).
+
+        A license is a separate ``purchase_license`` step that the caller
+        takes first.
+        """
         if bool(bundle_id) == bool(store_id):
             raise ValueError("provide exactly one of bundle_id or store_id")
         args = self._ipatool_cmd("download")
@@ -1191,9 +1195,9 @@ class AppRestoreTools:
             args.extend(["--app-id", store_id])
         else:
             args.extend(["--bundle-identifier", str(bundle_id)])
-        if purchase:
-            args.append("--purchase")
         args.extend(["--output", str(output)])
+        if "--purchase" in args:  # pragma: no cover - R2 tripwire
+            raise ValueError("download must never carry --purchase")
         result = self.runner.run(
             args,
             capture=False,
@@ -1207,6 +1211,68 @@ class AppRestoreTools:
                 raise ToolUnavailable(detail)
             return False
         return True
+
+    def purchase_license(
+        self,
+        *,
+        store_id: str | None = None,
+        bundle_id: str | None = None,
+    ) -> dict[str, Any]:
+        """``ipatool --format json purchase``: take a free license, nothing else.
+
+        This is an App Store transaction that cannot be undone. GUI callers go
+        through ``apprestore_gui.license_gate`` first (price==0 by lookup in
+        the account's country, 5/day + 15 total, journal). Returns ipatool's
+        JSON line (``alreadyOwned``, ``success``); raises ``ToolUnavailable``
+        with ipatool's error text otherwise.
+        """
+
+        if bool(bundle_id) == bool(store_id):
+            raise ValueError("provide exactly one of bundle_id or store_id")
+        args = self._ipatool_cmd("--format", "json", "purchase")
+        if store_id:
+            if not store_id.isdigit() or int(store_id) <= 0:
+                raise ValueError("store_id must be a positive integer")
+            args.extend(["--app-id", store_id])
+        else:
+            args.extend(["--bundle-identifier", str(bundle_id)])
+        result = self.runner.run(
+            args,
+            capture=True,
+            timeout=180,
+            env=self._ipatool_env(),
+        )
+        payload: dict[str, Any] = {}
+        for line in reversed((result.stdout or "").splitlines()):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                payload = parsed
+                break
+        if result.returncode != 0 or payload.get("success") is not True:
+            error = payload.get("error")
+            detail = (
+                _public_tool_failure(f'error="{error}"')
+                if isinstance(error, str) and error
+                else _public_tool_failure(result.stderr, result.stdout)
+            )
+            raise ToolUnavailable(detail or "ipatool purchase failed")
+        return payload
+
+    def account_country(self) -> str:
+        """Country code of the signed-in Apple ID, ``""`` when ipatool does not say."""
+
+        from .storefronts import account_country
+
+        try:
+            return account_country(self.ipatool_auth_info())
+        except Exception:  # noqa: BLE001 - unknown country means fallback list
+            return ""
 
     def search_apps(self, term: str, *, limit: int = 10) -> list[dict[str, str]]:
         """Search App Store via ipatool; may prompt for keychain passphrase."""

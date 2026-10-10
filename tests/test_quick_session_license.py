@@ -1,5 +1,6 @@
 """QuickSession paths: probe never purchases; «Поставить» and «Сохранить копии»
-pass --purchase only for price==0 within the limit, and journal it."""
+take a license (separate ``ipatool purchase``) only for price==0 within the
+limit, journal it, and every download stays without --purchase."""
 
 from __future__ import annotations
 
@@ -25,19 +26,29 @@ STORE = "1234567890"
 
 
 class StoreTools:
-    """Fake ipatool: no license until a --purchase download."""
+    """Fake ipatool: no license until purchase_license."""
 
-    def __init__(self, ipa: Path, *, owned: bool = False) -> None:
+    def __init__(self, ipa: Path, *, owned: bool = False, country: str = "ru") -> None:
         self.ipa = ipa
         self.owned = owned
-        self.purchases: list[bool] = []
+        self.country = country
+        self.downloads = 0
+        self.purchases: list[str] = []
 
     def ipatool_authenticated(self) -> bool:
         return True
 
-    def download_ipa(self, output: Path, *, bundle_id=None, store_id=None, purchase: bool = False) -> bool:
-        self.purchases.append(purchase)
-        if not (self.owned or purchase):
+    def account_country(self) -> str:
+        return self.country
+
+    def purchase_license(self, *, store_id=None, bundle_id=None) -> dict:
+        self.purchases.append(str(store_id or bundle_id))
+        self.owned = True
+        return {"success": True}
+
+    def download_ipa(self, output: Path, *, bundle_id=None, store_id=None) -> bool:
+        self.downloads += 1
+        if not self.owned:
             raise ToolUnavailable("license is required")
         output.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(self.ipa, output)
@@ -69,7 +80,10 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         license_gate,
         "lookup_offer",
-        lambda s: {"storeId": s, "bundleId": "com.example.alpha", "price": price["value"], "country": "ru"},
+        lambda s, countries=None: {
+            "storeId": s, "bundleId": "com.example.alpha", "price": price["value"],
+            "country": (countries or ("ru",))[0],
+        },
     )
     with patch("apprestore_core.service.lookup_itunes_store_id", return_value=None), patch(
         "apprestore_core.service.remember_known_app"
@@ -82,8 +96,8 @@ def _session(env, *, owned: bool = False):
     core = AppRestoreService(tools=tools, library=env.tmp / "lib", cache=env.tmp / "cache")  # type: ignore[arg-type]
 
     def download_to_library(app, *, acquire_license: bool = False):
-        return core.download(app.bundle_id, store_id=app.store_id, lookup_store_id=False,
-                             acquire_license=acquire_license).name
+        assert acquire_license is False, "GUI must never ask the core to acquire"
+        return core.download(app.bundle_id, store_id=app.store_id, lookup_store_id=False).name
 
     fake = SimpleNamespace(
         service=SimpleNamespace(core=core, download_to_library=download_to_library),
@@ -105,18 +119,19 @@ def test_install_store_keeps_auto_acquire_on() -> None:
 def test_owned_app_installs_without_purchase(env) -> None:
     fake, tools = _session(env, owned=True)
     QuickSession._restore_store_gated(fake, "udid", STORE, True)
-    assert tools.purchases == [False]
+    assert tools.purchases == []
     assert not env.journal.exists()
 
 
 def test_free_app_install_purchases_and_journals(env) -> None:
     fake, tools = _session(env)
     QuickSession._restore_store_gated(fake, "udid", STORE, True)
-    assert True in tools.purchases
-    assert tools.purchases[0] is False
+    assert tools.purchases == [STORE]
     assert (-1, LICENSE_NOTICE) in fake.installProgress.values
     lines = env.journal.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 1 and json.loads(lines[0])["track_id"] == STORE
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["track_id"] == STORE and entry["status"] == "acquired" and entry["storefront"] == "ru"
 
 
 def test_paid_app_install_never_purchases(env) -> None:
@@ -124,7 +139,7 @@ def test_paid_app_install_never_purchases(env) -> None:
     fake, tools = _session(env)
     with pytest.raises(LicenseDenied, match="платное"):
         QuickSession._restore_store_gated(fake, "udid", STORE, True)
-    assert tools.purchases and True not in tools.purchases
+    assert tools.purchases == []
     assert not env.journal.exists()
 
 
@@ -133,14 +148,14 @@ def test_install_over_limit_never_purchases(env) -> None:
     fake, tools = _session(env)
     with pytest.raises(LicenseDenied, match="Лимит"):
         QuickSession._restore_store_gated(fake, "udid", STORE, True)
-    assert tools.purchases and True not in tools.purchases
+    assert tools.purchases == []
 
 
 def test_save_copy_goes_through_the_same_gate(env) -> None:
     app = InstalledApp(bundle_id="com.example.alpha", name="Alpha", version="1.0", store_id=STORE)
     fake, tools = _session(env)
     QuickSession._download_copy_gated(fake, app)
-    assert tools.purchases[0] is False and True in tools.purchases
+    assert tools.purchases == [STORE]
     assert any(LICENSE_NOTICE in note for note in fake.notes)
     assert env.journal.is_file()
 
@@ -148,7 +163,7 @@ def test_save_copy_goes_through_the_same_gate(env) -> None:
     fake, tools = _session(env)
     with pytest.raises(LicenseDenied):
         QuickSession._download_copy_gated(fake, app)
-    assert tools.purchases and True not in tools.purchases
+    assert tools.purchases == []
 
 
 def test_shelf_probe_thread_uses_read_only_probe(env, monkeypatch: pytest.MonkeyPatch) -> None:

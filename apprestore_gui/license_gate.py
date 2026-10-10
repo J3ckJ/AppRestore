@@ -6,28 +6,35 @@ only under conditions:
 1. First try without a license (``acquire=False``). If the app is already on
    the Apple ID, nothing else happens.
 2. Only when Apple answers "license is required": public iTunes lookup of the
-   price. Unknown or non-zero price is a refusal with a clear message.
+   price in the account's country (``auth info``; first country of the list
+   only when ipatool does not say). Unknown or non-zero price is a refusal.
 3. Shared limit (5 in 24 h, 15 total) from ``apprestore_core.license_guard``
    over ``licenses_acquired.jsonl``.
-4. The window is told «бесплатное приложение будет добавлено на ваш Apple ID»
-   before the retry with a license.
-5. A successful license is appended to the journal (no Apple ID, no tokens).
+4. The window is told «бесплатное приложение будет добавлено на ваш Apple ID».
+5. A separate ``ipatool purchase`` (R2: ``download`` never carries
+   ``--purchase``), journal line ``acquired`` right after it, then a plain
+   download; if that fails the line becomes ``acquired_download_failed``.
 
 No Qt here, so the gate is testable without PySide6.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Any, Callable, TypeVar
 
 from apprestore_core.license_guard import (
     DEFAULT_DAILY_LIMIT,
     DEFAULT_TOTAL_LIMIT,
+    default_journal_path,
+)
+from apprestore_core.license_journal import (
+    ACQUIRED,
+    ACQUIRED_DOWNLOAD_FAILED,
     Verdict,
     check_can_acquire,
-    record_acquire,
+    record,
+    update_status,
 )
 from apprestore_gui.errors import NOT_OWNED_TEXT, is_license_missing
 
@@ -45,17 +52,16 @@ class LicenseDenied(RuntimeError):
 
 
 def journal_path() -> Path:
-    """``$APPRESTORE_LICENSE_JOURNAL`` or ``~/.apprestore/licenses_acquired.jsonl``."""
+    """Shared with bench: ``license_guard.default_journal_path()``."""
 
-    configured = os.environ.get("APPRESTORE_LICENSE_JOURNAL")
-    if configured:
-        return Path(configured).expanduser()
-    return Path.home() / ".apprestore" / "licenses_acquired.jsonl"
+    return default_journal_path()
 
 
-def lookup_offer(store_id: str) -> dict[str, object] | None:
+def lookup_offer(store_id: str, countries: tuple[str, ...] | None = None) -> dict[str, object] | None:
     from apprestore_core.catalog import lookup_itunes_offer
 
+    if countries:
+        return lookup_itunes_offer(store_id, countries=countries)
     return lookup_itunes_offer(store_id)
 
 
@@ -83,28 +89,36 @@ def refusal_text(verdict: Verdict) -> str:
 
 def run_with_free_license(
     store_id: str,
-    attempt: Callable[[bool], T],
+    attempt: Callable[[], T],
     *,
+    tools: Any,
     acquire: bool = True,
-    lookup: Callable[[str], dict[str, object] | None] | None = None,
+    lookup: Callable[[str, tuple[str, ...] | None], dict[str, object] | None] | None = None,
     journal: Path | None = None,
     notify: Callable[[str], None] | None = None,
+    mode: str = "gui",
 ) -> T:
-    """``attempt(False)``, and only if the license is missing and the gate
-    allows it, ``attempt(True)`` (the path that sends ``--purchase``)."""
+    """Read-only ``attempt()``; only if the license is missing and the gate
+    allows it: ``tools.purchase_license`` → journal ``acquired`` →
+    ``attempt()`` again (still a plain download, never ``--purchase``)."""
 
     try:
-        return attempt(False)
+        return attempt()
     except Exception as exc:
         if not acquire or not is_license_missing(str(exc)):
             raise
         missing = exc
 
     store_id = str(store_id or "").strip()
+    country = ""
+    try:
+        country = str(tools.account_country() or "").strip().lower()
+    except Exception:  # noqa: BLE001 - unknown country: fallback list
+        country = ""
     offer: dict[str, object] | None = None
     if store_id.isdigit():
         try:
-            offer = (lookup or lookup_offer)(store_id)
+            offer = (lookup or lookup_offer)(store_id, (country,) if country else None)
         except Exception:  # noqa: BLE001 - no price means no license
             offer = None
     price = offer.get("price") if offer else None
@@ -115,11 +129,19 @@ def run_with_free_license(
 
     if notify is not None:
         notify(LICENSE_NOTICE)
-    result = attempt(True)
-    record_acquire(
+    # A failed purchase gives no license: nothing to journal, error goes up.
+    tools.purchase_license(store_id=store_id)
+    entry = record(
         store_id,
         bundle_id=str((offer or {}).get("bundleId") or ""),
-        storefront=str((offer or {}).get("country") or ""),
+        storefront=str((offer or {}).get("country") or country),
+        price=float(price) if price is not None else None,
+        mode=mode,
+        status=ACQUIRED,
         journal_path=path,
     )
-    return result
+    try:
+        return attempt()
+    except BaseException:
+        update_status(entry, ACQUIRED_DOWNLOAD_FAILED, journal_path=path)
+        raise

@@ -1,58 +1,82 @@
 """Лицензионный гард AppRestore: можно ли взять бесплатную лицензию сейчас.
 
 Автономный модуль без зависимостей (только стандартная библиотека). Логика
-вынесена из scripts/bench_restore.py (ветка ipatool/bench), чтобы GUI (Дима) и
-bench считали лимиты одинаково по одному журналу.
+общая для GUI (Дима) и для bench (scripts/bench_restore.py): оба считают лимиты
+по одному журналу и пишут один формат строки.
 
 Политика (жёсткая):
   * лицензию берём ТОЛЬКО для бесплатных приложений: price == 0 (цену берём из
-    lookup ДО вызова purchase). Платные — отказ.
-  * не больше `daily_limit` лицензий за последние 24 часа и `total_limit` всего
+    lookup ДО вызова purchase, по стране аккаунта). Платные — отказ.
+  * не больше `daily_limit` лицензий за 24 часа и `total_limit` всего
     (по умолчанию 5 и 15); при превышении — отказ.
-  * журнал licenses_acquired.jsonl — одна JSON-строка на взятую лицензию:
-    time (ISO, UTC), track_id, bundle_id, storefront. БЕЗ Apple ID, паролей,
-    токенов, UDID.
+  * журнал licenses_acquired.jsonl — одна JSON-строка на взятую лицензию. БЕЗ
+    Apple ID, паролей, токенов, UDID. Поля см. record_acquire().
   * `download` НИКОГДА не вызывается с `--purchase`; лицензия — отдельный шаг
-    `ipatool purchase`, и только после allowed=True.
+    `ipatool purchase`, и только после allowed=True. Если purchase прошёл, а
+    скачивание упало — запись всё равно делается (status="acquired_download_failed"),
+    потому что лицензия на аккаунт уже добавлена и должна считаться в лимите.
+
+Путь журнала (общий у GUI и bench):
+    переменная окружения APPRESTORE_LICENSE_JOURNAL, иначе
+    ~/.apprestore/licenses_acquired.jsonl  (см. default_journal_path()).
 
 LEGAL: получение лицензии меняет историю аккаунта — только бесплатные, с согласия
 владельца Apple ID и в пределах лимита. Каждый механизм — к правовой проверке Лены.
 
 Как подключить в GUI (installStore / кнопка «Получить»):
 
-    from license_guard import check_can_acquire, record_acquire
+    from license_guard import check_can_acquire, record_acquire, default_journal_path
 
-    JOURNAL = Path.home() / ".apprestore" / "licenses_acquired.jsonl"
+    journal = default_journal_path()   # ~/.apprestore/licenses_acquired.jsonl или $APPRESTORE_LICENSE_JOURNAL
 
-    # 1. ДО purchase: price берём из lookup (iTunes/ipatool), track_id — числовой App Store ID.
-    verdict = check_can_acquire(track_id, price, journal_path=JOURNAL)
+    # 1. ДО purchase: price берём из lookup по стране аккаунта; track_id — числовой App Store ID.
+    verdict = check_can_acquire(track_id, price, journal_path=journal)
     if not verdict.allowed:
-        show_error(verdict.reason)           # например «лимит за сутки исчерпан: 5/5»
+        show_error(verdict.reason)           # напр. «лимит лицензий за сутки исчерпан: 5/5»
         return
 
     # 2. Только теперь — ipatool purchase (без --purchase у download!).
-    run_ipatool_purchase(track_id)
+    purchase_ok = run_ipatool_purchase(track_id)
 
-    # 3. После успешного purchase — записать в журнал (для следующего подсчёта лимита).
-    record_acquire(track_id, bundle_id=bundle_id, storefront=storefront, journal_path=JOURNAL)
+    # 3. Затем обычный download БЕЗ --purchase. По итогу — запись в журнал.
+    if purchase_ok:
+        download_ok = run_ipatool_download(track_id)   # без --purchase
+        record_acquire(track_id, bundle_id=bundle_id, storefront=storefront,
+                       price=price, journal_path=journal,
+                       status="acquired" if download_ok else "acquired_download_failed")
 
 check_can_acquire не меняет журнал; record_acquire только дописывает строку.
-Оба потокобезопасны на уровне процесса (используйте один путь журнала).
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 __all__ = ["Verdict", "check_can_acquire", "record_acquire", "read_counts",
-           "DEFAULT_DAILY_LIMIT", "DEFAULT_TOTAL_LIMIT"]
+           "default_journal_path", "DEFAULT_DAILY_LIMIT", "DEFAULT_TOTAL_LIMIT",
+           "ACQUIRED_STATUSES"]
 
 DEFAULT_DAILY_LIMIT = 5
 DEFAULT_TOTAL_LIMIT = 15
+JOURNAL_ENV = "APPRESTORE_LICENSE_JOURNAL"
+
+# Статусы, при которых лицензия считается ВЗЯТОЙ (учитывается в лимите). И успешная
+# установка, и «взяли, но скачивание упало» — лицензия на аккаунт уже добавлена.
+ACQUIRED_STATUSES = frozenset({"acquired", "acquired_download_failed"})
+
+
+def default_journal_path() -> Path:
+    """Общий путь журнала: $APPRESTORE_LICENSE_JOURNAL или ~/.apprestore/licenses_acquired.jsonl."""
+
+    override = os.environ.get(JOURNAL_ENV)
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".apprestore" / "licenses_acquired.jsonl"
 
 
 @dataclass
@@ -70,8 +94,12 @@ def _now_utc() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
 
-def _read_entries(journal_path: Path | str) -> list[dict[str, Any]]:
-    path = Path(journal_path)
+def _resolve(journal_path: Path | str | None) -> Path:
+    return default_journal_path() if journal_path is None else Path(journal_path)
+
+
+def _read_entries(journal_path: Path | str | None) -> list[dict[str, Any]]:
+    path = _resolve(journal_path)
     if not path.is_file():
         return []
     entries: list[dict[str, Any]] = []
@@ -88,11 +116,24 @@ def _read_entries(journal_path: Path | str) -> list[dict[str, Any]]:
     return entries
 
 
-def read_counts(journal_path: Path | str, *,
-                now: Callable[[], dt.datetime] = _now_utc) -> tuple[int, int]:
-    """(использовано за последние 24 ч, использовано всего) по журналу."""
+def _counts_toward_limit(entry: dict[str, Any]) -> bool:
+    """Запись учитывается в лимите, если лицензия была взята.
 
-    entries = _read_entries(journal_path)
+    Старые строки без поля ``status`` — это всегда взятая лицензия (так писал
+    прежний формат), поэтому считаются. Новые — по множеству ACQUIRED_STATUSES.
+    """
+
+    status = entry.get("status")
+    if not status:
+        return True
+    return str(status) in ACQUIRED_STATUSES
+
+
+def read_counts(journal_path: Path | str | None = None, *,
+                now: Callable[[], dt.datetime] = _now_utc) -> tuple[int, int]:
+    """(использовано за последние 24 ч, использовано всего) среди ВЗЯТЫХ лицензий."""
+
+    entries = [e for e in _read_entries(journal_path) if _counts_toward_limit(e)]
     since = now() - dt.timedelta(hours=24)
     used_today = 0
     for item in entries:
@@ -119,7 +160,7 @@ def _coerce_price(price: Any) -> float | None:
 
 
 def check_can_acquire(track_id: Any, price: Any, *,
-                      journal_path: Path | str,
+                      journal_path: Path | str | None = None,
                       daily_limit: int = DEFAULT_DAILY_LIMIT,
                       total_limit: int = DEFAULT_TOTAL_LIMIT,
                       now: Callable[[], dt.datetime] = _now_utc) -> Verdict:
@@ -156,21 +197,39 @@ def check_can_acquire(track_id: Any, price: Any, *,
 
 def record_acquire(track_id: Any, bundle_id: str | None = None,
                    storefront: str | None = None, *,
-                   journal_path: Path | str,
+                   journal_path: Path | str | None = None,
+                   status: str = "acquired",
+                   price: Any = None, mode: str | None = None,
+                   app_id: Any = None,
                    now: Callable[[], dt.datetime] = _now_utc) -> dict[str, Any]:
     """Дописать взятую лицензию в журнал. Возвращает записанную строку.
 
-    Пишет только безопасные поля: time (ISO, UTC), track_id, bundle_id,
-    storefront. Никаких Apple ID, паролей, токенов, UDID.
+    Единый формат строки (для GUI и bench):
+      time       — ISO 8601, UTC;
+      track_id   — основной ключ (числовой App Store ID, строкой);
+      app_id     — алиас track_id (совместимость со старым bench);
+      bundle_id  — bundle, если известен, иначе "";
+      storefront — витрина/страна, если известна, иначе "";
+      status     — "acquired" | "acquired_download_failed";
+      price      — цена из lookup (обычно 0.0) или null;
+      mode       — "gui" | "mock" | "real" | ... или null.
+
+    Никаких Apple ID, паролей, токенов, UDID.
     """
 
+    track = str(track_id) if track_id is not None else ""
+    alias = str(app_id) if app_id is not None else track
     entry = {
         "time": now().isoformat(timespec="seconds"),
-        "track_id": str(track_id) if track_id is not None else "",
+        "track_id": track,
+        "app_id": alias,
         "bundle_id": bundle_id or "",
         "storefront": storefront or "",
+        "status": status,
+        "price": _coerce_price(price),
+        "mode": mode,
     }
-    path = Path(journal_path)
+    path = _resolve(journal_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")

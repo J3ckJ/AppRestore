@@ -20,6 +20,7 @@ class FakeTools:
     def __init__(self, effects: list[Path | None] | None = None) -> None:
         self.effects = list(effects or [])
         self.download_calls: list[dict[str, object]] = []
+        self.purchase_calls: list[dict[str, object]] = []
         self.install_calls: list[tuple[str, Path]] = []
 
     def ipatool_authenticated(self) -> bool:
@@ -31,14 +32,15 @@ class FakeTools:
         *,
         bundle_id: str | None = None,
         store_id: str | None = None,
-        purchase: bool = False,
     ) -> bool:
+        # download_ipa has no purchase parameter any more (R2); the key stays
+        # so the older assertions keep reading naturally.
         self.download_calls.append(
             {
                 "output": output,
                 "bundle_id": bundle_id,
                 "store_id": store_id,
-                "purchase": purchase,
+                "purchase": False,
             }
         )
         effect = self.effects.pop(0) if self.effects else None
@@ -47,6 +49,15 @@ class FakeTools:
         output.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(effect, output)
         return True
+
+    def purchase_license(
+        self,
+        *,
+        store_id: str | None = None,
+        bundle_id: str | None = None,
+    ) -> dict[str, object]:
+        self.purchase_calls.append({"store_id": store_id, "bundle_id": bundle_id})
+        return {"success": True}
 
     def install_ipa(self, udid: str, ipa: Path) -> InstallRequestState:
         self.install_calls.append((udid, ipa))
@@ -192,11 +203,34 @@ class ServiceTests(unittest.TestCase):
         self.assertNotEqual(installed_path, self.good.resolve())
         self.assertEqual(installed_path.name, "verified.ipa")
 
+    def test_acquire_license_is_a_separate_purchase_then_plain_download(self) -> None:
+        tools = FakeTools([None, self.good])
+        target = self.service(tools).download_by_store_id("12345678", acquire_license=True)
+        self.assertTrue(target.is_file())
+        self.assertEqual(tools.purchase_calls, [{"store_id": "12345678", "bundle_id": None}])
+        self.assertEqual(len(tools.download_calls), 2)
+
+    def test_bundle_fallback_purchase_is_also_separate(self) -> None:
+        tools = FakeTools([None, None, None, self.good])
+        target = self.service(tools).download(
+            "com.example.alpha", "12345678", acquire_license=True
+        )
+        self.assertTrue(target.is_file())
+        self.assertEqual(
+            tools.purchase_calls,
+            [
+                {"store_id": "12345678", "bundle_id": None},
+                {"store_id": None, "bundle_id": "com.example.alpha"},
+            ],
+        )
+        self.assertEqual(len(tools.download_calls), 4)
+
     def test_purchase_attempts_require_explicit_opt_in(self) -> None:
         tools = FakeTools([self.wrong, self.wrong])
         with self.assertRaises(AppRestoreError):
             self.service(tools).download("com.example.alpha", "12345678")
         self.assertTrue(tools.download_calls)
+        self.assertEqual(tools.purchase_calls, [])
         self.assertTrue(
             all(not bool(call["purchase"]) for call in tools.download_calls)
         )
