@@ -164,8 +164,14 @@ def _posix_pty_import() -> str:
     return f"{pty_process.__module__}.{pty_process.__name__}"
 
 
-# Windows reports a console host that could not start as STATUS_DLL_INIT_FAILED.
-_DLL_INIT_FAILED = {0xC0000142, 0xC0000142 - (1 << 32)}
+# Exit codes of a console host that could not start or died at once:
+# STATUS_DLL_INIT_FAILED (the 06.10 bug) and STATUS_CONTROL_C_EXIT (what
+# a build without OpenConsole.exe returns on the GitHub Windows runner).
+_CONSOLE_HOST_DIED = {
+    code: name
+    for value, name in ((0xC0000142, "0xc0000142"), (0xC000013A, "0xc000013a"))
+    for code in (value, value - (1 << 32))
+}
 _PATH_LIKE = re.compile(r"(?:[A-Za-z]:[\\/]|/(?:Users|home|var|private|tmp)/)[^\s\"']*")
 _EMAIL_LIKE = re.compile(r"[^\s@\"']+@[^\s@\"']+")
 
@@ -177,32 +183,41 @@ def _redact(text: str) -> str:
     return _EMAIL_LIKE.sub("<email>", text)
 
 
-def _ipatool_error_text(transcript: str) -> str:
+def _ipatool_json(transcript: str) -> dict[str, Any] | None:
+    """The JSON log line ``ipatool --format json`` printed, as a dict.
+
+    A terminal may break a long line, so a second try drops line breaks
+    (JSON itself never needs them).
+    """
+
     from apprestore_gui.auth_pty import extract_json_document
 
-    document = extract_json_document(transcript)
-    if document:
+    for text in (transcript, transcript.replace("\r", "").replace("\n", "")):
+        document = extract_json_document(text)
+        if not document:
+            continue
         try:
             payload = json.loads(document)
         except ValueError:
-            payload = None
+            continue
         if isinstance(payload, dict):
-            message = payload.get("error") or payload.get("message")
-            if message:
-                return str(message)
-    return transcript
+            return payload
+    return None
 
 
 def _ipatool_auth_info_hidden_terminal() -> dict[str, Any]:
-    """Run the real ``ipatool auth info`` the way the window logs in.
+    """Run the real ``ipatool auth info --format json`` the way the window logs in.
 
     Windows: through pywinpty's ConPTY, which needs the bundled
-    OpenConsole.exe (without it the console host dies with 0xc0000142 and
-    ipatool never runs). macOS: through the POSIX pty. No Apple ID is used:
-    HOME/USERPROFILE point at an empty folder, ``--non-interactive`` makes
+    OpenConsole.exe (without it the console host dies and ipatool never
+    runs). macOS: through the POSIX pty. No Apple ID is used: HOME and
+    USERPROFILE point at an empty folder, ``--non-interactive`` makes
     ipatool fail instead of asking anything, and no passphrase is sent.
-    "Not signed in" is the expected, passing answer. The report keeps only
-    the exit code, the output size and a redacted error line.
+
+    The answer is judged by ipatool's JSON, not by words: a non-zero exit
+    with ``{"level": "error", "error": "..."}`` means "not signed in", the
+    expected and passing result; exit 0 with ``"success": true`` means a
+    real session exists, whose data is never copied into the report.
     """
 
     from apprestore_core.paths import resolve_tool
@@ -216,7 +231,7 @@ def _ipatool_auth_info_hidden_terminal() -> dict[str, Any]:
         if sys.platform == "win32":
             env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(home)
         result = run_pty_command(
-            [ipatool, "--non-interactive", "--format", "json", "auth", "info"],
+            [ipatool, "--non-interactive", "auth", "info", "--format", "json"],
             passphrase="",
             timeout=90,
             env=env,
@@ -224,34 +239,36 @@ def _ipatool_auth_info_hidden_terminal() -> dict[str, Any]:
     code = result.returncode
     transcript = (result.stderr or result.stdout or "").strip()
     terminal = "ConPTY" if sys.platform == "win32" else "pty"
-    if code in _DLL_INIT_FAILED:
+    if code in _CONSOLE_HOST_DIED:
         raise RuntimeError(
-            f"ipatool did not start on the hidden {terminal}: exit 0xc0000142 "
-            "(console host failed to initialise; is OpenConsole.exe bundled?)"
+            f"ipatool did not start on the hidden {terminal}: exit {_CONSOLE_HOST_DIED[code]} "
+            "(console host failed; is OpenConsole.exe bundled?)"
         )
     if code == 127:
         raise RuntimeError(f"could not start ipatool on the hidden {terminal}: {_redact(transcript)[:300]}")
     if code == 124:
         raise TimeoutError(f"ipatool auth info did not finish on the hidden {terminal}")
-    if not transcript:
+    payload = _ipatool_json(transcript)
+    if payload is None:
         raise RuntimeError(
-            f"ipatool exited {code} on the hidden {terminal} but printed nothing readable"
+            f"ipatool exited {code:#x} on the hidden {terminal} without a readable JSON answer "
+            f"({len(transcript)} chars of output)"
         )
-    detail: dict[str, Any] = {
-        "terminal": terminal,
-        "exit": code,
-        "output_chars": len(transcript),
-    }
+    detail: dict[str, Any] = {"terminal": terminal, "exit": code}
     if code == 0:
+        if payload.get("success") is not True:
+            raise RuntimeError("ipatool auth info exited 0 without \"success\": true")
         # A real session exists on this machine. Never copy its account data.
         detail["session"] = "signed in (details withheld)"
         return detail
-    message = _ipatool_error_text(transcript)
-    folded = message.casefold()
-    if not any(hint in folded for hint in ("account", "not found", "could not be found", "keyring", "keychain")):
-        raise RuntimeError(f"unexpected ipatool answer (exit {code}): {_redact(message)[:300]}")
+    error = payload.get("error")
+    if payload.get("level") != "error" or not isinstance(error, str) or not error.strip():
+        raise RuntimeError(
+            f"ipatool exited {code} on the hidden {terminal} but its JSON is not an error "
+            f"(keys: {sorted(payload)})"
+        )
     detail["session"] = "not signed in (expected)"
-    detail["ipatool"] = _redact(message)[:300]
+    detail["ipatool_error"] = _redact(error)[:300]
     return detail
 
 

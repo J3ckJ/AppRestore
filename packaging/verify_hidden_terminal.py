@@ -62,7 +62,10 @@ def main() -> int:
         if name in checks:
             c = checks[name]
             state = "ok" if c["ok"] else "FAILED"
-            print(f"{name}: {state} {json.dumps(c.get('detail') or c.get('error'), ensure_ascii=False)}")
+            # Only this check's detail is already redacted; others may carry paths.
+            shown = c.get("detail") if c["ok"] else c.get("error")
+            note = json.dumps(shown, ensure_ascii=False) if name == CHECK else ""
+            print(f"{name}: {state} {note}".rstrip())
     check = checks.get(CHECK)
     if check is None:
         print(f"self-test has no '{CHECK}' check", file=sys.stderr)
