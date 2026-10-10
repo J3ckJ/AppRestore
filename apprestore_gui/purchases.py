@@ -478,9 +478,11 @@ class PurchasesLoader:
 #: no way to take the passphrase except argv/env". We then use the hidden
 #: terminal instead.
 NO_SECURE_METHOD = "passphrase_no_secure_method"
-STDIN_FLAG = "--keychain-passphrase-stdin"
-_STDIN_SUPPORT: dict[str, bool] = {}
-_STDIN_LOCK = threading.Lock()
+from apprestore_core.ipatool_caps import (  # noqa: E402 - shared, cached probe
+    STDIN_FLAG,
+    ipatool_help,
+    supports_passphrase_stdin,
+)
 
 
 def _creationflags() -> int:
@@ -496,38 +498,6 @@ def _creationflags() -> int:
 def is_no_secure_method(error: BaseException) -> bool:
     code = getattr(error, "code", None)
     return str(getattr(code, "value", code) or "") == NO_SECURE_METHOD
-
-
-def supports_passphrase_stdin(binary: str, *, run: Callable[..., Any] | None = None) -> bool:
-    """Does this ipatool take ``--keychain-passphrase-stdin`` (patch 0003)?
-
-    Asked once per binary with ``ipatool --help`` (no secret involved).
-    """
-
-    with _STDIN_LOCK:
-        if binary in _STDIN_SUPPORT:
-            return _STDIN_SUPPORT[binary]
-    from apprestore_core.command import child_env
-
-    try:
-        completed = (run or subprocess.run)(  # noqa: S603
-            [binary, "--help"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-            env=child_env(),
-            creationflags=_creationflags(),
-        )
-        text = f"{completed.stdout or ''}{completed.stderr or ''}"
-        supported = STDIN_FLAG in text
-    except (OSError, subprocess.SubprocessError):
-        supported = False
-    with _STDIN_LOCK:
-        _STDIN_SUPPORT[binary] = supported
-    return supported
 
 
 def strip_passphrase_args(argv: Sequence[str]) -> tuple[list[str], str]:
@@ -592,6 +562,9 @@ def gui_runner(
         stdin: str | None = None,
     ) -> RunResult:
         args, from_argv = strip_passphrase_args(argv)
+        if len(args) == 2 and args[1] == "--help":
+            # ipatool_api's own capability probe: answer from the app-wide cache.
+            return RunResult(0, ipatool_help(args[0]), "")
         extra = dict(env_of() or {})
         if env:
             # Only what the client added on top of os.environ.

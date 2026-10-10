@@ -71,9 +71,11 @@ def _fake(tmp_path: Path, *, patched: bool) -> str:
 def secret_env(monkeypatch: pytest.MonkeyPatch):
     for name in SECRET_ENV_NAMES:
         monkeypatch.setenv(name, SECRET)
-    pm._STDIN_SUPPORT.clear()
+    from apprestore_core import ipatool_caps
+
+    ipatool_caps.reset_cache()
     yield
-    pm._STDIN_SUPPORT.clear()
+    ipatool_caps.reset_cache()
 
 
 def _payload(text: str) -> dict:
@@ -104,6 +106,60 @@ def test_runner_cli_and_tools_path(tmp_path: Path) -> None:
     script = _fake(tmp_path, patched=True)
     result = Runner().run([script, "auth", "info", "--format", "json", "--non-interactive"], capture=True, timeout=20)
     _assert_clean(_payload(result.stdout))
+
+
+@posix_only
+def test_keychain_runner_patched_ipatool_uses_stdin(tmp_path: Path) -> None:
+    pytest.importorskip("PySide6")
+    from apprestore_gui.auth_pty import KeychainRunner
+
+    script = _fake(tmp_path, patched=True)
+    seen: list[str] = []
+    runner = KeychainRunner(lambda: SECRET)
+    runner.on_output = seen.append
+    result = runner.run([script, "--format", "json", "auth", "info"], timeout=20)
+    payload = _payload(result.stdout)
+    assert payload["how"] == "stdin" and payload["got_secret"]
+    assert payload["argv"][-1] == "--keychain-passphrase-stdin"
+    _assert_clean(payload)
+    assert seen and SECRET not in "".join(seen)  # progress still streams, secret masked
+
+
+@posix_only
+def test_keychain_runner_stop_when_and_timeout_on_stdin_path(tmp_path: Path) -> None:
+    pytest.importorskip("PySide6")
+    from apprestore_gui.auth_pty import run_stdin_command
+
+    slow = tmp_path / "slow"
+    slow.write_text(
+        f"#!{sys.executable}\nimport sys, time\nsys.stdin.readline()\nprint('working', flush=True)\ntime.sleep(30)\n",
+        encoding="utf-8",
+    )
+    slow.chmod(0o755)
+    stopped = run_stdin_command([str(slow)], passphrase=SECRET, timeout=20, env=None, stop_when=lambda t: "working" in t)
+    assert "working" in stopped.stdout
+    timed = run_stdin_command([str(slow)], passphrase=SECRET, timeout=1, env=None)
+    assert timed.returncode == 124
+
+
+def test_one_capability_probe_for_the_whole_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """KeychainRunner and the ipatool_api runner share ipatool_caps' cache."""
+
+    from apprestore_core import ipatool_caps
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        assert not SECRET_ENV_NAMES & set(kwargs["env"])
+        return type("R", (), {"stdout": "  --keychain-passphrase-stdin\n", "stderr": ""})()
+
+    monkeypatch.setattr(ipatool_caps.subprocess, "run", fake_run)
+    assert ipatool_caps.supports_passphrase_stdin("/x/ipatool")
+    runner = pm.gui_runner(lambda: "", lambda: {})
+    answer = runner(["/x/ipatool", "--help"], 5)  # ipatool_api's own probe
+    assert "--keychain-passphrase-stdin" in answer.stdout
+    assert calls == [["/x/ipatool", "--help"]]  # asked once
 
 
 @posix_only

@@ -144,5 +144,46 @@ def test_widgets_window_login_as_other_account_deletes_cache(home: Path) -> None
         PurchasesCache().claim(email)
 
     fake = SimpleNamespace(pages={"account": page}, service=SimpleNamespace(note_account=note))
+    fake._note_account_quietly = lambda value: MainWindow._note_account_quietly(fake, value)
     MainWindow._note_signed_in_account(fake)  # type: ignore[arg-type]
     assert seen == [OTHER] and not cache.path.exists()
+
+
+def test_widgets_saved_keychain_without_email_uses_auth_info(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pyside("PySide6")
+    from apprestore_gui import workers
+    from apprestore_gui.main_window import MainWindow
+
+    cache = _seed(EMAIL)
+    seen: list[str] = []
+    edit = SimpleNamespace(text=lambda: "")  # keychain opened, email field empty
+    page = SimpleNamespace(findChild=lambda _cls, name: edit if name == "auth_email" else None)
+
+    def note(email: str) -> None:
+        seen.append(email)
+        PurchasesCache().claim(email)
+
+    def run_now(parent, fn, *args, on_finished=None, on_failed=None, **kwargs):
+        try:
+            value = fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            on_failed(str(exc))
+            return
+        on_finished(value)
+
+    monkeypatch.setattr(workers, "run_in_thread", run_now)
+    tools = SimpleNamespace(ipatool_auth_info=lambda: {"email": OTHER, "success": True})
+    fake = SimpleNamespace(
+        pages={"account": page},
+        service=SimpleNamespace(note_account=note, core=SimpleNamespace(tools=tools)),
+    )
+    fake._note_account_quietly = lambda value: MainWindow._note_account_quietly(fake, value)
+    MainWindow._note_signed_in_account(fake)  # type: ignore[arg-type]
+    assert seen == [OTHER] and not cache.path.exists()
+
+    # auth info without an email (or failing) changes nothing.
+    cache = _seed(EMAIL)
+    seen.clear()
+    fake.service.core.tools.ipatool_auth_info = lambda: None
+    MainWindow._note_signed_in_account(fake)  # type: ignore[arg-type]
+    assert seen == [] and cache.path.exists()

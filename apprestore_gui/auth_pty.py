@@ -426,6 +426,100 @@ def unlock_keychain(passphrase: str) -> AuthResult:
     )
 
 
+def run_stdin_command(
+    args: Sequence[str],
+    *,
+    passphrase: str,
+    timeout: float | None,
+    env: Mapping[str, str] | None,
+    on_output: Callable[[str], None] | None = None,
+    stop_when: Callable[[str], bool] | None = None,
+) -> CommandResult:
+    """Run a patched ipatool with ``--keychain-passphrase-stdin``.
+
+    The passphrase is written as the first stdin line and stdin is closed, so
+    a later prompt reads EOF instead of hanging. Output streams to
+    ``on_output`` (passphrase masked) like the hidden terminal does, and
+    ``stop_when`` / ``timeout`` end the process tree.
+    """
+
+    from apprestore_core.command import _terminate_process_tree
+
+    command = tuple(str(arg) for arg in args)
+    popen_kwargs: dict[str, object] = {}
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = windows_creationflags()
+    else:
+        popen_kwargs["start_new_session"] = True
+    try:
+        proc = subprocess.Popen(  # noqa: S603 - fixed argv
+            list(command),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=child_env(env),
+            **popen_kwargs,  # type: ignore[arg-type]
+        )
+    except OSError as exc:
+        return CommandResult(command, 127, "", f"could not start ipatool: {exc}")
+    try:
+        assert proc.stdin is not None
+        proc.stdin.write((passphrase + "\n").encode("utf-8"))
+        proc.stdin.close()
+    except OSError:
+        pass
+
+    chunks: queue.Queue[tuple[str, str]] = queue.Queue()
+
+    def reader(stream, name: str) -> None:
+        while True:
+            data = stream.read1(4096) if hasattr(stream, "read1") else stream.read(4096)
+            if not data:
+                break
+            chunks.put((name, data.decode("utf-8", errors="replace")))
+        chunks.put((name, ""))
+
+    threads = [
+        threading.Thread(target=reader, args=(proc.stdout, "out"), daemon=True),
+        threading.Thread(target=reader, args=(proc.stderr, "err"), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+
+    parts = {"out": [], "err": []}
+    open_streams = 2
+    deadline = time.monotonic() + (1800.0 if timeout is None else max(timeout, 0.1))
+    stopped = False
+    while open_streams:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _terminate_process_tree(proc)  # type: ignore[arg-type]
+            return CommandResult(command, 124, "", "command timed out")
+        try:
+            name, text = chunks.get(timeout=min(0.4, remaining))
+        except queue.Empty:
+            continue
+        if not text:
+            open_streams -= 1
+            continue
+        text = _visible_output(text, (passphrase,))
+        parts[name].append(text)
+        if on_output is not None and text:
+            on_output(text)
+        if stop_when is not None and stop_when("".join(parts["out"] + parts["err"])):
+            _terminate_process_tree(proc)  # type: ignore[arg-type]
+            stopped = True
+            break
+    try:
+        code = proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        _terminate_process_tree(proc)  # type: ignore[arg-type]
+        code = 124
+    if stopped and code is None:
+        code = 1
+    return CommandResult(command, int(code), "".join(parts["out"]), "".join(parts["err"]))
+
+
 def run_pty_command(
     args: Sequence[str],
     *,
@@ -546,7 +640,9 @@ class KeychainRunner(Runner):
     """Feed a remembered keychain passphrase to each new ipatool process.
 
     ipatool keeps the passphrase only in that process. The GUI asks once and
-    replays it through ConPTY, never through argv or the environment.
+    replays it, never through argv or the environment: as the first line of
+    stdin with ``--keychain-passphrase-stdin`` on AppRestore's patched ipatool
+    (``apprestore_core.ipatool_caps``), else through the hidden ConPTY/pty.
     """
 
     def __init__(self, passphrase_of: Callable[[], str]) -> None:
@@ -567,6 +663,25 @@ class KeychainRunner(Runner):
     ) -> CommandResult:
         passphrase = self._passphrase_of()
         if passphrase and _is_ipatool_command(args):
+            from apprestore_core.ipatool_caps import STDIN_FLAG, supports_passphrase_stdin
+
+            if supports_passphrase_stdin(str(args[0])):
+                # Patched ipatool: the passphrase goes to stdin, never argv/env.
+                command = [str(arg) for arg in args]
+                if STDIN_FLAG not in command:
+                    command.append(STDIN_FLAG)
+                result = run_stdin_command(
+                    command,
+                    passphrase=passphrase,
+                    timeout=timeout,
+                    env=env,
+                    on_output=self.on_output,
+                    stop_when=self.stop_when,
+                )
+                if check and result.returncode != 0:
+                    raise CommandError(result)
+                return result
+            # Old ipatool: the hidden terminal answers its prompt (fallback).
             result = run_pty_command(
                 args,
                 passphrase=passphrase,

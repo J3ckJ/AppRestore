@@ -2005,8 +2005,28 @@ class MainWindow(QMainWindow):
 
         email_edit = self.pages["account"].findChild(QLineEdit, "auth_email")
         email = email_edit.text().strip() if email_edit is not None else ""
+        if "@" in email:
+            self._note_account_quietly(email)
+            return
+        # A saved keychain was opened without typing the email: ask ipatool
+        # which Apple ID it holds (offline `auth info`, like the Qt Quick
+        # window), off the GUI thread.
+        from apprestore_gui.account_bindings import account_email
+        from apprestore_gui.workers import run_in_thread
+
+        run_in_thread(
+            self,
+            lambda: account_email(self.service.core.tools.ipatool_auth_info()),
+            on_finished=self._note_account_quietly,
+            on_failed=lambda _message: None,
+        )
+
+    def _note_account_quietly(self, email: object) -> None:
+        text = str(email or "").strip()
+        if "@" not in text:
+            return
         try:
-            self.service.note_account(email)
+            self.service.note_account(text)
         except Exception:  # noqa: BLE001 - housekeeping must not break the login
             pass
 
