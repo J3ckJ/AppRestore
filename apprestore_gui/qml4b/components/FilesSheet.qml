@@ -33,7 +33,23 @@ Item {
             id: head
             width: parent.width
             height: Theme.sheetHead
-            T { x: 32; anchors.verticalCenter: parent.verticalCenter; token: "sheetTitle"; text: root.v.title || "" }
+            Column {
+                x: 32
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - 2 * 32 - 120
+                spacing: 2
+                T { token: "sheetTitle"; text: root.v.title || "" }
+                // where the files were found — built from the folders the scan really uses
+                T {
+                    objectName: "filesWhere"
+                    width: parent.width
+                    visible: text !== ""
+                    token: "status"
+                    color: Theme.ink2
+                    elide: Text.ElideRight
+                    text: root.v.where || ""
+                }
+            }
             T {
                 anchors.right: parent.right
                 anchors.rightMargin: 32
@@ -94,11 +110,13 @@ Item {
                     width: btnText.implicitWidth + 2 * Theme.rowButtonPadX
                     height: Theme.rowButtonHeight
                     radius: Theme.rowButtonRadius
-                    color: root.v.busy ? Theme.accentDisabled : btnMouse.pressed ? Theme.accentPressed
-                           : btnMouse.containsMouse ? Theme.accentHover : Theme.accent
+                    // like «Найти» rows but light: the only filled button is «Выбрать на ПК»
+                    color: btnMouse.pressed ? Theme.secondaryPressed : btnMouse.containsMouse ? Theme.secondaryPressed
+                           : Theme.surfaceSoft
+                    opacity: root.v.busy ? 0.5 : 1
                     Accessible.role: Accessible.Button
                     Accessible.name: (root.v.install || "") + " " + (r.name || "")
-                    T { id: btnText; anchors.centerIn: parent; token: "seg"; color: Theme.inkOnAccent; text: root.v.install || "" }
+                    T { id: btnText; anchors.centerIn: parent; token: "seg"; color: Theme.accent; text: root.v.install || "" }
                     MouseArea {
                         id: btnMouse
                         anchors.fill: parent

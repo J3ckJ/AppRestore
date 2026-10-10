@@ -215,6 +215,13 @@ class SourceBase(QObject):
     def load_phone(self) -> None:
         pass
 
+    def library_roots(self) -> list[Any]:
+        """The folders the IPA scan really uses (service.scan_local → ipa_search_roots)."""
+
+        from apprestore_core.paths import ipa_search_roots
+
+        return list(ipa_search_roots())
+
     def files_note(self) -> tuple[str, bool]:
         return ("", False)
 
@@ -408,6 +415,12 @@ class SessionSource(SourceBase):
         rows = list(getattr(self.session, "phoneApps", []) or [])
         names = {(a.bundle_id or a.store_id): a.name for a in self.phone_apps()}
         return [dict(r, name=names.get(str(r.get("bundleId") or r.get("storeId") or ""), r.get("name"))) for r in rows]
+
+    def library_roots(self) -> list[Any]:
+        from apprestore_core.paths import ipa_search_roots
+
+        library = getattr(getattr(self.session, "service", None), "library", None)
+        return list(ipa_search_roots(library if library else None))
 
     def load_phone(self) -> None:
         if hasattr(self.session, "loadPhone"):
@@ -1273,12 +1286,17 @@ class Restore4b(QObject):
 
     @Property("QVariantMap", notify=changed)
     def files(self) -> dict[str, object]:
-        from apprestore_gui.ui4b.files import export_rows, files_view, library_rows
+        from apprestore_gui.ui4b.files import export_rows, files_view, labelled_roots, library_rows, where_line
 
         note, busy = self.source.files_note()
-        return files_view(
+        library = library_rows(self.source.library_files()) if self._files_open else []
+        try:
+            where = where_line([r["path"] for r in library], labelled_roots(self.source.library_roots()))
+        except Exception:  # noqa: BLE001 - no line rather than a wrong one
+            where = ""
+        return files_view(where=where,
             open_=self._files_open, mode=self._files_mode,
-            library=library_rows(self.source.library_files()),
+            library=library,
             export=export_rows(self.source.export_apps(), self._files_chosen) if self._files_mode == "export" else [],
             note=note if self._files_open else "", busy=busy, connected=bool(self.source.connected),
         )

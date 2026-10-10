@@ -206,3 +206,29 @@ def test_phone_tile_label_is_one_line_elided_at_grid_step() -> None:
     assert "Text.ElideRight" in tile and "maximumLineCount: 1" in tile and "Text.NoWrap" in tile
     mock = (QML / "components" / "PhoneMock.qml").read_text(encoding="utf-8")
     assert "labelWidth" in mock
+
+
+def test_ipa_sheet_where_line_comes_from_the_real_scanned_folders(tmp_path, monkeypatch) -> None:
+    """Ника: «Нашли на этом компьютере: …» — only folders the scan really uses."""
+
+    from apprestore_core.paths import ipa_search_roots
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("APPRESTORE_EXTRA_IPA_DIRS", raising=False)
+    lib = tmp_path / "lib"
+    roots = Fv.labelled_roots(ipa_search_roots(lib))
+    labels = [label for label, _ in roots]
+    assert labels[0] == "AppRestore" and "iMazing" in labels and "«Загрузках»" in labels and "iTunes" in labels
+    a = str(lib / "A.ipa")
+    b = str(tmp_path / "Downloads" / "B.ipa")
+    assert Fv.where_line([a, b], roots) == "Нашли на этом компьютере: в папке AppRestore и «Загрузках»"
+    assert Fv.where_line([], roots).startswith("Ищем на этом компьютере: в папке AppRestore, iMazing")
+    v = Fv.files_view(open_=True, mode="list", library=[], export=[], note="", busy=False, connected=True)
+    assert v["close"] == "Готово"
+
+
+def test_ipa_sheet_one_filled_button_only() -> None:
+    qml = (QML / "components" / "FilesSheet.qml").read_text(encoding="utf-8")
+    row = qml[qml.index('objectName: "filesInstall"'):qml.index("onClicked: ui.filesInstall")]
+    assert "Theme.surfaceSoft" in row and "color: Theme.accent;" in row and "Theme.accentHover" not in row

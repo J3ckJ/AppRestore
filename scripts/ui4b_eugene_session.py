@@ -103,6 +103,9 @@ class FakeQuickSession(QObject):
         self.refreshes = 0
         self.filesNote, self.filesBusy = "", False
         lib = Path(tempfile.mkdtemp(prefix="ipa-lib-"))
+        self._lib_dir = lib
+        if hasattr(self, "service"):
+            self.service.library = lib
         self.libraryFiles = []
         for name, bid, ver, mb in (("Сбербанк Онлайн", "ru.sberbankmobile", "17.6.1", 412),
                                    ("Telegram", "ph.telegra.Telegraph", "11.2", 168),
@@ -114,6 +117,7 @@ class FakeQuickSession(QObject):
         tools = SimpleNamespace(account_country=lambda: "RU", license_preflight=lambda: None,
                                 ipatool_capabilities=lambda: None)
         self.service = SimpleNamespace(core=SimpleNamespace(tools=tools), missing=lambda udid: list(self._missing))
+        self.service.library = getattr(self, "_lib_dir", None)
 
     def current_udid(self) -> str:
         return UDID
@@ -264,7 +268,17 @@ def main() -> int:
     at(7800, lambda: shot("phone-tiles-names.png"))
     at(8000, lambda: controller.link("Найти другое приложение"))
     at(8800, lambda: shot("find-empty-popular-33.png"))
-    at(9000, app.quit)
+    at(9000, lambda: controller.finder.close())
+
+    def empty_library() -> None:
+        session.libraryFiles = []
+        controller.link("Файлы IPA")
+
+    at(9200, empty_library)
+    at(9800, lambda: shot("ipa-files-empty.png"))
+    at(9900, lambda: controller.filesExport())
+    at(10400, lambda: shot("ipa-files-export.png"))
+    at(10600, app.quit)
     for ms, fn in steps:
         QTimer.singleShot(ms, fn)
     app.exec()

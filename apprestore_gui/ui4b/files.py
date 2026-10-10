@@ -15,6 +15,8 @@ from pathlib import Path
 
 from .formatting import format_size
 
+DONE = "Готово"
+
 TITLE = "Файлы IPA"
 EXPORT_TITLE = "Выгрузить с устройства"
 EXPORT = "Выгрузить с устройства"
@@ -73,19 +75,70 @@ def export_rows(apps: Iterable[Mapping[str, object]], chosen: set[str]) -> list[
     return out
 
 
+def _root_label(index: int, root: Path, imazing: set[str], downloads: str, itunes: str) -> str:
+    key = os.path.normcase(os.path.abspath(root))
+    if index == 0:
+        return "AppRestore"
+    if key in imazing:
+        return "iMazing"
+    if key == downloads:
+        return "«Загрузках»"
+    if key == itunes:
+        return "iTunes"
+    return f"«{root.name or root}»"
+
+
+def labelled_roots(roots: list[Path]) -> list[tuple[str, Path]]:
+    """paths.ipa_search_roots(library) → (label, folder): the folders the scan really uses
+    (AppRestore's library first, iMazing, Downloads, iTunes «Mobile Applications», extra)."""
+
+    from apprestore_core.paths import imazing_apps_dirs
+
+    home = Path.home()
+    imazing = {os.path.normcase(os.path.abspath(p)) for p in imazing_apps_dirs()}
+    downloads = os.path.normcase(os.path.abspath(home / "Downloads"))
+    itunes = os.path.normcase(os.path.abspath(home / "Music" / "iTunes" / "iTunes Media" / "Mobile Applications"))
+    return [(_root_label(i, r, imazing, downloads, itunes), r) for i, r in enumerate(roots)]
+
+
+def _join(labels: list[str]) -> str:
+    labels = list(dict.fromkeys(labels))
+    if not labels:
+        return ""
+    text = labels[0] if len(labels) == 1 else ", ".join(labels[:-1]) + " и " + labels[-1]
+    return "в папке " + text
+
+
+def where_line(paths: list[str], roots: list[tuple[str, Path]]) -> str:
+    """Quiet line under «Файлы IPA»: where the files were found (only folders that
+    really hold a listed file); with no files — which folders were looked at."""
+
+    def under(path: str, root: Path) -> bool:
+        try:
+            return os.path.commonpath([os.path.abspath(path), os.path.abspath(root)]) == os.path.abspath(root)
+        except ValueError:
+            return False
+
+    if paths:
+        found = [label for label, root in roots if any(under(p, root) for p in paths)]
+        return f"Нашли на этом компьютере: {_join(found)}" if found else ""
+    looked = _join([label for label, _ in roots])
+    return f"Ищем на этом компьютере: {looked}" if looked else ""
+
+
 def files_view(*, open_: bool, mode: str, library: list[dict[str, str]], export: list[dict[str, object]],
-               note: str, busy: bool, connected: bool) -> dict[str, object]:
+               note: str, busy: bool, connected: bool, where: str = "") -> dict[str, object]:
     exporting = mode == "export"
     n = sum(1 for r in export if r.get("checked"))
     if exporting:
         return {
-            "open": open_, "mode": "export", "title": EXPORT_TITLE, "close": "Закрыть",
+            "open": open_, "mode": "export", "title": EXPORT_TITLE, "close": DONE, "where": "",
             "rows": export, "empty": "" if export else EXPORT_EMPTY, "note": note or EXPORT_HINT,
             "busy": busy, "secondary": BACK, "secondaryEnabled": not busy,
             "primary": f"Сохранить {n}" if n > 1 else "Сохранить", "primaryEnabled": bool(n) and not busy,
         }
     return {
-        "open": open_, "mode": "list", "title": TITLE, "close": "Закрыть",
+        "open": open_, "mode": "list", "title": TITLE, "close": DONE, "where": where,
         "rows": library, "empty": "" if library else EMPTY, "note": note,
         "busy": busy, "secondary": EXPORT, "secondaryEnabled": connected and not busy,
         "primary": PICK, "primaryEnabled": not busy, "install": INSTALL,
