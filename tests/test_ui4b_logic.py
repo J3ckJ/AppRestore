@@ -734,3 +734,38 @@ def test_store_mismatch_after_switching_account_is_first_time_again() -> None:
     flow.begin(items, room)
     flow.on_install_settled(items[0].store_id, False, MISMATCH)
     assert flow.store_problem == "mismatch"
+
+
+# -- цвета только из Theme.qml ---------------------------------------------------------
+
+_COLOR_LITERAL = _re.compile(
+    r"#[0-9a-fA-F]{3,8}\b|Qt\.(rgba|hsla|hsva|rgb|darker|lighter|tint)\s*\("
+    r"|\"(white|black|red|green|blue|gray|grey|yellow|orange|purple)\"",
+    _re.IGNORECASE,
+)
+
+
+def _strip_comments(text: str) -> str:
+    text = _re.sub(r"/\*.*?\*/", "", text, flags=_re.S)
+    return "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+
+
+def test_no_colour_literals_outside_theme() -> None:
+    bad = []
+    for path in _QML.rglob("*.qml"):
+        if path.name == "Theme.qml":
+            continue
+        for number, line in enumerate(_strip_comments(path.read_text(encoding="utf-8")).splitlines(), 1):
+            if _COLOR_LITERAL.search(line):
+                bad.append(f"{path.relative_to(_QML)}:{number}: {line.strip()}")
+    assert bad == []
+
+
+def test_svg_icons_use_theme_colours() -> None:
+    theme = (_QML / "theme" / "Theme.qml").read_text(encoding="utf-8").casefold()
+    for path in (_QML / "icons").glob("*.svg"):
+        for colour in _re.findall(r"#[0-9a-fA-F]{3,6}\b", path.read_text(encoding="utf-8")):
+            full = colour.casefold()
+            if len(full) == 4:
+                full = "#" + "".join(ch * 2 for ch in full[1:])
+            assert f'"{full}"' in theme, f"{path.name}: {colour} is not a Theme colour"

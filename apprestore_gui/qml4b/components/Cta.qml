@@ -30,12 +30,12 @@ Tpl.AbstractButton {
         text: root.text
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
-        color: root.secondary ? (root.live ? Theme.ink : Theme.ink3) : "#ffffff"
+        color: root.secondary ? (root.live ? Theme.ink : Theme.ink3) : Theme.onAccent
     }
     background: Rectangle {
         radius: Theme.ctaRadius
         color: root.secondary
-               ? (root.pressed && root.live ? "#E6E4DE" : root.hovered && root.live ? Theme.surfaceSoft : Theme.card)
+               ? (root.pressed && root.live ? Theme.secondaryPressed : root.hovered && root.live ? Theme.surfaceSoft : Theme.card)
                : (!root.live ? Theme.accentDisabled
                   : root.pressed ? Theme.accentPressed
                   : root.hovered ? Theme.accentHover : Theme.accent)
@@ -56,7 +56,7 @@ Tpl.AbstractButton {
                 radius: parent.radius - 2
                 color: "transparent"
                 border.width: 1
-                border.color: "#ffffff"
+                border.color: Theme.focusRingInner
             }
         }
     }

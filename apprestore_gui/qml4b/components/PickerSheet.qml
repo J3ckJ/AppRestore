@@ -69,7 +69,7 @@ Item {
                         width: parent.width
                         height: 10 + railTitle.height + 2 + railSub.height + 10
                         radius: Theme.radiusRail
-                        color: modelData.on ? "#ffffff" : "transparent"
+                        color: modelData.on ? Theme.card : "transparent"
                         border.width: modelData.on ? 1 : 0
                         border.color: Theme.line
                         T {
@@ -132,7 +132,7 @@ Item {
                 height: 44
                 radius: Theme.radiusSearch
                 readonly property bool typed: input.text.length > 0
-                color: typed ? "#ffffff" : Theme.soft
+                color: typed ? Theme.card : Theme.soft
                 border.width: typed ? 2 : 0
                 border.color: Theme.ink
                 Glyph { x: 14; anchors.verticalCenter: parent.verticalCenter; name: sbox.typed ? "search-ink" : "search"; size: 16 }
@@ -188,7 +188,7 @@ Item {
                             width: segLabel.implicitWidth + 24
                             height: segLabel.implicitHeight + 14
                             radius: Theme.radiusSegItem
-                            color: on ? "#ffffff" : "transparent"
+                            color: on ? Theme.card : "transparent"
                             border.width: on ? 1 : 0
                             border.color: Theme.line
                             T { id: segLabel; anchors.centerIn: parent; token: "seg"; text: modelData.title; color: parent.on ? Theme.ink : Theme.ink2 }
@@ -496,11 +496,11 @@ Item {
                 width: goLabel.implicitWidth + 68
                 radius: Theme.radiusGo
                 color: ui.footer.goEnabled ? Theme.accent : Theme.goDisabled
-                T { id: goLabel; anchors.centerIn: parent; token: "go"; color: "#ffffff"; text: ui.footer.go }
+                T { id: goLabel; anchors.centerIn: parent; token: "go"; color: Theme.onAccent; text: ui.footer.go }
                 MouseArea { anchors.fill: parent; enabled: ui.footer.goEnabled; cursorShape: Qt.PointingHandCursor; onClicked: ui.restoreSelected() }
             }
         }
         // hairline around the sheet
-        Rectangle { anchors.fill: parent; radius: parent.radius; color: "transparent"; border.width: 1; border.color: Qt.rgba(0, 0, 0, 0.08) }
+        Rectangle { anchors.fill: parent; radius: parent.radius; color: "transparent"; border.width: 1; border.color: Theme.sheetHairline }
     }
 }

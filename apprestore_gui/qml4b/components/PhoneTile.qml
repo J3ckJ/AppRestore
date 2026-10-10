@@ -81,7 +81,7 @@ Item {
                 anchors.fill: parent
                 preferredRendererType: Shape.CurveRenderer
                 ShapePath {
-                    strokeColor: "#ffffff"; strokeWidth: Theme.ringWidth; fillColor: "transparent"
+                    strokeColor: Theme.progressInk; strokeWidth: Theme.ringWidth; fillColor: "transparent"
                     PathAngleArc { centerX: 22; centerY: 22; radiusX: 19; radiusY: 19; startAngle: 0; sweepAngle: 360 }
                 }
             }
@@ -90,7 +90,7 @@ Item {
                 anchors.fill: parent
                 preferredRendererType: Shape.CurveRenderer
                 ShapePath {
-                    strokeWidth: 0; strokeColor: "transparent"; fillColor: "#ffffff"
+                    strokeWidth: 0; strokeColor: "transparent"; fillColor: Theme.progressInk
                     startX: 22; startY: 22
                     PathAngleArc {
                         centerX: 22; centerY: 22; radiusX: 15; radiusY: 15

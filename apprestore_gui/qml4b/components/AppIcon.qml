@@ -41,7 +41,7 @@ Item {
         radius: root.radius
         color: "transparent"
         border.width: 0.5
-        border.color: Qt.rgba(0, 0, 0, 0.1)
+        border.color: Theme.iconHairline
         opacity: root.iconOpacity
     }
 }

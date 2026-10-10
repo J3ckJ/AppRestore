@@ -7,7 +7,7 @@ Rectangle {
     id: root
     objectName: "signInSheet"
     readonly property var s: ui.signIn
-    color: Qt.rgba(0, 0, 0, 0.28)
+    color: Theme.backdrop
 
     MouseArea { anchors.fill: parent }  // modal
 

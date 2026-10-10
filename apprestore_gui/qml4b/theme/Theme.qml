@@ -157,6 +157,24 @@ QtObject {
     readonly property int radiusCheck: 6
     readonly property int radiusRowIcon: 8
 
+    // Цвета, которые раньше были литералами в компонентах (вне Theme цветов нет)
+    readonly property color onAccent: "#FFFFFF"             // текст/галочка на тёмном и accent
+    readonly property color focusRingInner: "#FFFFFF"       // tokens.json
+    readonly property color secondaryPressed: "#E6E4DE"     // спека §1.1 [предл.]
+    readonly property color iconHairline: Qt.rgba(0, 0, 0, 0.1)
+    readonly property color sheetHairline: Qt.rgba(0, 0, 0, 0.08)
+    readonly property color progressInk: "#FFFFFF"          // кольцо и сектор поверх вуали
+    readonly property color island: "#000000"               // tokens.json
+    readonly property color batteryStroke: Qt.rgba(0, 0, 0, 0.75)
+    readonly property color pageDotOn: Qt.rgba(0, 0, 0, 0.7)
+    readonly property color pageDotOff: Qt.rgba(0, 0, 0, 0.22)
+    readonly property color iosDim: Qt.rgba(0, 0, 0, 0.3)   // затемнение под системным алертом
+    readonly property color iosAlertBg: "#F4F4F2"
+    readonly property color iosAlertInk: "#111111"
+    readonly property color iosAlertText: "#333333"
+    readonly property color iosAlertLine: "#D3D3D0"
+    readonly property color iosAlertButton: "#0A6FE0"
+
     // Старые имена главного экрана → токены Ники
     readonly property int topY: headerTop
     readonly property int buttonHeight: ctaHeight

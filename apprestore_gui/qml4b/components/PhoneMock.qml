@@ -57,7 +57,7 @@ Item {
             width: parent.width * 0.32
             height: root.w * 0.092
             radius: height / 2
-            color: "#000000"
+            color: Theme.island
         }
         Item {  // status bar
             visible: !root.off
@@ -92,7 +92,7 @@ Item {
                     radius: 3
                     color: "transparent"
                     border.width: 1
-                    border.color: Qt.rgba(0, 0, 0, 0.75)
+                    border.color: Theme.batteryStroke
                     Rectangle { x: 2; y: 2; width: (parent.width - 4) * 0.62; height: parent.height - 4; radius: 1; color: Theme.ink }
                 }
             }
@@ -122,13 +122,13 @@ Item {
             spacing: 7
             Repeater {
                 model: root.pageDots
-                Rectangle { width: 7; height: 7; radius: 3.5; color: index === 0 ? Qt.rgba(0, 0, 0, 0.7) : Qt.rgba(0, 0, 0, 0.22) }
+                Rectangle { width: 7; height: 7; radius: 3.5; color: index === 0 ? Theme.pageDotOn : Theme.pageDotOff }
             }
         }
             Rectangle {  // dim under a system alert
             visible: root.alert !== ""
             anchors.fill: parent
-            color: Qt.rgba(0, 0, 0, 0.3)
+            color: Theme.iosDim
             z: 2
         }
         Rectangle {
@@ -140,7 +140,7 @@ Item {
             y: parent.height * 0.30 + 12
             height: alertCol.height
             radius: 18
-            color: "#f4f4f2"
+            color: Theme.iosAlertBg
             clip: true
             Column {
                 id: alertCol
@@ -152,7 +152,7 @@ Item {
                     font.family: Theme.fontFamily
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
-                    color: "#111111"
+                    color: Theme.iosAlertInk
                     text: root.alert === "code" ? "Код проверки Apple ID" : "Доверять этому компьютеру?"
                 }
                 Item { width: 1; height: 4 }
@@ -164,7 +164,7 @@ Item {
                     font.pixelSize: 34
                     font.weight: Font.DemiBold
                     font.letterSpacing: 34 * 0.06
-                    color: "#111111"
+                    color: Theme.iosAlertInk
                     topPadding: 6
                     bottomPadding: 4
                     text: "482 913"
@@ -180,12 +180,12 @@ Item {
                     font.pixelSize: 13
                     lineHeightMode: Text.FixedHeight
                     lineHeight: 12.5 * 1.35
-                    color: "#333333"
+                    color: Theme.iosAlertText
                     text: root.alert === "code"
                           ? "Введите этот код на компьютере, чтобы завершить вход."
                           : "Ваши настройки и данные будут доступны с этого компьютера при проводном или беспроводном подключении."
                 }
-                Rectangle { width: parent.width; height: 1; color: "#d3d3d0" }
+                Rectangle { width: parent.width; height: 1; color: Theme.iosAlertLine }
                 Row {
                     width: parent.width
                     Repeater {
@@ -193,13 +193,13 @@ Item {
                         Item {
                             width: alertCol.width / (root.alert === "code" ? 1 : 2)
                             height: 15 * 1.21 + 24
-                            Rectangle { visible: index > 0; width: 1; height: parent.height; color: "#d3d3d0" }
+                            Rectangle { visible: index > 0; width: 1; height: parent.height; color: Theme.iosAlertLine }
                             Text {
                                 anchors.centerIn: parent
                                 font.family: Theme.fontFamily
                                 font.pixelSize: 15
                                 font.weight: index === 0 ? Font.DemiBold : Font.Normal
-                                color: "#0a6fe0"
+                                color: Theme.iosAlertButton
                                 text: modelData
                             }
                         }
