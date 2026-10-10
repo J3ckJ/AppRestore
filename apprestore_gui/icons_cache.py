@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QByteArray, QSize, Qt
+from PySide6.QtCore import Property, QByteArray, QObject, QSize, QUrl, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap
 
 USER_AGENT = "AppRestoreGUI/0.3 (+https://github.com/J3ckJ/AppRestore)"
@@ -167,6 +168,85 @@ class ArtworkCache:
                     return _rounded_pixmap(image, size)
         return placeholder_pixmap(name or bundle_id or "App", size)
 
+    def artwork_info(
+        self,
+        *,
+        store_id: str = "",
+        bundle_id: str = "",
+    ) -> dict[str, Any] | None:
+        if store_id.isdigit():
+            for country in ("ru", "us"):
+                info = self.lookup(store_id=store_id, country=country)
+                if info and info.get("artwork"):
+                    return info
+        bundle = bundle_id or (store_id if store_id and not store_id.isdigit() else "")
+        if bundle:
+            for country in ("ru", "us"):
+                info = self.lookup(bundle_id=bundle, country=country)
+                if info and info.get("artwork"):
+                    return info
+        return None
+
+    def _favicon_file(self, domain: str) -> Path | None:
+        domain = domain.strip().lower()
+        if not domain or "/" in domain or " " in domain:
+            return None
+        dest = self.cache_dir / f"site-{_safe_key(domain)}.img"
+        if dest.is_file() and dest.stat().st_size > 64:
+            cached = QImage(str(dest))
+            if not cached.isNull() and min(cached.width(), cached.height()) >= 96:
+                return dest
+        page = urllib.parse.quote(f"https://{domain}", safe="")
+        url = (
+            "https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON"
+            f"&fallback_opts=TYPE,SIZE,URL&url={page}&size=256"
+        )
+        try:
+            data = self._http_get(url)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            return None
+        image = QImage()
+        if not image.loadFromData(QByteArray(data)):
+            return None
+        if min(image.width(), image.height()) < 96:
+            return None
+        try:
+            dest.write_bytes(data)
+        except OSError:
+            return None
+        return dest
+
+    def rounded_icon_file(
+        self,
+        *,
+        store_id: str = "",
+        bundle_id: str = "",
+        site: str = "",
+        size: int = 192,
+    ) -> Path | None:
+        """A squircle PNG for one app. Store artwork wins over the site mark."""
+
+        source: Path | None = None
+        info = self.artwork_info(store_id=store_id, bundle_id=bundle_id)
+        artwork = info.get("artwork") if info else None
+        if isinstance(artwork, str) and artwork:
+            source = self.fetch_file(artwork)
+        if source is None and site:
+            source = self._favicon_file(site)
+        if source is None:
+            return None
+        image = QImage(str(source))
+        if image.isNull():
+            return None
+        digest = hashlib.sha256(f"v3|{source}|{size}".encode("utf-8")).hexdigest()[:16]
+        dest = self.cache_dir / f"round-{digest}.png"
+        if dest.is_file() and dest.stat().st_size > 64:
+            return dest
+        rounded = _as_icon(image, size)
+        if rounded.isNull() or not rounded.save(str(dest), "PNG"):
+            return None
+        return dest
+
 
 def _rounded_pixmap(image: QImage, size: int) -> QPixmap:
     scaled = image.scaled(
@@ -224,6 +304,152 @@ def placeholder_pixmap(label: str, size: int = 40) -> QPixmap:
     painter.drawText(out.rect(), int(Qt.AlignmentFlag.AlignCenter), glyph)
     painter.end()
     return out
+
+
+def _as_icon(image: QImage, size: int) -> QImage:
+    """Round a store icon. A mark on a white field gets a light tile first."""
+
+    src = image.convertToFormat(QImage.Format.Format_ARGB32)
+    width = src.width()
+    height = src.height()
+    if width < 2 or height < 2:
+        return _rounded_image(src, size)
+    samples = (
+        src.pixelColor(1, 1),
+        src.pixelColor(width - 2, 1),
+        src.pixelColor(1, height - 2),
+        src.pixelColor(width - 2, height - 2),
+    )
+    on_white = all(
+        color.alpha() > 200 and color.red() > 235 and color.green() > 235 and color.blue() > 235
+        for color in samples
+    )
+    if not on_white:
+        return _rounded_image(src, size)
+    knocked = src.copy()
+    for y in range(height):
+        for x in range(width):
+            color = knocked.pixelColor(x, y)
+            if color.red() > 242 and color.green() > 242 and color.blue() > 242:
+                color.setAlpha(0)
+                knocked.setPixelColor(x, y, color)
+    plate = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
+    plate.fill(QColor("#E4E4EA"))
+    painter = QPainter(plate)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    glyph_side = int(size * 0.78)
+    glyph = knocked.scaled(
+        glyph_side,
+        glyph_side,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    painter.drawImage((size - glyph.width()) // 2, (size - glyph.height()) // 2, glyph)
+    painter.end()
+    return _rounded_image(plate, size)
+
+
+def _rounded_image(image: QImage, size: int) -> QImage:
+    scaled = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied).scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    x = max(0, (scaled.width() - size) // 2)
+    y = max(0, (scaled.height() - size) // 2)
+    cropped = scaled.copy(x, y, size, size)
+    out = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
+    out.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(out)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    path = QPainterPath()
+    radius = size * 0.225
+    path.addRoundedRect(0, 0, size, size, radius, radius)
+    painter.setClipPath(path)
+    painter.drawImage(0, 0, cropped)
+    painter.end()
+    return out
+
+
+class IconBook(QObject):
+    """Local icon files for the Quick UI. Lookup never blocks the window."""
+
+    changed = Signal()
+
+    def __init__(self, cache: ArtworkCache | None = None) -> None:
+        super().__init__()
+        self.cache = cache or ArtworkCache()
+        self._lock = threading.Lock()
+        self._paths: dict[str, str] = {}
+        self._tried: set[str] = set()
+        self._revision = 0
+
+    @Property(int, notify=changed)
+    def revision(self) -> int:
+        return self._revision
+
+    @Slot(str, result=str)
+    def pathFor(self, key: str) -> str:
+        if not key:
+            return ""
+        with self._lock:
+            path = self._paths.get(key, "")
+        if not path:
+            return ""
+        return QUrl.fromLocalFile(path).toString()
+
+    def remember(self, keys: list[str], path: str) -> None:
+        stored = [key for key in keys if key]
+        if not path or not stored:
+            return
+        with self._lock:
+            changed = False
+            for key in stored:
+                if self._paths.get(key) != path:
+                    self._paths[key] = path
+                    changed = True
+            if not changed:
+                return
+            self._revision += 1
+        self.changed.emit()
+
+    def load_now(self, items: list[tuple[str, str, str]]) -> None:
+        for store_id, bundle_id, site in items:
+            token = f"{store_id}|{bundle_id}|{site}"
+            with self._lock:
+                if token in self._tried:
+                    continue
+                self._tried.add(token)
+            path = self.cache.rounded_icon_file(
+                store_id=store_id,
+                bundle_id=bundle_id,
+                site=site,
+            )
+            if path is not None:
+                info_bundle = ""
+                if store_id.isdigit():
+                    info = self.cache.artwork_info(store_id=store_id, bundle_id=bundle_id)
+                    if info:
+                        info_bundle = str(info.get("bundleId") or "")
+                self.remember([store_id, bundle_id, info_bundle], str(path))
+
+    def consider_async(self, items: list[tuple[str, str, str]]) -> None:
+        pending: list[tuple[str, str, str]] = []
+        with self._lock:
+            for store_id, bundle_id, site in items:
+                token = f"{store_id}|{bundle_id}|{site}"
+                if token in self._tried or not (store_id or bundle_id or site):
+                    continue
+                pending.append((store_id, bundle_id, site))
+        if not pending:
+            return
+        threading.Thread(
+            target=self.load_now,
+            args=(pending,),
+            name="apprestore-icons",
+            daemon=True,
+        ).start()
 
 
 def prefetch_many(

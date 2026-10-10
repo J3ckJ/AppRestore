@@ -19,6 +19,8 @@ class Device:
     udid: str
     name: str = "iPhone"
     ios_version: str = "?"
+    product_type: str = ""
+    device_class: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)

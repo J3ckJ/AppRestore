@@ -36,6 +36,26 @@ class ToolUnavailable(RuntimeError):
     pass
 
 
+def _public_tool_failure(*chunks: str) -> str:
+    """One short line from a failed tool, without an email address.
+
+    ipatool prints progress first and the ``error="..."`` line last. Keeping
+    the start of a long log drops that line, and the window then has nothing
+    it can explain.
+    """
+
+    text = " ".join(" ".join(chunks).split())
+    if not text:
+        return ""
+    text = re.sub(r"[\w.+\-]+@[\w.\-]+", "[email]", text)
+    errors = re.findall(r'error="([^"]*)"', text, flags=re.IGNORECASE)
+    if errors:
+        text = "; ".join(error.strip() for error in errors if error.strip())
+    elif len(text) > 500:
+        text = text[-500:]
+    return text[:500]
+
+
 def _path_is_inside(child: Path, parent: Path) -> bool:
     """True when ``child`` is ``parent`` or a path inside it."""
 
@@ -727,6 +747,16 @@ class AppRestoreTools:
                 fallback="?",
                 max_length=64,
             ),
+            product_type=self._terminal_text(
+                payload.get("ProductType"),
+                fallback="",
+                max_length=32,
+            ),
+            device_class=self._terminal_text(
+                payload.get("DeviceClass"),
+                fallback="",
+                max_length=32,
+            ),
         )
 
     def list_apps(self, udid: str) -> Any:
@@ -1171,7 +1201,12 @@ class AppRestoreTools:
             timeout=1800,
             env=self._ipatool_env(),
         )
-        return result.returncode == 0
+        if result.returncode != 0:
+            detail = _public_tool_failure(result.stderr, result.stdout)
+            if detail:
+                raise ToolUnavailable(detail)
+            return False
+        return True
 
     def search_apps(self, term: str, *, limit: int = 10) -> list[dict[str, str]]:
         """Search App Store via ipatool; may prompt for keychain passphrase."""

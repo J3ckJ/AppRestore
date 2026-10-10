@@ -432,6 +432,8 @@ def run_pty_command(
     passphrase: str,
     timeout: float | None,
     env: Mapping[str, str] | None,
+    on_output: Callable[[str], None] | None = None,
+    stop_when: Callable[[str], bool] | None = None,
 ) -> CommandResult:
     """Run ipatool on a hidden ConPTY and answer the keychain prompt once."""
 
@@ -486,10 +488,18 @@ def run_pty_command(
             parts.append(text[: limit - kept])
             kept += len(parts[-1])
         buf = (buf + text)[-2000:]
+        if on_output is not None and text:
+            on_output(text)
         if (not sent) and passphrase and _prompt_hit(buf, _PASSPHRASE_HINTS):
             proc.write(passphrase + "\r")
             sent = True
             buf = ""
+        if stop_when is not None and stop_when("".join(parts)):
+            try:
+                proc.terminate(force=True)
+            except Exception:
+                pass
+            break
         if not proc.isalive() and chunks.empty():
             break
     else:
@@ -544,6 +554,8 @@ class KeychainRunner(Runner):
     def __init__(self, passphrase_of: Callable[[], str]) -> None:
         super().__init__()
         self._passphrase_of = passphrase_of
+        self.on_output: Callable[[str], None] | None = None
+        self.stop_when: Callable[[str], bool] | None = None
 
     def run(
         self,
@@ -562,6 +574,8 @@ class KeychainRunner(Runner):
                 passphrase=passphrase,
                 timeout=timeout,
                 env=env,
+                on_output=self.on_output,
+                stop_when=self.stop_when,
             )
             if check and result.returncode != 0:
                 raise CommandError(result)

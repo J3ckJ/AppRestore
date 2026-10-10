@@ -229,6 +229,16 @@ class Runner:
         ):
             raise ValueError("timeout must be a positive finite number")
 
+        # A windowed GUI has no console. Leaving stdin inherited makes ipatool
+        # wait on a passphrase prompt nobody can answer, and its error text
+        # never reaches the window. Close stdin and keep the output.
+        windowed = _parent_has_no_console()
+        if windowed and output_to_stderr:
+            output_to_stderr = False
+            capture = True
+        elif windowed and not capture:
+            capture = True
+
         stdout_target: Any
         stderr_target: Any
         if output_to_stderr:
@@ -247,6 +257,7 @@ class Runner:
         try:
             process = subprocess.Popen(
                 command,
+                stdin=subprocess.DEVNULL if windowed else None,
                 stdout=stdout_target,
                 stderr=stderr_target,
                 env=process_env,

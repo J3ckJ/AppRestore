@@ -21,7 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 from apprestore_core.models import InstalledApp
-from apprestore_gui.icons_cache import ArtworkCache
+from apprestore_gui.errors import explain_user_error
+from apprestore_gui.message_box import show_message
 from apprestore_gui.service_adapter import GuiService
 from apprestore_gui.theme import ACCENT_SOFT, BAD, LINE, MUTED, OK, PANEL
 from apprestore_gui.workers import run_in_thread
@@ -53,14 +54,7 @@ class _AppCell(QWidget):
 
 
 def _export_error(message: str) -> str:
-    low = message.lower()
-    if "not authenticated" in low or "passphrase is required" in low:
-        return (
-            "Сессия Apple ID закрыта. Откройте её в разделе Apple ID "
-            "и повторите выгрузку."
-        )
-    line = message.splitlines()[-1].strip() if message else "не скачалось"
-    return line[:240]
+    return explain_user_error(message)
 
 
 class ExportFromDeviceDialog(QDialog):
@@ -159,6 +153,7 @@ class ExportFromDeviceDialog(QDialog):
         select_all.clicked.connect(self._check_visible)
         self.status = QLabel("Читаем приложения с iPhone…")
         self.status.setObjectName("export_status")
+        self.status.setWordWrap(True)
         self.status.setStyleSheet(f"color:{MUTED};font-weight:400;border:none;")
         self.go = QPushButton("Скачать в библиотеку")
         self.go.setObjectName("primary")
@@ -444,7 +439,7 @@ class ExportFromDeviceDialog(QDialog):
         self._on_checks_changed()
         if failed:
             self.status.setText(f"в библиотеке {saved}, с ошибкой {len(failed)}")
-            QMessageBox.warning(self, "Не все скачались", "\n\n".join(failed))
+            show_message(self, "Не все скачались", "\n\n".join(failed))
             return
         self.status.setText("Готово")
         if saved:

@@ -413,6 +413,7 @@ class AppRestoreService:
             return candidate, verified, verified_store_id
 
         detail = "; ".join(errors) if errors else "ipatool did not produce an IPA"
+        print(f"  download failed: {detail}")
         raise AppRestoreError(
             f"could not download {expected} ({detail}). "
             "Typical causes: a network failure reaching Apple (a TLS handshake "
@@ -1006,6 +1007,7 @@ class AppRestoreService:
 
             if temporary is None or downloaded is None:
                 detail = "; ".join(errors) if errors else "ipatool did not produce an IPA"
+                print(f"  download failed: {detail}")
                 raise AppRestoreError(
                     f"could not download App Store ID {resolved} ({detail}). "
                     "Typical causes: a network failure reaching Apple (a TLS "

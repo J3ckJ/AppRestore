@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,8 @@ from apprestore_gui.ui_icons import (
     svg_icon,
     svg_pixmap,
 )
+from apprestore_gui.errors import explain_user_error
+from apprestore_gui.message_box import show_error, show_message
 from apprestore_gui.widgets.phone import PhoneWidget
 from apprestore_gui.workers import run_in_thread
 
@@ -94,13 +97,7 @@ def file_install_prompt(message: str, app_name: str = "") -> str | None:
 
 
 def friendly_restore_error(message: str) -> str:
-    low = message.lower()
-    if "not authenticated" in low or "passphrase is required" in low:
-        return (
-            "Сессия Apple ID закрыта. Откройте её в разделе Apple ID "
-            "(пароль связки вводится один раз при открытии окна) и повторите."
-        )
-    return message
+    return explain_user_error(message)
 
 
 NAV = [
@@ -636,10 +633,10 @@ class MainWindow(QMainWindow):
         if not devices:
             self._device_udid = None
             self._device = None
-            detail = (self.service.device_error or "Подключите по USB").replace("<", " ")
-            if len(detail) > 160:
-                detail = detail[:157] + "..."
-            self.sidebar.set_device_text(f"Нет подключённого iPhone<br>{detail}")
+            detail = explain_user_error(self.service.device_error) if self.service.device_error else "Подключите по USB"
+            self.sidebar.set_device_text(
+                "Нет подключённого iPhone<br>" + html.escape(detail)
+            )
             self._update_phone_home([])
             self.refresh_overview_meta()
             return
@@ -999,6 +996,7 @@ class MainWindow(QMainWindow):
         actions.addWidget(restore)
         layout.addLayout(actions)
         self._progress = QLabel("")
+        self._progress.setWordWrap(True)
         self._progress.setStyleSheet(f"color:{MUTED};border:none;")
         layout.addWidget(self._progress)
         return page
@@ -1047,14 +1045,10 @@ class MainWindow(QMainWindow):
                 return
             if meta:
                 meta.setText("не прочиталось")
-            lowered = message.casefold()
-            if "device not found" in lowered or "usbmux" in lowered or "connectionterminated" in lowered:
-                text = "iPhone не ответил. Разблокируйте его и откройте этот раздел ещё раз."
-            else:
-                text = message.splitlines()[-1][:240]
+            text = explain_user_error(message)
             if self._progress:
                 self._progress.setText(text)
-            self.log("err  " + text)
+            self.log("err  " + message)
 
         self._request_offloaded(udid, done, failed)
 
@@ -1225,7 +1219,7 @@ class MainWindow(QMainWindow):
             self._set_offloaded_restore_enabled(True)
             self._progress.setText("")
             self.log(f"err  {msg}")
-            QMessageBox.warning(self, "Ошибка", friendly_restore_error(msg))
+            show_error(self, "Ошибка", msg)
 
         run_in_thread(self, job, on_finished=done, on_failed=fail)
 
@@ -1338,9 +1332,9 @@ class MainWindow(QMainWindow):
 
     def _show_restore_errors(self, failed: list[tuple[Any, str]]) -> None:
         lines = [
-            f"{app.name}: {friendly_restore_error(err)}" for app, err in failed
+            f"{app.name}: {explain_user_error(err)}" for app, err in failed
         ]
-        QMessageBox.warning(self, "Ошибка", "\n\n".join(lines))
+        show_message(self, "Ошибка", "\n\n".join(lines))
 
     def _build_install(self) -> QWidget:
         page, layout, meta = self._page_shell("Найти и поставить")
@@ -1458,7 +1452,7 @@ class MainWindow(QMainWindow):
         def failed(message: str) -> None:
             if meta:
                 meta.setText("поиск не удался")
-            QMessageBox.warning(self, "Поиск", message)
+            show_error(self, "Поиск", message)
 
         run_in_thread(
             self,
@@ -1496,7 +1490,7 @@ class MainWindow(QMainWindow):
             self,
             job,
             on_finished=done,
-            on_failed=lambda m: QMessageBox.warning(self, "Ошибка", m),
+            on_failed=lambda m: show_error(self, "Ошибка", m),
         )
 
     def _build_library(self) -> QWidget:
@@ -1599,7 +1593,7 @@ class MainWindow(QMainWindow):
                 self,
                 job,
                 on_finished=lambda s: QMessageBox.information(self, "Установка", s),
-                on_failed=lambda m: QMessageBox.warning(self, "Ошибка", m),
+                on_failed=lambda m: show_error(self, "Ошибка", m),
             )
 
     def _build_doctor(self) -> QWidget:
@@ -1666,7 +1660,7 @@ class MainWindow(QMainWindow):
             self,
             job,
             on_finished=done,
-            on_failed=lambda m: QMessageBox.warning(self, "Проверки", m),
+            on_failed=lambda m: show_error(self, "Проверки", m),
         )
 
     def _build_account(self) -> QWidget:
@@ -2111,7 +2105,11 @@ class MainWindow(QMainWindow):
 
     def _on_update_check_failed(self, message: str) -> None:
         self.update_check_button.setEnabled(True)
-        self.update_status.setText(f"Не удалось проверить обновления: {message}")
+        self.update_check_button.setEnabled(True)
+        self.update_status.setText(
+            "Не удалось проверить обновления. Проверьте интернет и повторите."
+        )
+        self.log("err  " + message)
 
     def _on_update_checked(self, info: Any) -> None:
         self.update_check_button.setEnabled(True)
