@@ -302,6 +302,12 @@ QtObject {
     readonly property int codeCellW: isWin ? 52 : 62
     readonly property int codeCellH: isWin ? 60 : 70
     readonly property int stepperDot: 24
+    // вкладка «Найти» (часть 2, §6b)
+    readonly property int findRowHeight: isWin ? 56 : 64
+    readonly property int rowButtonHeight: isWin ? 28 : 32
+    readonly property int rowButtonRadius: isWin ? 4 : 8
+    readonly property int rowButtonPadX: 14
+    readonly property int tagRadius: 4
 
     // ── Движение
     readonly property int durFast: 150
