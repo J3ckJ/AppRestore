@@ -3,7 +3,18 @@ name: GUI build
 on:
   push:
     branches: [gui]
+  pull_request:
+    paths:
+      - .github/workflows/gui-build.yml
+      - apprestore_gui/selftest.py
+      - apprestore_gui/auth_pty.py
+      - packaging/**
   workflow_dispatch:
+    inputs:
+      drop_open_console:
+        description: "Negative control: delete OpenConsole.exe from the Windows build before the self-test (the run must fail)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,15 +41,27 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py tests/test_auth_pty_posix.py
+          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py tests/test_auth_pty_posix.py tests/test_selftest_hidden_terminal.py
       - name: Build
         shell: pwsh
         run: |
           pyinstaller packaging/apprestore-gui.spec --noconfirm --clean
+      - name: "Negative control: remove OpenConsole.exe"
+        if: ${{ inputs.drop_open_console == true }}
+        shell: pwsh
+        run: |
+          $Hosts = Get-ChildItem -Path dist/AppRestore -Recurse -Filter OpenConsole.exe
+          if (-not $Hosts) { throw "OpenConsole.exe was not in the build to begin with" }
+          $Hosts | ForEach-Object { Write-Host "removing $($_.Name) from $($_.Directory.Name)"; Remove-Item -LiteralPath $_.FullName }
       - name: Package, self-test and verify the release zip
         shell: pwsh
         run: |
           python packaging/package_gui.py --out gui-dist
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Self-test the packaged exe (ipatool auth info on hidden ConPTY)
+        shell: pwsh
+        run: |
+          python packaging/verify_hidden_terminal.py --out gui-dist
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - uses: actions/upload-artifact@v4
         if: always()
@@ -71,13 +94,16 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py tests/test_auth_pty_posix.py
+          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py tests/test_auth_pty_posix.py tests/test_selftest_hidden_terminal.py
       - name: Build
         run: |
           pyinstaller packaging/apprestore-gui.spec --noconfirm --clean
       - name: Package, self-test and verify the release zip
         run: |
           python packaging/package_gui.py --out gui-dist
+      - name: Self-test the packaged app (ipatool auth info on hidden pty)
+        run: |
+          python packaging/verify_hidden_terminal.py --out gui-dist
       - uses: actions/upload-artifact@v4
         if: always()
         with:
