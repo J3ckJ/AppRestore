@@ -59,11 +59,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--ui",
-        choices=("widgets", "quick"),
+        choices=("widgets", "quick", "quick-legacy"),
         # The packaged exe opens the new window. From source, widgets stays
         # the default so the old shell is still one flag away.
         default="quick" if is_frozen() else "widgets",
-        help="widgets is the current window; quick is the Qt Quick redesign",
+        help=(
+            "widgets is the current window; quick is the Qt Quick window in "
+            "design 4b; quick-legacy is the previous Qt Quick window"
+        ),
     )
     parser.add_argument(
         "--screenshot-dir",
@@ -92,6 +95,12 @@ def main(argv: list[str] | None = None) -> int:
         return run_self_test(Path(args.output) if args.output else None)
 
     if args.ui == "quick":
+        _release_windows_console()
+        from apprestore_gui.ui4b.window import main as quick_4b_main
+
+        return quick_4b_main()
+
+    if args.ui == "quick-legacy":
         _release_windows_console()
         from apprestore_gui.quick_window import main as quick_main
 
