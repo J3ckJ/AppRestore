@@ -493,7 +493,7 @@ def test_find_install_goes_consent_with_k_then_flag_reaches_gate_registry(qapp, 
     assert c.consent.get("open"), "consent first: the app counts in K"
     assert c._consent_plan is not None and [i.store_id for i in c._consent_plan.need] == ["11"]
     assert delisted_attempt.flag_for("11") == ""  # nothing before the choice
-    assert c.consent["attempt"].startswith("Если приложение окажется платным")
+    assert c.consent["attempt"] == "Если приложение окажется платным, Apple откажет в выдаче. Отказ лимит не тратит"
     c.consentContinue()
     assert delisted_attempt.flag_for("11") == "delisted"
     assert delisted_attempt.attempted("11")

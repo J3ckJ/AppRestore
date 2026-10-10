@@ -19,7 +19,7 @@ from apprestore_gui.ui4b import home, licenses, region, selection  # noqa: E402
 from apprestore_gui.ui4b.catalog import ACTION_STORE, GROUP_REGION, GROUP_REMOVED, RestoreItem  # noqa: E402
 from tests.test_license_gate import STORE, Download, Lookup, Tools, _entries  # noqa: E402
 
-CONSENT_LINE = "Если приложение окажется платным, Apple его не выдаст. Отказ Apple лимит не тратит"
+CONSENT_LINE = "Если приложение окажется платным, Apple откажет в выдаче. Отказ лимит не тратит"
 
 
 @pytest.fixture(autouse=True)

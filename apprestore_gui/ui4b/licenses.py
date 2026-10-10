@@ -31,7 +31,7 @@ from .catalog import ACTION_STORE, RestoreItem
 from .formatting import join_names, plural
 
 #: Consent line when K holds region_probe-flagged apps with an unknown price (§1.14).
-ATTEMPT_NOTE = "Если приложение окажется платным, Apple его не выдаст. Отказ Apple лимит не тратит"
+ATTEMPT_NOTE = "Если приложение окажется платным, Apple откажет в выдаче. Отказ лимит не тратит"
 
 CONTINUE = "continue"
 OWNED_ONLY = "owned_only"
