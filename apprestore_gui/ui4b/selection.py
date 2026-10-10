@@ -35,6 +35,10 @@ class Match:
     length: int = 0
 
 
+OFFLINE_ROW_NOTE = "не проверено"
+OFFLINE_FOOTER = "Нет интернета, вернуть можно, когда он появится."
+
+
 def parse_query(text: str) -> tuple[str, str]:
     """(casefolded words, store id) from what the user typed.
 
@@ -98,6 +102,8 @@ class Selection:
         self.query = ""
         self.space = space
         self.mark_color = mark_color
+        #: No internet: the list is what the phone and the cache know, unchecked.
+        self.offline = False
         self.set_items(items, selected=selected)
 
     # -- data ------------------------------------------------------------------
@@ -326,9 +332,12 @@ class Selection:
                         "bundleId": item.bundle_id,
                         "sizeText": format_size(item.size_bytes),
                         "sizeKnown": item.size_bytes is not None,
-                        "note": item.note
+                        "note": OFFLINE_ROW_NOTE
+                        if self.offline
+                        else item.note
                         if item.note
                         else ("" if item.size_bytes is not None else "размер узнаем при скачивании"),
+                        "unverified": self.offline,
                         "hasIpaHint": group == GROUP_REGION,
                         "check": CHECK_DISABLED if not item.selectable else (CHECK_ON if checked else CHECK_OFF),
                         "selected": checked,

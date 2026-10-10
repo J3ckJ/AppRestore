@@ -283,3 +283,111 @@ def test_store_mismatch_screen_buttons(qapp) -> None:
     assert controller.home["state"] == "store_mismatch" and controller.home["cta2"] == ""
     controller.primaryAction()  # «На главный»
     assert controller.home["state"] == "missing"
+
+
+# -- согласие на бесплатные лицензии ---------------------------------------------------
+
+
+def _record(journal, n: int, prefix: str = "9") -> None:
+    from apprestore_core.license_guard import record_acquire
+
+    for i in range(n):
+        record_acquire(f"{prefix}{i:05d}", f"com.example.app{prefix}{i}", "us", journal_path=journal, price=0)
+
+
+def _open_consent(qapp, controller, source):
+    controller.primaryAction()
+    wait(qapp, lambda: bool(controller.consent.get("open")))
+    return controller.consent
+
+
+def test_consent_numbers_are_read_counts_every_time(qapp, tmp_path) -> None:
+    from apprestore_core.license_guard import read_counts
+
+    journal = tmp_path / "licenses_acquired.jsonl"
+    source = FakeSource("consent")
+    source.journal = journal
+    _record(journal, 2)
+    controller = Restore4b(source)
+    consent = _open_consent(qapp, controller, source)
+    today, total = read_counts(journal)
+    assert (consent["usedToday"], consent["usedTotal"]) == (today, total) == (2, 2)
+    assert consent["limit"] == f"Осталось на сегодня: {5 - today} из 5, всего: {15 - total} из 15."
+    assert consent["k"] == 2
+    assert not [c for c in source.calls if c[0] == "install_store"], "nothing starts before a choice"
+    controller.consentCancel()
+    assert not controller.consent["open"] and not controller.flow.running
+    # another process writes to the journal between two shows
+    _record(journal, 2, prefix="8")
+    consent = _open_consent(qapp, controller, source)
+    today, total = read_counts(journal)
+    assert (consent["usedToday"], consent["usedTotal"]) == (today, total) == (4, 4)
+    assert consent["limit"] == "Осталось на сегодня: 1 из 5, всего: 11 из 15."
+    engine, icons, warnings = open_window(qapp, controller)
+    window = engine.rootObjects()[0]
+    sheet = window.findChild(QQuickItem, "consentLimit")
+    assert sheet is not None and sheet.property("text") == consent["limit"]
+    assert warnings == []
+    del window, engine, icons
+
+
+def test_consent_continue_and_owned_only(qapp, tmp_path) -> None:
+    source = FakeSource("consent")
+    source.journal = tmp_path / "j.jsonl"
+    controller = Restore4b(source)
+    _open_consent(qapp, controller, source)
+    controller.consentOwnedOnly()
+    started = [e.item.label for e in controller.flow.queue.entries]
+    assert "Сбер" not in started and "Т-Банк" not in started and started
+    assert controller.flow.queue.skipped["no_license"] == ["Сбер", "Т-Банк"]
+    controller.stop()
+    controller.dismissDone()
+    source2 = FakeSource("consent")
+    source2.journal = tmp_path / "j.jsonl"
+    c2 = Restore4b(source2)
+    _open_consent(qapp, c2, source2)
+    c2.consentContinue()
+    assert [e.item.label for e in c2.flow.queue.entries][-2:] == ["Сбер", "Т-Банк"]
+
+
+def test_no_consent_when_everything_is_on_the_account(qapp) -> None:
+    source = FakeSource("missing")
+    controller = Restore4b(source)
+    controller.primaryAction()
+    wait(qapp, lambda: bool(controller.flow.queue.entries))
+    assert not controller.consent["open"] and controller.flow.running
+
+
+# -- «Что вернуть» без сети -----------------------------------------------------------------
+
+
+def test_picker_offline_marks_unverified_and_disables_go(qapp) -> None:
+    source = FakeSource("picker-offline")
+    controller = Restore4b(source)
+    controller.openPicker()
+    rows = [r for r in controller.selection.rows() if r["kind"] == "app"]
+    assert rows and all(r["note"] == "не проверено" and r["unverified"] for r in rows)
+    controller.toggle(rows[0]["key"])  # marking still works
+    assert controller.footer["goEnabled"] is False
+    assert controller.footer["warnText"] == "Нет интернета, вернуть можно, когда он появится."
+    controller.restoreSelected()
+    assert not controller.flow.running and not source.calls
+    source.go_online()
+    assert [c[0] for c in source.calls] == ["recheck"]  # read only, nothing bought or installed
+    assert controller.footer["goEnabled"] is True
+
+
+def test_session_source_rechecks_read_only_when_network_returns(qapp) -> None:
+    from apprestore_gui.ui4b.qt_bridge import SessionSource
+
+    session = FakeSession()
+    session.sessionState = "offline"
+    src = SessionSource(session)
+    session.changed.emit()
+    assert src.online is False
+    session.sessionState = "ok"
+    session.changed.emit()
+    assert src.online is True
+    names = [c[0] for c in session.calls]
+    assert names.count("loadPurchases") == 1
+    assert not any(n.startswith(("install", "purchase", "restore")) for n in names)

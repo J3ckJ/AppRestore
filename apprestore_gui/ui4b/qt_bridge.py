@@ -28,11 +28,13 @@ from PySide6.QtCore import (
 from apprestore_gui.ui4b.catalog import GROUP_REGION, RestoreItem, build_items
 from apprestore_gui.ui4b.flow import RestoreFlow
 from apprestore_gui.ui4b.formatting import format_size
+from apprestore_gui.ui4b.licenses import CANCEL, CONTINUE, OWNED_ONLY, LicensePlan, consent_view, plan_licenses
+from apprestore_gui.ui4b.licenses import candidates as license_candidates
 from apprestore_gui.ui4b.home import STATE_DONE, STATE_STORE_MISMATCH, HomeInput, PhoneApp, home_view
 from apprestore_gui.ui4b.onboarding import Onboarding
 from apprestore_gui.ui4b.scan import ScanCounter
-from apprestore_gui.ui4b.selection import CHECK_ON, Selection
-from apprestore_gui.ui4b.space import UNKNOWN_SPACE, DeviceSpace, query_device_space
+from apprestore_gui.ui4b.selection import CHECK_ON, OFFLINE_FOOTER, Selection
+from apprestore_gui.ui4b.space import UNKNOWN_SPACE, DeviceSpace, plan_space, query_device_space
 
 ROLES: tuple[str, ...] = (
     "kind",
@@ -118,9 +120,34 @@ class SourceBase(QObject):
     relogin = False
     auth_status = ""
     account_email = ""
+    #: False while there is no connection to Apple (QuickSession.sessionState "offline").
+    online = True
 
     def items(self) -> list[RestoreItem]:
         return []
+
+    # -- licenses (worker thread) --------------------------------------------------
+
+    def owned_store_ids(self) -> set[str] | None:
+        """Store ids in the purchase history (list-purchases); None = not known."""
+
+        return None
+
+    def free_prices(self, store_ids: list[str]) -> dict[str, float | None]:
+        """iTunes lookup price in the account's country; None = unknown."""
+
+        return {}
+
+    def license_counts(self) -> tuple[int, int]:
+        """(today, total) from license_guard.read_counts — the gate's own journal."""
+
+        from apprestore_core.license_gate import journal_path
+        from apprestore_core.license_guard import read_counts
+
+        return read_counts(journal_path())
+
+    def recheck(self) -> None:
+        """The network is back: read again (lookup, list-purchases), buy nothing."""
 
     def phone_apps(self) -> list[PhoneApp]:
         return []
@@ -197,7 +224,11 @@ class SessionSource(SourceBase):
         self.relogin = bool(getattr(s, "sessionRelogin", False))
         self.auth_status = str(getattr(s, "authStatus", "") or "")
         self.account_email = str(getattr(s, "accountEmail", "") or getattr(s, "boundEmail", "") or "")
+        was_online = self.online
+        self.online = str(getattr(s, "sessionState", "") or "") != "offline"
         udid = s.current_udid()
+        if self.online and not was_online:
+            self.recheck()
         if self.connected and udid and not self.loading and udid != self._missing_udid:
             self._missing_udid = udid
             threading.Thread(target=self._load_missing, args=(udid,), daemon=True, name="ui4b-missing").start()
@@ -235,6 +266,42 @@ class SessionSource(SourceBase):
 
     def space(self) -> DeviceSpace:
         return self._space
+
+    def owned_store_ids(self) -> set[str] | None:
+        # QuickSession.purchases = purchases.py's list-purchases cache
+        # (ipatool_api.all_purchases / iter_purchases).
+        rows = list(self.session.purchases or [])
+        if not rows:
+            return None
+        return {str(row.get("trackId") or "") for row in rows} - {""}
+
+    def free_prices(self, store_ids: list[str]) -> dict[str, float | None]:
+        from apprestore_core.license_gate import lookup_offer
+
+        try:
+            country = str(self.session.service.core.tools.account_country() or "").strip().lower()
+        except Exception:  # noqa: BLE001
+            country = ""
+        out: dict[str, float | None] = {}
+        for store_id in store_ids:
+            price: float | None = None
+            if country and str(store_id).isdigit():
+                try:
+                    offer = lookup_offer(str(store_id), (country,))
+                    price = float(offer["price"]) if offer and offer.get("price") is not None else None
+                except Exception:  # noqa: BLE001 - unknown price: the gate refuses it anyway
+                    price = None
+            out[str(store_id)] = price
+        return out
+
+    def recheck(self) -> None:
+        # Read-only: purchase history and the missing list (lookup). No purchase.
+        if self.session.signedIn:
+            self.session.loadPurchases()
+        udid = self.session.current_udid()
+        if self.connected and udid:
+            self._missing_udid = udid
+            threading.Thread(target=self._load_missing, args=(udid,), daemon=True, name="ui4b-missing").start()
 
     def fresh_space(self) -> DeviceSpace:
         udid = self.session.current_udid()
@@ -284,7 +351,7 @@ class Restore4b(QObject):
     storeSearchRequested = Signal(str)
     #: «Войти» / «Войти заново»: QML opens the sign-in sheet (2FA inside).
     signInRequested = Signal()
-    _spaceChecked = Signal(object)
+    _spaceChecked = Signal(object)  # (space, chosen, owned, prices)
 
     def __init__(self, source: SourceBase, *, onboarded: bool = True, mark_color: str = "#f6ebe4") -> None:
         super().__init__()
@@ -302,6 +369,9 @@ class Restore4b(QObject):
         self._revision = 0
         self._scan_started = False
         self._signin_open = False
+        self._consent: dict[str, object] = {}
+        self._consent_plan: LicensePlan | None = None
+        self._consent_space: DeviceSpace = UNKNOWN_SPACE
         source.changed.connect(self._on_source)
         source.progress.connect(self.flow.on_progress)
         source.appRestored.connect(self.flow.on_app_restored)
@@ -320,6 +390,7 @@ class Restore4b(QObject):
             self._signin_open = False
         self.selection.set_items(self.source.items())
         self.selection.set_space(self.source.space())
+        self.selection.offline = not src.online
         checked, total, done = self.source.scan()
         self.scan.update(checked, total)
         if done:
@@ -466,6 +537,8 @@ class Restore4b(QObject):
         bold, rest = plan.warning(self.source.noun)
         if self.flow.last_plan is not None and self._checking_space:
             bold, rest = "", "Проверяем место на телефоне…"
+        if not self.source.online:
+            bold, rest = "", OFFLINE_FOOTER
         return {
             "total": plan.total_text(),
             "free": plan.free_text(),
@@ -475,7 +548,7 @@ class Restore4b(QObject):
             "warnBold": bold,
             "warnText": rest,
             "go": f"Вернуть {plan.count}" if plan.count else "Вернуть",
-            "goEnabled": not plan.blocked and not self._checking_space and not self.flow.running,
+            "goEnabled": not plan.blocked and not self._checking_space and not self.flow.running and self.source.online,
         }
 
     # -- picker slots ------------------------------------------------------------
@@ -552,30 +625,86 @@ class Restore4b(QObject):
 
     @Slot()
     def restoreSelected(self) -> None:
-        """Fresh free-space check on the device, then the queue (or a warning)."""
+        """Fresh free-space check, the license count, then the queue (or a sheet)."""
 
-        if self._checking_space or self.flow.running:
+        if self._checking_space or self.flow.running or self._consent or not self.source.online:
             return
         self._checking_space = True
         self._refresh()
-        threading.Thread(target=self._check_space, daemon=True, name="ui4b-space-check").start()
+        chosen = self.selection.selected_items()
+        threading.Thread(target=self._check_space, args=(chosen,), daemon=True, name="ui4b-space-check").start()
 
-    def _check_space(self) -> None:
+    def _check_space(self, chosen: list[RestoreItem]) -> None:
         try:
             space = self.source.fresh_space()
         except Exception:  # noqa: BLE001
             space = UNKNOWN_SPACE
-        self._spaceChecked.emit(space)
+        try:
+            owned = self.source.owned_store_ids()
+            prices = self.source.free_prices(license_candidates(chosen, owned))
+        except Exception:  # noqa: BLE001 - unknown: the gate decides per app
+            owned, prices = None, {}
+        self._spaceChecked.emit((space, chosen, owned, prices))
 
-    def _start_after_space(self, space: object) -> None:
+    def _start_after_space(self, payload: object) -> None:
         self._checking_space = False
+        space, chosen, owned, prices = payload  # type: ignore[misc]
         fresh = space if isinstance(space, DeviceSpace) else UNKNOWN_SPACE
         self.selection.set_space(fresh)
-        plan = self.flow.begin(self.selection.selected_items(), fresh)
-        if not plan.blocked:
+        if plan_space([i for i in chosen if i.selectable], fresh).blocked:
+            self.flow.begin(chosen, fresh)  # records the warning, starts nothing
+            self._refresh()
+            return
+        plan = plan_licenses(chosen, owned, prices)
+        if plan.k == 0:
+            self._begin(plan, CONTINUE, fresh)
+            return
+        self._consent_plan = plan
+        self._consent_space = fresh
+        self._show_consent()
+
+    def _show_consent(self) -> None:
+        # Read the journal every time the sheet is shown (another process may
+        # have written to it): the same numbers the gate will use.
+        assert self._consent_plan is not None
+        self._consent = consent_view(self._consent_plan, self.source.license_counts())
+        self._refresh()
+
+    def _begin(self, plan: LicensePlan, choice: str, space: DeviceSpace) -> None:
+        skipped = {"paid": [i.label for i in plan.paid]}
+        if choice == OWNED_ONLY:
+            skipped["no_license"] = [i.label for i in plan.need]
+        result = self.flow.begin(plan.items_for(choice), space, skipped)
+        if not result.blocked:
             self._picker_open = False
             self._done_dismissed = False
         self._refresh()
+
+    def _consent_choice(self, choice: str) -> None:
+        plan, space = self._consent_plan, self._consent_space
+        self._consent = {}
+        self._consent_plan = None
+        if plan is None or choice == CANCEL:
+            self._refresh()
+            return
+        self._begin(plan, choice, space)
+
+    @Property("QVariantMap", notify=changed)
+    def consent(self) -> dict[str, object]:
+        return dict(self._consent) if self._consent else {"open": False}
+
+    @Slot()
+    def consentContinue(self) -> None:
+        self._consent_choice(CONTINUE)
+
+    @Slot()
+    def consentOwnedOnly(self) -> None:
+        if self._consent_plan is not None and self._consent_plan.rest:
+            self._consent_choice(OWNED_ONLY)
+
+    @Slot()
+    def consentCancel(self) -> None:
+        self._consent_choice(CANCEL)
 
     @Slot()
     def stop(self) -> None:

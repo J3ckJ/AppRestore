@@ -769,3 +769,64 @@ def test_svg_icons_use_theme_colours() -> None:
             if len(full) == 4:
                 full = "#" + "".join(ch * 2 for ch in full[1:])
             assert f'"{full}"' in theme, f"{path.name}: {colour} is not a Theme colour"
+
+
+# -- бесплатные лицензии: план и экран согласия --------------------------------------------
+
+
+def test_plan_licenses_counts_only_free_and_not_owned() -> None:
+    from apprestore_gui.ui4b import licenses
+
+    items = removed4() + [item("o1", GROUP_OFFLOADED, 10)]
+    owned = {items[2].store_id}  # ВТБ is on the Apple ID
+    prices = {items[0].store_id: 0, items[1].store_id: "0.0", items[3].store_id: 2.99}
+    plan = licenses.plan_licenses(items, owned, prices)
+    assert [i.label for i in plan.need] == ["Сбер", "Т-Банк"] and plan.k == 2
+    assert [i.label for i in plan.paid] == ["Альфа"]
+    assert [i.label for i in plan.rest] == ["ВТБ", items[4].label]
+    assert [i.label for i in plan.items_for(licenses.OWNED_ONLY)] == ["ВТБ", items[4].label]
+    assert len(plan.items_for(licenses.CONTINUE)) == 4  # paid never enter the run
+    assert plan.items_for(licenses.CANCEL) == []
+    # unknown price: not counted, the gate decides (it refuses)
+    unknown = licenses.plan_licenses(items[:1], set(), {})
+    assert unknown.k == 0 and unknown.rest == (items[0],)
+    assert licenses.candidates(items, owned) == [items[0].store_id, items[1].store_id, items[3].store_id]
+
+
+def test_consent_view_texts_from_counts() -> None:
+    from apprestore_gui.ui4b import licenses
+
+    plan = licenses.plan_licenses(removed4(), set(), {i.store_id: 0 for i in removed4()})
+    v = licenses.consent_view(plan, (2, 9))
+    assert v["lead"] == "Для 4 приложений программа возьмёт бесплатную лицензию на ваш Apple ID."
+    assert v["limit"] == "Осталось на сегодня: 3 из 5, всего: 6 из 15."
+    assert v["warn"].startswith("Лимита хватит на 3: ещё 1 приложение не вернём")
+    assert (v["go"], v["owned"], v["cancel"]) == ("Продолжить", "Только уже купленные", "Отмена")
+    one = licenses.plan_licenses(removed4()[:1], set(), {removed4()[0].store_id: 0})
+    assert licenses.consent_view(one, (0, 0))["lead"].startswith("Для 1 приложения ")
+    assert licenses.consent_view(one, (5, 5))["warn"].startswith("Лимит бесплатных лицензий исчерпан")
+    assert licenses.consent_view(one, (0, 0))["ownedEnabled"] is False
+
+
+def test_limit_refusal_goes_to_not_enough_limit_and_others_continue() -> None:
+    from apprestore_core.license_gate import refusal_text
+    from apprestore_core.license_guard import Verdict
+    from apprestore_gui.ui4b.flow import RestoreFlow
+    from apprestore_gui.ui4b.home import HomeInput, home_view
+    from apprestore_gui.ui4b.space import DeviceSpace
+
+    backend = RecordingBackend()
+    flow = RestoreFlow(backend)
+    items = removed4()
+    flow.begin(items, DeviceSpace(128 * GB, 50 * GB), {"paid": ["Тинькофф Про"]})
+    limit = refusal_text(Verdict(False, "лимит за сутки исчерпан", 5, 7))
+    flow.on_install_settled(items[0].store_id, True, "")
+    flow.on_install_settled(items[1].store_id, False, limit)
+    flow.on_install_settled(items[2].store_id, False, limit)
+    flow.on_install_settled(items[3].store_id, True, "")
+    assert [c[1] for c in backend.calls] == [i.store_id for i in items]  # each through the gate
+    view = home_view(HomeInput(connected=True, signed_in=True, items=items, queue=flow.queue))
+    assert view["state"] == "done"
+    assert "Не хватило лимита: <b>Т-Банк и ВТБ</b>" in view["lead"]
+    assert "Платные не возвращаем: <b>Тинькофф Про</b>" in view["lead"]
+    assert "завтра" not in view["lead"]

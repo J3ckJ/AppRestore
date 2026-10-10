@@ -125,6 +125,7 @@ class FakeSource(SourceBase):
     def __init__(self, scenario: str = "missing") -> None:
         super().__init__()
         self.calls: list[tuple[str, object]] = []
+        self.lookups: list[list[str]] = []
         self.connected = True
         self.loading = False
         self.device_name = "iPhone Марины"
@@ -135,6 +136,11 @@ class FakeSource(SourceBase):
         self._phone: list[PhoneApp] = []
         self._space = DeviceSpace(total_bytes=128 * GB, free_bytes=int(6.85 * GB))
         self._scan: tuple[int, int | None, bool] = (0, None, True)
+        #: Purchase history (store ids); None = unknown. Default: everything is on the account.
+        self.owned: set[str] | None = None
+        self.prices: dict[str, float | None] = {}
+        #: License journal for license_counts(); None = an empty one (never the real file).
+        self.journal: Path | None = None
         self.set_scenario(scenario)
 
     def set_scenario(self, scenario: str) -> None:
@@ -142,6 +148,7 @@ class FakeSource(SourceBase):
         self.connected = scenario != "disconnected"
         self.signed_in = scenario != "signin"
         self.relogin = scenario == "relogin"
+        self.online = scenario != "picker-offline"
         phone = [PhoneApp(name, store_id=sid) for sid, name in PHONE]
         if scenario in ("missing", "installing", "done", "disconnected", "signin", "relogin"):
             self._items = removed_items()
@@ -152,7 +159,7 @@ class FakeSource(SourceBase):
                 replace(alfa, group=GROUP_REGION, action=ACTION_NONE, note="Нет в App Store России")
             ]
             self._phone = phone
-        elif scenario in ("many", "picker", "picker-search", "picker-nospace"):
+        elif scenario in ("many", "picker", "picker-search", "picker-nospace", "picker-offline"):
             self._items = removed_items() + region_items() + offloaded_items(512)
             order = {sid: i for i, sid in enumerate(MANY_PHONE_ORDER)}
             self._items.sort(key=lambda it: (it.group != GROUP_OFFLOADED, order.get(it.store_id, 999)))
@@ -167,7 +174,40 @@ class FakeSource(SourceBase):
             self.connected = step in "34"
             self.signed_in = step == "4"
             self._scan = (218, 640, False) if step == "4" else (0, None, False)
+        if scenario == "consent":
+            # Сбер and Т-Банк are not on the Apple ID (free in lookup), the rest are.
+            self._items = removed_items()
+            self._phone = phone
+            self.owned = {i.store_id for i in self._items[2:]}
+            self.prices = {i.store_id: 0.0 for i in self._items[:2]}
+        else:
+            self.owned = {i.store_id for i in self._items if i.store_id}
         self.changed.emit()
+
+    def owned_store_ids(self) -> set[str] | None:
+        return None if self.owned is None else set(self.owned)
+
+    def free_prices(self, store_ids: list[str]) -> dict[str, float | None]:
+        self.lookups.append(list(store_ids))  # read-only, kept apart from actions
+        return {sid: self.prices.get(sid) for sid in store_ids}
+
+    def license_counts(self) -> tuple[int, int]:
+        if self.journal is None:
+            return (0, 0)
+        from apprestore_core.license_guard import read_counts
+
+        return read_counts(self.journal)
+
+    def recheck(self) -> None:
+        self.calls.append(("recheck", None))
+
+    def go_online(self) -> None:
+        """Network is back (tests): re-read only."""
+
+        if not self.online:
+            self.online = True
+            self.recheck()
+            self.changed.emit()
 
     def items(self) -> list[RestoreItem]:
         return list(self._items)

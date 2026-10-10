@@ -33,7 +33,7 @@ Window {
         Keys.onEnterPressed: win.enter()
     }
     function enter() {
-        if (!win.onboarding && !ui.pickerOpen && !ui.signIn.open && (win.home.cta || "") !== "")
+        if (!win.onboarding && !ui.pickerOpen && !ui.signIn.open && !ui.consent.open && (win.home.cta || "") !== "")
             ui.primaryAction()
     }
 
@@ -111,6 +111,15 @@ Window {
     Loader {
         anchors.fill: parent
         active: !!ui.signIn.open
+        focus: active
         sourceComponent: SignInSheet {}
+    }
+
+    // -- free licenses: consent before the run -----------------------------------------
+    Loader {
+        anchors.fill: parent
+        active: !!ui.consent.open
+        focus: active
+        sourceComponent: ConsentSheet {}
     }
 }

@@ -31,10 +31,10 @@ from collections.abc import Callable, Iterable
 from typing import Protocol
 
 from apprestore_core.ipatool_api import MESSAGES_RU, SESSION_CODES, classify_error
-from apprestore_core.license_gate import is_store_mismatch
+from apprestore_core.license_gate import is_limit_refusal, is_store_mismatch
 
 from apprestore_gui.ui4b.catalog import ACTION_IPA, ACTION_OFFLOADED, ACTION_STORE, RestoreItem
-from apprestore_gui.ui4b.queue import CURRENT, WAIT, RestoreQueue
+from apprestore_gui.ui4b.queue import CURRENT, LIMIT_ERROR, WAIT, RestoreQueue
 from apprestore_gui.ui4b.space import DeviceSpace, SpacePlan, plan_space
 
 
@@ -82,7 +82,9 @@ class RestoreFlow:
     def running(self) -> bool:
         return self.queue.active
 
-    def begin(self, items: Iterable[RestoreItem], space: DeviceSpace) -> SpacePlan:
+    def begin(
+        self, items: Iterable[RestoreItem], space: DeviceSpace, skipped: dict[str, list[str]] | None = None
+    ) -> SpacePlan:
         """Check space with fresh numbers; start only when it is not over."""
 
         chosen = [item for item in items if item.selectable]
@@ -94,7 +96,7 @@ class RestoreFlow:
         self._batch = set()
         self._started = set()
         self.needs_signin = False
-        self.queue.start(chosen)
+        self.queue.start(chosen, skipped)
         self._kick()
         self.on_change()
         return plan
@@ -164,6 +166,10 @@ class RestoreFlow:
         if not ok and self.queue.entries and needs_signin(text):
             self.interrupt_for_signin()
             return
+        if not ok and is_limit_refusal(text):
+            # acquire_and_record said no: the app goes to «не хватило лимита»,
+            # the others continue (already bought ones still install).
+            text = LIMIT_ERROR
         self.queue.settle(store_id, ok, text)
         self._kick()
         self.on_change()

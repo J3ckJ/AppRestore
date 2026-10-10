@@ -26,6 +26,10 @@ STAGE_DONE = 2
 _INSTALL_WORDS = ("установ", "ставим", "ставится", "install")
 
 
+#: QueueEntry.error for a gate refusal because the license limit is used up.
+LIMIT_ERROR = "не хватило лимита"
+
+
 @dataclass
 class QueueEntry:
     item: RestoreItem
@@ -40,9 +44,12 @@ class QueueEntry:
 class RestoreQueue:
     entries: list[QueueEntry] = field(default_factory=list)
     stopped: bool = False
+    skipped: dict[str, list[str]] = field(default_factory=dict)
 
-    def start(self, items: Iterable[RestoreItem]) -> None:
+    def start(self, items: Iterable[RestoreItem], skipped: dict[str, list[str]] | None = None) -> None:
         self.entries = [QueueEntry(item) for item in items]
+        #: Left out before the start, by reason ("paid", "no_license"): labels.
+        self.skipped = {k: list(v) for k, v in (skipped or {}).items() if v}
         self.stopped = False
         self._advance()
 

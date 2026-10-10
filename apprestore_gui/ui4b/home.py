@@ -24,7 +24,7 @@ from apprestore_gui.ui4b.formatting import (
     missing_caption,
     plural,
 )
-from apprestore_gui.ui4b.queue import CURRENT, DONE, FAILED, STAGE_INSTALL, WAIT, RestoreQueue
+from apprestore_gui.ui4b.queue import CURRENT, DONE, FAILED, LIMIT_ERROR, STAGE_INSTALL, WAIT, RestoreQueue
 from apprestore_gui.ui4b.space import SPACE_OVER, DeviceSpace, plan_space
 
 STATE_DISCONNECTED = "disconnected"
@@ -244,7 +244,9 @@ def home_view(inp: HomeInput) -> dict[str, object]:
         state = STATE_DONE
         ok = [entry.item.label for entry in queue.entries if entry.state == DONE]
         bad = queue.failed
-        if bad and not ok:
+        if not ok and not bad and queue.skipped:
+            title = "Ничего\nне вернули"
+        elif bad and not ok:
             title = "Не получилось"
         elif bad:
             title = "Почти всё\nна месте"
@@ -253,10 +255,22 @@ def home_view(inp: HomeInput) -> dict[str, object]:
         lead = ""
         if ok:
             lead = f"<b>{join_names(ok)}</b> снова на телефоне. Вернувшиеся приложения отмечены синей точкой, как обычно в iOS."
-        if bad:
-            names = join_names([entry.item.label for entry in bad])
-            reason = bad[0].error if len(bad) == 1 and bad[0].error else "подробности в журнале"
+        limit = [entry for entry in bad if entry.error == LIMIT_ERROR]
+        other = [entry for entry in bad if entry.error != LIMIT_ERROR]
+        if other:
+            names = join_names([entry.item.label for entry in other])
+            reason = other[0].error if len(other) == 1 and other[0].error else "подробности в журнале"
             lead = (lead + " " if lead else "") + f"Не вернулись: <b>{names}</b> ({reason})."
+        if limit:
+            names = join_names([entry.item.label for entry in limit], limit=8)
+            lead = (lead + " " if lead else "") + (
+                f"Не хватило лимита: <b>{names}</b>. Бесплатных лицензий можно взять 5 в сутки "
+                "и 15 всего; программа сама их не поставит: нажмите «Вернуть», когда лимит восстановится."
+            )
+        for reason, label in (("no_license", "Без новой лицензии не возвращали"), ("paid", "Платные не возвращаем")):
+            names_skipped = queue.skipped.get(reason) or []
+            if names_skipped:
+                lead = (lead + " " if lead else "") + f"{label}: <b>{join_names(names_skipped)}</b>."
         view.update(
             title=title,
             lead=lead,
