@@ -59,6 +59,28 @@ _DEVICE = (
 )
 
 
+NOT_OWNED_TEXT = (
+    "Этого приложения нет на вашем Apple ID (нет лицензии). "
+    "Бесплатное AppRestore добавит само, платное без оплаты не ставится."
+)
+
+
+def is_license_missing(message: str) -> bool:
+    """True when the failure means "no license on this Apple ID".
+
+    Only for attempts made without ``--purchase``: only then may AppRestore
+    go through the license gate (price==0, limits, journal) and retry.
+    """
+
+    raw = (message or "").strip()
+    if not raw or "with --purchase:" in raw.casefold():
+        return False
+    low = _signal(raw).casefold()
+    if any(hint in low for hint in _AUTH + _NETWORK + _DEVICE + _REGION):
+        return False
+    return any(hint in low for hint in _LICENSE)
+
+
 def _body(message: str) -> str:
     text = " ".join(message.split())
     marker = text.casefold().find("typical causes")
@@ -143,10 +165,7 @@ def explain_user_error(message: str) -> str:
                 "Apple не выдала лицензию на эту версию. "
                 "С этой карточки получить её нельзя."
             )
-        return (
-            "На этом Apple ID нет лицензии. "
-            "Бесплатное ставится кнопкой «Получить», платное без оплаты не ставится."
-        )
+        return NOT_OWNED_TEXT
     if any(hint in low for hint in _REGION):
         return (
             "Apple не отдаёт это приложение для страны этого Apple ID. "

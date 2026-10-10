@@ -1426,6 +1426,16 @@ ApplicationWindow {
                             wrapMode: Text.WordWrap
                             Layout.fillWidth: true
                         }
+                        Text {
+                            objectName: "freeLicenseHint"
+                            visible: picked !== null && !win.installing && win.installNote === ""
+                                     && win.backIds[picked.storeId] !== true
+                            text: "Если приложения нет на вашем Apple ID, бесплатное будет добавлено на него (не больше 5 в сутки). Платные не добавляем."
+                            color: win.muted
+                            font.pixelSize: 12
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
                     }
                     Item { Layout.fillWidth: true }
                     PillButton {

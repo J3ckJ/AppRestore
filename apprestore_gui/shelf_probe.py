@@ -1,9 +1,13 @@
-"""Ask Apple whether one store id can be downloaded, then stop.
+"""Read-only check: is one store id already on this Apple ID?
 
-A running download is killed at the first percent so the IPA is not kept
-and nothing is installed on the iPhone. ``--purchase`` is used only after
-Apple says a license is missing: that is the only way to learn whether
-Apple will issue one, and a successful answer can add the license.
+A running ``ipatool download`` (never with ``--purchase``) is killed at the
+first percent so the IPA is not kept and nothing is installed. When Apple
+answers "license is required", the app is simply not on this Apple ID: the
+probe reports ``not-owned`` and never tries to get a license (LEGAL.md §2.1,
+R2/R4). Taking a license is a separate, user-confirmed action guarded by
+``apprestore_core.license_guard``.
+
+Outcomes: ``licensed``, ``not-owned``, ``unavailable``, ``closed``, ``error``.
 """
 
 from __future__ import annotations
@@ -17,6 +21,8 @@ from apprestore_core.tools import AppRestoreTools, ToolUnavailable
 
 _PERCENT = re.compile(r"downloading\s+[1-9]\d*\s*%")
 
+PROBE_OUTCOMES = ("licensed", "not-owned", "unavailable", "closed", "error")
+
 
 def classify_offer(text: str) -> str:
     """One word for an ipatool transcript. ``pending`` means keep waiting."""
@@ -24,12 +30,10 @@ def classify_offer(text: str) -> str:
     low = (text or "").casefold()
     if "passphrase is required" in low or "handle is invalid" in low or "not authenticated" in low:
         return "closed"
-    if "failed to purchase" in low:
-        return "refused"
     if "temporarily unavailable" in low or "unavailable in this region" in low:
         return "unavailable"
     if "license is required" in low or "license not found" in low:
-        return "needs-license"
+        return "not-owned"
     if _PERCENT.search(low):
         return "offers"
     if "err error" in low or "success=false" in low:
@@ -38,20 +42,24 @@ def classify_offer(text: str) -> str:
 
 
 def probe_store(tools: AppRestoreTools, store_id: str) -> str:
-    """``licensed``, ``granted``, ``refused``, ``unavailable``, ``closed``, or ``error``."""
+    """One of ``PROBE_OUTCOMES``. Never changes the Apple ID."""
 
-    kind = _attempt(tools, store_id, purchase=False)
-    if kind != "needs-license":
-        return "licensed" if kind == "offers" else kind
-    bought = _attempt(tools, store_id, purchase=True)
-    if bought == "offers":
-        return "granted"
-    if bought == "needs-license":
-        return "refused"
-    return bought
+    kind = _attempt(tools, store_id)
+    if kind == "offers":
+        return "licensed"
+    return kind if kind in PROBE_OUTCOMES else "error"
 
 
-def _attempt(tools: AppRestoreTools, store_id: str, *, purchase: bool) -> str:
+def probe_args(tools: AppRestoreTools, store_id: str, output: Path) -> list[str]:
+    """The only ipatool command line the probe ever runs."""
+
+    args = tools._ipatool_cmd("download", "--app-id", store_id, "--output", str(output))
+    if "--purchase" in args:  # pragma: no cover - guard against future edits
+        raise AssertionError("shelf probe must never carry --purchase")
+    return args
+
+
+def _attempt(tools: AppRestoreTools, store_id: str) -> str:
     runner = tools.runner
     directory = Path(tempfile.mkdtemp(prefix="apprestore-probe-"))
     output = directory / "download.ipa"
@@ -70,9 +78,7 @@ def _attempt(tools: AppRestoreTools, store_id: str, *, purchase: bool) -> str:
     if hasattr(runner, "stop_when"):
         runner.stop_when = stop_when
     try:
-        args = tools._ipatool_cmd("download", "--app-id", store_id, "--output", str(output))
-        if purchase:
-            args.append("--purchase")
+        args = probe_args(tools, store_id, output)
         try:
             result = runner.run(
                 args,

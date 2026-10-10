@@ -27,7 +27,8 @@ from apprestore_gui.account_vault import (
 )
 from apprestore_gui.auth_pty import AppleLogin, AuthResult, keychain_has_saved_account, probe_keychain
 from apprestore_gui.device_form import device_form, device_noun
-from apprestore_gui.errors import explain_user_error
+from apprestore_gui.errors import NOT_OWNED_TEXT, explain_user_error, is_license_missing
+from apprestore_gui.license_gate import LicenseDenied, run_with_free_license
 from apprestore_gui.popular_apps import POPULAR_APPS
 from apprestore_gui.service_adapter import GuiService
 from apprestore_gui.shelf_probe import probe_store
@@ -353,6 +354,8 @@ class QuickSession(QObject):
 
     @Slot(str)
     def installStore(self, store_id: str) -> None:
+        # «Поставить» may add a free app to the Apple ID on purpose, but only
+        # through license_gate: price==0 by lookup, 5/day + 15 total, journal.
         self._start_install(store_id, acquire=True)
 
     @Slot(str)
@@ -1017,22 +1020,52 @@ class QuickSession(QObject):
                     if hasattr(runner, "on_output"):
                         runner.on_output = self._on_tool_output
                     try:
-                        self.service.core.restore_by_store_id(
-                            udid,
-                            store_id,
-                            acquire_license=acquire,
-                        )
+                        self._restore_store_gated(udid, store_id, acquire)
                     finally:
                         if hasattr(runner, "on_output"):
                             runner.on_output = previous
+            except LicenseDenied as denied:
+                self.installSettled.emit(store_id, False, str(denied))
+                return
             except Exception as exc:  # noqa: BLE001
-                self.installSettled.emit(store_id, False, explain_user_error(str(exc)))
+                text = NOT_OWNED_TEXT if is_license_missing(str(exc)) else explain_user_error(str(exc))
+                self.installSettled.emit(store_id, False, text)
                 return
             self.installSettled.emit(store_id, True, "")
         finally:
             with self._lock:
                 self._busy = False
                 self._force = True
+
+    def _restore_store_gated(self, udid: str, store_id: str, acquire: bool) -> None:
+        core = self.service.core
+
+        def attempt(with_license: bool) -> object:
+            if with_license:
+                return core.restore_by_store_id(udid, store_id, acquire_license=True)
+            return core.restore_by_store_id(udid, store_id)
+
+        run_with_free_license(
+            store_id,
+            attempt,
+            acquire=acquire,
+            notify=lambda text: self.installProgress.emit(-1, text),
+        )
+
+    def _download_copy_gated(self, app: InstalledApp) -> object:
+        service = self.service
+
+        def attempt(with_license: bool) -> object:
+            if with_license:
+                return service.download_to_library(app, acquire_license=True)
+            return service.download_to_library(app)
+
+        return run_with_free_license(
+            app.store_id or "",
+            attempt,
+            acquire=True,
+            notify=lambda text: self._set_files_note(f"{app.name}: {text}", busy=True),
+        )
 
     def _emit_files_note(self) -> None:
         with self._lock:
@@ -1139,7 +1172,9 @@ class QuickSession(QObject):
                     continue
                 try:
                     with self._tool_lock:
-                        self.service.download_to_library(app, acquire_license=True)
+                        self._download_copy_gated(app)
+                except LicenseDenied as denied:
+                    errors.append(f"{app.name}: {denied}")
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"{app.name}: {explain_user_error(str(exc))}")
                 else:
@@ -1215,6 +1250,8 @@ class QuickSession(QObject):
         threading.Thread(target=self._probe_shelf, name="apprestore-shelf", daemon=True).start()
 
     def _probe_shelf(self) -> None:
+        # Debug only (APPRESTORE_PROBE_SHELF=1) and read-only: probe_store never
+        # sends --purchase; "license is required" is reported as not-owned.
         print("shelf probe waiting for session", flush=True)
         deadline = time.monotonic() + 900
         while time.monotonic() < deadline:
