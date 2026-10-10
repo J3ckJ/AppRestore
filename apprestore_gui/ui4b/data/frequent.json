@@ -1,12 +1,209 @@
 {
-  "_about": "«Часто ищут» in «Найти» while the field is empty (02-picker §6b line 232). Only originals whose App Store developer is the bank/company itself (LEGAL §1.13, Лена 10.10). To be replaced by Макс's §1.13 table after Лена's review: same fields. Never add bank-named clones (6749962031 «Сириус», 6755181069 Spotluma, 6473656113 «Апгрейд»).",
-  "apps": [
-    {"track_id": 492224193, "name": "Сбербанк Онлайн", "developer": "Сбербанк России", "source": "delisted_search BUILTIN (level A original)"},
-    {"track_id": 472951966, "name": "ВТБ Онлайн", "developer": "VTB Bank (PJSC)", "source": "delisted_search BUILTIN (level A)"},
-    {"track_id": 353127685, "name": "Альфа-Банк", "developer": "AO ALFA-BANK", "source": "delisted_search BUILTIN (level A)"},
-    {"track_id": 455652438, "name": "Тинькофф", "developer": "Tinkoff Bank", "source": "delisted_search BUILTIN (level A original)"},
-    {"track_id": 564177498, "name": "ВКонтакте", "developer": "V Kontakte OOO", "source": "apps.apple.com/ru/app/id564177498, Wayback 03.10.2023"},
-    {"track_id": 511310430, "name": "Почта Mail.ru", "developer": "V Kontakte OOO", "source": "apps.apple.com/ru/app/id511310430, Wayback 12.09.2023"},
-    {"track_id": 6739530834, "name": "MAX", "developer": "MAX LLC", "source": "apprestore_gui/popular_apps.py notes: «published by MAX LLC»"}
-  ]
+ "_about": "«Часто ищут» in «Найти» while the field is empty (02-picker §6b line 232). Eugene's decision 10.10 (his accepted risk, LEGAL.md): all 33 entries of apprestore_gui/popular_apps.py POPULAR_APPS at b3f869a, same ids, labels (name/detail) and order. No icons/colours/letters/sites here: icons only from Apple (icons_cache) or Theme.iconPlaceholder. developer: only from trusted data (delisted_search BUILTIN, App Store page), else empty → the row has no developer line (App Store lookup may fill it at runtime). Max's 33-row table can fill `developer` with the same schema.",
+ "source": "git show b3f869a:apprestore_gui/popular_apps.py (POPULAR_APPS)",
+ "apps": [
+  {
+   "track_id": 492224193,
+   "name": "Сбер",
+   "detail": "Онлайн 17.6.1",
+   "developer": "Сбербанк России",
+   "developer_source": "delisted_search BUILTIN"
+  },
+  {
+   "track_id": 6755181069,
+   "name": "Т-Банк",
+   "detail": "Spotluma 2.8.2",
+   "developer": ""
+  },
+  {
+   "track_id": 6749962031,
+   "name": "ВТБ",
+   "detail": "Сириус",
+   "developer": "Sergei Smirnov",
+   "developer_source": "delisted_search BUILTIN"
+  },
+  {
+   "track_id": 6473656113,
+   "name": "Альфа",
+   "detail": "Апгрейд",
+   "developer": ""
+  },
+  {
+   "track_id": 1406492297,
+   "name": "Газпромбанк",
+   "detail": "банк",
+   "developer": ""
+  },
+  {
+   "track_id": 1117817509,
+   "name": "Россельхоз",
+   "detail": "Россельхозбанк",
+   "developer": ""
+  },
+  {
+   "track_id": 909649844,
+   "name": "Открытие",
+   "detail": "банк",
+   "developer": ""
+  },
+  {
+   "track_id": 1660762523,
+   "name": "Домклик",
+   "detail": "ДКлик",
+   "developer": ""
+  },
+  {
+   "track_id": 1208055056,
+   "name": "Совкомбанк",
+   "detail": "Халва",
+   "developer": ""
+  },
+  {
+   "track_id": 548000415,
+   "name": "ПСБ",
+   "detail": "банк",
+   "developer": ""
+  },
+  {
+   "track_id": 1135404935,
+   "name": "МКБ",
+   "detail": "банк",
+   "developer": ""
+  },
+  {
+   "track_id": 1438090038,
+   "name": "Росбанк",
+   "detail": "банк",
+   "developer": ""
+  },
+  {
+   "track_id": 1622348767,
+   "name": "ДОМ.РФ",
+   "detail": "банк",
+   "developer": ""
+  },
+  {
+   "track_id": 808733030,
+   "name": "Уралсиб",
+   "detail": "банк",
+   "developer": ""
+  },
+  {
+   "track_id": 979116495,
+   "name": "Почта Банк",
+   "detail": "банк",
+   "developer": ""
+  },
+  {
+   "track_id": 1264479292,
+   "name": "Ак Барс",
+   "detail": "банк",
+   "developer": ""
+  },
+  {
+   "track_id": 531096347,
+   "name": "Банк СПБ",
+   "detail": "Санкт-Петербург",
+   "developer": ""
+  },
+  {
+   "track_id": 1184367593,
+   "name": "МТС Банк",
+   "detail": "банк",
+   "developer": ""
+  },
+  {
+   "track_id": 1061008282,
+   "name": "Хоум Банк",
+   "detail": "банк",
+   "developer": ""
+  },
+  {
+   "track_id": 1083085558,
+   "name": "Ренессанс",
+   "detail": "банк",
+   "developer": ""
+  },
+  {
+   "track_id": 564177498,
+   "name": "VK",
+   "detail": "соцсеть",
+   "developer": "V Kontakte OOO",
+   "developer_source": "App Store page apps.apple.com/ru/app/id564177498 (Wayback 03.10.2023)"
+  },
+  {
+   "track_id": 6739530834,
+   "name": "MAX",
+   "detail": "мессенджер",
+   "developer": "MAX LLC",
+   "developer_source": "popular_apps.py notes (b3f869a): «published by MAX LLC»"
+  },
+  {
+   "track_id": 398465290,
+   "name": "OK",
+   "detail": "соцсеть",
+   "developer": ""
+  },
+  {
+   "track_id": 511310430,
+   "name": "Почта",
+   "detail": "Mail.ru",
+   "developer": "V Kontakte OOO",
+   "developer_source": "App Store page apps.apple.com/ru/app/id511310430 (Wayback 12.09.2023)"
+  },
+  {
+   "track_id": 696551382,
+   "name": "Облако",
+   "detail": "Mail.ru",
+   "developer": ""
+  },
+  {
+   "track_id": 1054372220,
+   "name": "VK Музыка",
+   "detail": "музыка",
+   "developer": ""
+  },
+  {
+   "track_id": 6447614666,
+   "name": "VK Видео",
+   "detail": "видео",
+   "developer": ""
+  },
+  {
+   "track_id": 1441659687,
+   "name": "VK Мессенджер",
+   "detail": "чаты",
+   "developer": ""
+  },
+  {
+   "track_id": 1563419339,
+   "name": "VK Почта",
+   "detail": "почта",
+   "developer": ""
+  },
+  {
+   "track_id": 1343242452,
+   "name": "Дзен",
+   "detail": "лента",
+   "developer": ""
+  },
+  {
+   "track_id": 1016489154,
+   "name": "Юла",
+   "detail": "объявления",
+   "developer": ""
+  },
+  {
+   "track_id": 1467719381,
+   "name": "Маруся",
+   "detail": "помощник",
+   "developer": ""
+  },
+  {
+   "track_id": 6449036810,
+   "name": "Знакомства",
+   "detail": "VK",
+   "developer": ""
+  }
+ ]
 }

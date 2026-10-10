@@ -14,6 +14,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -205,6 +206,16 @@ def main() -> int:
     app = QApplication([sys.argv[0]])
     session = FakeQuickSession()
     source = OfflineSafeSource(session)
+    # app_names.display_names stand-in (no network): answers after 1 s, like a lookup
+    from apprestore_gui.ui4b.names_lookup import NameLookup
+
+    def fake_display_names(ids, *, bundle_ids=(), account_country=None, device_locale=None):
+        time.sleep(1.0)
+        book = {"6749962031": "Cириус", "6473656113": "Апгрейд — Умный помощник", "6755181069": "Spotluma"}
+        return {k: book[k] for k in [*ids, *bundle_ids] if k in book}
+
+    source._names = NameLookup(fake_display_names, notify=source._namesReady.emit)
+    source.online = True
     controller = Restore4b(source, onboarded=True)
     # design concepts next to the repo checkout (only for the fake icon book); override with APPRESTORE_CONCEPTS
     concepts = Path(os.environ.get("APPRESTORE_CONCEPTS") or Path(__file__).resolve().parents[2] / "design" / "concepts")
@@ -249,7 +260,11 @@ def main() -> int:
     at(6200, lambda: controller.finder.close())
     at(6400, lambda: controller.link("Файлы IPA"))
     at(7400, lambda: shot("ipa-files.png"))
-    at(7600, app.quit)
+    at(7600, lambda: controller.closeFiles())
+    at(7800, lambda: shot("phone-tiles-names.png"))
+    at(8000, lambda: controller.link("Найти другое приложение"))
+    at(8800, lambda: shot("find-empty-popular-33.png"))
+    at(9000, app.quit)
     for ms, fn in steps:
         QTimer.singleShot(ms, fn)
     app.exec()

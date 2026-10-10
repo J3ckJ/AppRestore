@@ -23,6 +23,7 @@ from PySide6.QtCore import (
     QByteArray,
     QModelIndex,
     QObject,
+    QTimer,
     Qt,
     Signal,
     Slot,
@@ -60,7 +61,10 @@ from apprestore_core.delisted_attempt import mark_attempted, record_prices, reco
 from apprestore_gui.ui4b.find_qt import Find4b
 from apprestore_gui.ui4b.network import REPROBE_S, any_host_answers, is_offline
 from apprestore_gui.ui4b.names import builtin_names, purchase_names
+from apprestore_gui.ui4b.names import FALLBACK as NAME_FALLBACK
 from apprestore_gui.ui4b.names import resolve as resolve_name
+from apprestore_gui.ui4b.names_lookup import DEADLINE_S as NAMES_DEADLINE_S
+from apprestore_gui.ui4b.names_lookup import NameLookup, device_locale, vendored_display_names
 from apprestore_gui.ui4b.settings import ARCHIVE_DEFAULT, UPDATE_BUSY, settings_view, update_status
 from apprestore_gui.ui4b.space import UNKNOWN_SPACE, DeviceSpace, plan_space, query_device_space
 
@@ -286,6 +290,7 @@ class SessionSource(SourceBase):
     _missingReady = Signal(str, object)
     _spaceReady = Signal(str, object)
     _hostsReady = Signal(bool)
+    _namesReady = Signal()
 
     def __init__(self, session: Any) -> None:
         super().__init__()
@@ -312,6 +317,9 @@ class SessionSource(SourceBase):
         self._phone_udid = ""
         self._statuses: dict[str, object] = {}
         self._builtin_names: dict[str, str] | None = None
+        #: app_names.display_names in the background (names_lookup); results → changed
+        self._names = NameLookup(vendored_display_names(), notify=self._namesReady.emit)
+        self._namesReady.connect(self.changed)
         self._missingReady.connect(self._on_missing)
         self._spaceReady.connect(self._on_space)
         self._hostsReady.connect(self._on_hosts)
@@ -467,23 +475,52 @@ class SessionSource(SourceBase):
             self._builtin_names = builtin_names()
         return purchase_names(list(self.session.purchases or [])), self._builtin_names
 
-    def _named(self, apps: list[Any]) -> list[Any]:
-        """device CFBundleDisplayName/CFBundleName → purchases cache → built-in list → «Приложение»."""
+    def _named(self, apps: list[Any], nameless: list[tuple[str, str]] | None = None) -> list[Any]:
+        """device CFBundleDisplayName/CFBundleName/iTunesMetadata → purchases cache →
+        app_names.display_names (background) → built-in list → «Приложение»."""
 
         bought, builtin = self._name_books()
+        looked = self._names.found
         out = []
         for app in apps:
-            name = resolve_name(getattr(app, "name", ""), bundle_id=str(getattr(app, "bundle_id", "") or ""),
-                                store_id=str(getattr(app, "store_id", "") or ""), purchases=bought, builtin=builtin)
+            bid = str(getattr(app, "bundle_id", "") or "")
+            sid = str(getattr(app, "store_id", "") or "")
+            name = resolve_name(getattr(app, "name", ""), bundle_id=bid, store_id=sid, purchases=bought,
+                                builtin=builtin, looked_up=looked)
+            if name == NAME_FALLBACK and nameless is not None:
+                nameless.append((sid, bid))
             try:
                 out.append(replace(app, name=name) if name != getattr(app, "name", None) else app)
             except TypeError:  # not a dataclass (tests): keep it
                 out.append(app)
         return out
 
+    def _look_up_names(self, nameless: list[tuple[str, str]]) -> None:
+        """Nameless tiles → display_names in a worker (missing first: they are the
+        tiles on screen). Online only; the account country only after sign-in."""
+
+        if not nameless or not self.online:
+            return
+        ids = [sid for sid, _ in nameless if sid]
+        bids = [bid for _, bid in nameless if bid]
+        udid = str(self.session.current_udid() or "") if hasattr(self.session, "current_udid") else ""
+        signed_in = bool(self.signed_in)
+
+        def country() -> str | None:
+            return self._account_country().upper() or None if signed_in else None
+
+        if self._names.request(ids, bids, account_country=country, locale=lambda: device_locale(udid)):
+            QTimer.singleShot(int(NAMES_DEADLINE_S * 1000) + 50, self.changed.emit)  # → «Приложение»
+
     def items(self) -> list[RestoreItem]:
-        offloaded = self._named(list(self.session.offloaded_snapshot()))
-        return apply_statuses(build_items(offloaded, self._named(list(self._missing))), self._statuses)
+        nameless: list[tuple[str, str]] = []
+        missing = self._named(list(self._missing), nameless)
+        offloaded = self._named(list(self.session.offloaded_snapshot()), nameless)
+        self._look_up_names(nameless)
+        items = apply_statuses(build_items(offloaded, missing), self._statuses)
+        return [replace(item, name_pending=True)
+                if item.name == NAME_FALLBACK and self._names.pending(item.store_id, item.bundle_id) else item
+                for item in items]
 
     def phone_apps(self) -> list[PhoneApp]:
         rows = list(getattr(self.session, "phoneApps", []) or [])
@@ -630,6 +667,7 @@ class SessionSource(SourceBase):
             self.session.cancelLogin()
 
     def sign_out(self) -> None:
+        self._names.clear()  # names looked up for this Apple ID's storefront
         self.session.signOut()
 
 

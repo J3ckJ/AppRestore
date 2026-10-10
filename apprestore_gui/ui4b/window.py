@@ -55,6 +55,12 @@ def build(settings: QSettings) -> tuple[QQmlApplicationEngine | None, list[Any]]
         # phone tiles too: artwork from icons_cache, otherwise a Theme.iconPlaceholder square
         for app in source.phone_apps():
             items.append((app.store_id, app.bundle_id, ""))
+        # «Найти» rows («Часто ищут» included): Apple artwork via icons_cache (iTunes
+        # lookup → mzstatic.com, anonymous) or the placeholder; never a site mark
+        if controller.finder.open:
+            for row in controller.finder.view.get("rows", []):
+                if row.get("kind") == "app" and str(row.get("storeId") or "").isdigit():
+                    items.append((str(row["storeId"]), "", ""))
         icon_book.consider_async(items)
 
     def open_doc(path: str) -> None:
@@ -80,6 +86,7 @@ def build(settings: QSettings) -> tuple[QQmlApplicationEngine | None, list[Any]]
     controller.updateAvailable.connect(show_update)
     controller.openDocRequested.connect(open_doc)
     source.changed.connect(queue_icons)
+    controller.finder.changed.connect(queue_icons)
     from PySide6.QtCore import QTimer
 
     # icons that were not found yet (network came up later) are retried by IconBook

@@ -275,12 +275,15 @@ Item {
                     Row {
                         spacing: 8
                         width: parent.width
+                        // «Часто ищут»: developer unknown → the line stays empty but keeps its
+                        // height (Ника: the list must not jump when Max's table fills it)
+                        height: Math.max(dev.implicitHeight, tag.visible ? tag.height : 0)
                         T {
                             id: dev
                             token: "rowDev"; color: Theme.ink3Text
                             elide: Text.ElideRight
                             width: Math.min(implicitWidth, parent.width - (tag.visible ? tag.width + 8 : 0))
-                            text: r.developer
+                            text: r.developer || ""
                         }
                         Rectangle {
                             id: tag

@@ -76,12 +76,18 @@ def builtin_names() -> dict[str, str]:
 
 
 def resolve(device_name: object, *, bundle_id: str = "", store_id: str = "",
-            purchases: Mapping[str, str] | None = None, builtin: Mapping[str, str] | None = None) -> str:
+            purchases: Mapping[str, str] | None = None, builtin: Mapping[str, str] | None = None,
+            looked_up: Mapping[str, str] | None = None) -> str:
+    """device → purchases cache → app_names.display_names (``looked_up``, filled in
+    the background by names_lookup) → built-in list → «Приложение»."""
+
     name = usable(device_name, bundle_id, store_id)
     if name:
         return name
-    for book in (purchases or {}, builtin or {}):
+    for book in (purchases or {}, looked_up or {}, builtin or {}):
         for key in (store_id, bundle_id):
             if key and book.get(key):
-                return book[key]
+                value = usable(book[key], bundle_id, store_id)
+                if value:
+                    return value
     return FALLBACK

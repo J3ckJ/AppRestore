@@ -100,9 +100,12 @@ def _minutes(count: int) -> str:
     return f"Около {minutes} {plural(minutes, 'минуты', 'минут', 'минут')}"
 
 
-def _tile(name: str, store_id: str, bundle_id: str, kind: str, label: str = "", progress: float = -1) -> dict[str, object]:
+def _tile(name: str, store_id: str, bundle_id: str, kind: str, label: str = "", progress: float = -1,
+          pending: bool = False) -> dict[str, object]:
     return {
         "name": label or name,
+        #: the title is still being looked up (app_names): empty label, no skeleton
+        "namePending": bool(pending),
         "app": name,
         "storeId": store_id,
         "bundleId": bundle_id,
@@ -128,7 +131,7 @@ def phone_tiles(inp: HomeInput, state: str) -> list[dict[str, object]]:
     for item in inp.items:
         entry = entries.get(item.key)
         if item.group == GROUP_OFFLOADED and entry is None:
-            others.append(_tile(item.label, item.store_id, item.bundle_id, "offloaded"))
+            others.append(_tile(item.label, item.store_id, item.bundle_id, "offloaded", pending=item.name_pending))
             continue
         label = item.label
         progress = -1.0
@@ -150,7 +153,8 @@ def phone_tiles(inp: HomeInput, state: str) -> list[dict[str, object]]:
             kind, label = "waiting", "Ожидание"
         else:
             kind = "slot"
-        targets.append(_tile(item.label, item.store_id, item.bundle_id, kind, label, progress))
+        targets.append(_tile(item.label, item.store_id, item.bundle_id, kind, label, progress,
+                             pending=item.name_pending and label == item.label))
     installed = [_tile(app.name, app.store_id, app.bundle_id, "app") for app in inp.phone_apps]
     around = installed + others
     head = around[:8]

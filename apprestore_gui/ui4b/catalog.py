@@ -86,6 +86,9 @@ class RestoreItem:
     #: region_probe only: "delisted" / "not_in_region" (apprestore_core.delisted_attempt);
     #: with an unknown price such an app may be attempted through the gate.
     store_status: str = ""
+    #: app_names.display_names is still looking for the title (≤ ~3 s): the phone tile
+    #: label stays empty (space kept, no skeleton); ``name`` is «Приложение» meanwhile
+    name_pending: bool = False
 
     @property
     def attemptable(self) -> bool:

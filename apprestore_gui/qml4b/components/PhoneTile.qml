@@ -135,7 +135,8 @@ Item {
         T {
             Accessible.ignored: true
             token: "phoneLabel"
-            text: root.tile.name || ""
+            // app_names still looking (≤ ~3 s): empty label, the space stays; swap without animation
+            text: root.tile.namePending ? "" : (root.tile.name || "")
             opacity: root.kind === "slot" && root.tile.pending ? 0 : 1
             color: root.kind === "slot" ? Theme.ink2 : (root.kind === "unavailable" ? Theme.ink3 : Theme.ink)
             elide: Text.ElideRight

@@ -217,13 +217,15 @@ def test_actions_owned_free_paid_unknown_component_and_offline(qapp) -> None:
 
 def test_empty_field_shows_only_the_vetted_frequent_list(qapp) -> None:
     """Eugene 10.10 / Ника 02 §6b line 232: «Часто ищут» while the field is empty —
-    the vetted data file only; no delisted_search call, no archive."""
+    the data file only (33 rows, Eugene's decision); no delisted_search call, no archive."""
     d = Delisted([hit(SIRIUS, "Cириус", "Sergei Smirnov")])
     c, _ = controller(delisted=d)
     c.finder.openWith("")
     v = c.finder.view
     assert v["rows"][0]["title"] == "Часто ищут" and v["empty"] == "" and d.calls == []
-    assert SIRIUS not in {r.get("storeId") for r in v["rows"]}
+    from apprestore_gui.ui4b import frequent
+
+    assert [r["storeId"] for r in v["rows"][1:]] == [r["storeId"] for r in frequent.load()]
 
 
 def test_install_goes_the_usual_path_and_closes_the_sheet(qapp) -> None:
