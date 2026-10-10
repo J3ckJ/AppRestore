@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -199,3 +200,77 @@ def test_record_purchase_uncertain_status(tmp_path):
                               price=0.0, mode="mock", journal_path=path, now=_now)
     assert entry["status"] == "purchase_uncertain"
     assert lg.read_counts(path, now=_now) == (1, 1)
+
+
+# -------------------------------------------------------------- блокировка / гонки
+
+
+def test_journal_lock_context_manager(tmp_path):
+    path = tmp_path / "j.jsonl"
+    with lg.journal_lock(path):
+        assert (tmp_path / "j.jsonl.lock").is_file()  # отдельный lock-файл рядом
+
+
+def test_acquire_and_record_allowed(tmp_path):
+    path = tmp_path / "j.jsonl"
+    res = lg.acquire_and_record("389801252", 0, purchase=lambda: "acquired",
+                                journal_path=path, bundle_id="com.x", storefront="us",
+                                mode="gui", now=_now)
+    assert res.allowed and res.recorded and res.status == "acquired"
+    assert lg.read_counts(path, now=_now) == (1, 1)
+
+
+def test_acquire_and_record_denied_does_not_call_purchase(tmp_path):
+    path = tmp_path / "j.jsonl"
+    calls = []
+    res = lg.acquire_and_record("123", 4.99, purchase=lambda: calls.append(1) or "acquired",
+                                journal_path=path, now=_now)
+    assert not res.allowed and not res.recorded
+    assert calls == []  # purchase не вызывался
+    assert lg.read_counts(path, now=_now) == (0, 0)
+
+
+def test_acquire_and_record_purchase_failed_not_written(tmp_path):
+    path = tmp_path / "j.jsonl"
+    res = lg.acquire_and_record("389801252", 0, purchase=lambda: False,
+                                journal_path=path, now=_now)
+    assert res.allowed and not res.recorded and res.status is None
+    assert lg.read_counts(path, now=_now) == (0, 0)
+
+
+def test_acquire_and_record_uncertain_counts(tmp_path):
+    path = tmp_path / "j.jsonl"
+    res = lg.acquire_and_record("389801252", 0, purchase=lambda: "purchase_uncertain",
+                                journal_path=path, now=_now)
+    assert res.recorded and res.status == "purchase_uncertain"
+    assert lg.read_counts(path, now=_now) == (1, 1)
+
+
+def test_parallel_acquire_respects_limit(tmp_path):
+    """N параллельных попыток на лимите 2 -> ровно 2 записи."""
+    import threading
+    path = tmp_path / "j.jsonl"
+    recorded = []
+    lock = threading.Lock()
+
+    def attempt(i):
+        def purchase():
+            time.sleep(0.01)  # растягиваем окно гонки
+            return "acquired"
+        res = lg.acquire_and_record(str(100000 + i), 0, purchase=purchase,
+                                    journal_path=path, daily_limit=2, total_limit=2,
+                                    mode="mock", now=_now)
+        if res.recorded:
+            with lock:
+                recorded.append(res.entry["track_id"])
+
+    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(recorded) == 2, recorded
+    assert lg.read_counts(path, now=_now) == (2, 2)
+    # В журнале ровно 2 строки.
+    assert len([ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]) == 2

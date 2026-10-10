@@ -5,11 +5,15 @@ AppRestore sends it only from here, and only like this:
 
 1. A read-only ``attempt()`` first. If the app is already on the Apple ID,
    nothing else happens.
-2. Only when Apple answers "license is required": public iTunes lookup of the
-   price in the account's country (``auth info``; the first country of the
-   list only when ipatool does not say). Unknown or non-zero price: refusal.
+2. Only when Apple answers "license is required": the account's country from
+   ``auth info`` (``countryCode``, else ``storeFront``). Unknown country:
+   refusal, no guessing. Then public iTunes lookup of the price in exactly
+   that country. Unknown or non-zero price: refusal.
 3. Shared limit, 5 in 24 h and 15 total, over ``licenses_acquired.jsonl``
-   (Макс's ``license_guard`` via ``license_journal``).
+   (Макс's ``license_guard`` via ``license_journal``). The limit check, the
+   purchase and its journal line run under one cross-process file lock
+   (``license_journal.acquire_and_record`` → Макс's ``acquire_and_record``,
+   ``<journal>.lock``); the download runs after it is released.
 4. ``notify(LICENSE_NOTICE)`` — «бесплатное приложение будет добавлено…».
 5. A separate ``ipatool purchase`` with a one-shot ``PurchaseGrant`` (R2:
    ``download`` never carries ``--purchase``).
@@ -31,12 +35,10 @@ from .command import CommandError
 from .error_signal import _AUTH, _LICENSE, _REGION, is_license_missing
 from .license_guard import DEFAULT_DAILY_LIMIT, DEFAULT_TOTAL_LIMIT, default_journal_path
 from .license_journal import (
-    ACQUIRED,
     ACQUIRED_DOWNLOAD_FAILED,
-    PURCHASE_UNCERTAIN,
+    PurchaseRefused,
     Verdict,
-    check_can_acquire,
-    record,
+    acquire_and_record,
     update_status,
 )
 from .purchase_grant import _mint
@@ -46,6 +48,11 @@ T = TypeVar("T")
 
 LICENSE_NOTICE = "Бесплатное приложение будет добавлено на ваш Apple ID."
 _NOT_OWNED = "Этого приложения нет на вашем Apple ID (нет лицензии)"
+UNKNOWN_COUNTRY_TEXT = (
+    f"{_NOT_OWNED}. Не удалось определить страну аккаунта Apple ID, поэтому "
+    "цену проверить нельзя и лицензию не берём. Обновите ipatool "
+    "(или AppRestore): нужна сборка, где «auth info» показывает страну."
+)
 
 # Apple (or ipatool before sending anything) said no: no transaction happened.
 _EXPLICIT_REFUSAL = _AUTH + _REGION + _LICENSE + (
@@ -74,12 +81,14 @@ def journal_path() -> Path:
     return default_journal_path()
 
 
-def lookup_offer(store_id: str, countries: tuple[str, ...] | None = None) -> dict[str, object] | None:
+def lookup_offer(store_id: str, countries: tuple[str, ...]) -> dict[str, object] | None:
+    """Price lookup in the given countries only: no fallback list for prices."""
+
     from .catalog import lookup_itunes_offer
 
-    if countries:
-        return lookup_itunes_offer(store_id, countries=countries)
-    return lookup_itunes_offer(store_id)
+    if not countries:
+        return None
+    return lookup_itunes_offer(store_id, countries=tuple(countries))
 
 
 def refusal_text(verdict: Verdict) -> str:
@@ -140,36 +149,45 @@ def run_with_free_license(
     country = ""
     try:
         country = str(tools.account_country() or "").strip().lower()
-    except Exception:  # noqa: BLE001 - unknown country: fallback list
+    except Exception:  # noqa: BLE001 - unknown country
         country = ""
+    if not country:
+        # No guessing: a wrong storefront means a wrong price (Евгений's
+        # account is US, the old fallback said RU).
+        raise LicenseDenied(UNKNOWN_COUNTRY_TEXT) from missing
     offer: dict[str, object] | None = None
     if store_id.isdigit():
         try:
-            offer = (lookup or lookup_offer)(store_id, (country,) if country else None)
+            offer = (lookup or lookup_offer)(store_id, (country,))
         except Exception:  # noqa: BLE001 - no price means no license
             offer = None
     price = offer.get("price") if offer else None
     path = journal or journal_path()
-    verdict = check_can_acquire(store_id, price, journal_path=path)
-    if not verdict.allowed:
-        raise LicenseDenied(refusal_text(verdict), verdict) from missing
-
-    if notify is not None:
-        notify(LICENSE_NOTICE)
     fields = {
         "bundle_id": str((offer or {}).get("bundleId") or ""),
         "storefront": str((offer or {}).get("country") or country),
-        "price": float(price) if price is not None else None,
         "mode": mode,
         "journal_path": path,
     }
+    # Limit check, purchase and its journal line in one atomic step (Макс's
+    # acquire_and_record holds <journal>.lock across all three once it lands).
+    def purchase() -> None:
+        if notify is not None:
+            notify(LICENSE_NOTICE)
+        try:
+            tools.purchase_license(store_id, grant=_mint(store_id))
+        except Exception as exc:
+            if purchase_outcome(exc) == "refused":
+                raise PurchaseRefused(str(exc)) from exc
+            raise  # timeout / network / unknown → purchase_uncertain
+
     try:
-        tools.purchase_license(store_id, grant=_mint(store_id))
-    except Exception as exc:
-        if purchase_outcome(exc) == "uncertain":
-            record(store_id, status=PURCHASE_UNCERTAIN, **fields)
-        raise
-    entry = record(store_id, status=ACQUIRED, **fields)
+        verdict, entry = acquire_and_record(store_id, price, purchase, **fields)
+    except PurchaseRefused as refused:
+        raise refused.__cause__ or refused  # the original error, unjournaled
+    if entry is None:
+        raise LicenseDenied(refusal_text(verdict), verdict) from missing
+    # The download runs outside the lock; the status update takes it again.
     try:
         return attempt()
     except BaseException:

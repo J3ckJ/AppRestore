@@ -164,22 +164,24 @@ def country_from_storefront(value: object) -> str:
 def account_country(payload: object) -> str:
     """Country code of the signed-in account from ``auth info --format json``.
 
-    ipatool cde7d00 prints only ``name``/``email``/``success`` there, so this
-    usually returns ``""`` and the caller falls back to its country list.
-    Newer builds that add ``storeFront`` (or a country code) are picked up.
+    AppRestore's ipatool build (Макс's patch over cde7d00) prints
+    ``countryCode`` (ISO, e.g. ``US``) and the raw ``storeFront``
+    (``143441-1,34``). ``countryCode`` wins; otherwise the storefront id is
+    mapped here. Plain cde7d00 prints neither: ``""`` = country unknown, and
+    the license gate then refuses to buy rather than guess.
     """
 
     if not isinstance(payload, Mapping):
         return ""
-    for key in _STOREFRONT_KEYS:
-        code = country_from_storefront(payload.get(key))
-        if code:
-            return code
     known = set(STOREFRONT_COUNTRIES.values())
     for key in _COUNTRY_KEYS:
         raw = str(payload.get(key) or "").strip().lower()
         if raw in known:
             return raw
+    for key in _STOREFRONT_KEYS:
+        code = country_from_storefront(payload.get(key))
+        if code:
+            return code
     account = payload.get("account")
     if isinstance(account, Mapping):
         return account_country(account)

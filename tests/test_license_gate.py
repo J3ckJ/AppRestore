@@ -21,7 +21,7 @@ MISSING = (
 
 
 class Tools:
-    def __init__(self, *, country: str = "", purchase_ok: bool = True, error: BaseException | None = None) -> None:
+    def __init__(self, *, country: str = "us", purchase_ok: bool = True, error: BaseException | None = None) -> None:
         self.country = country
         self.purchase_ok = purchase_ok
         self.error = error
@@ -74,7 +74,8 @@ class Lookup:
         self.calls.append((store_id, countries))
         if not self.found:
             return None
-        country = countries[0] if countries else "ru"
+        assert countries, "price lookup must name the account country"
+        country = countries[0]
         return {"storeId": store_id, "bundleId": "com.example.free", "price": self.price, "country": country}
 
 
@@ -119,10 +120,42 @@ def test_free_app_purchase_then_plain_download_and_journal(tmp_path: Path) -> No
     assert "@" not in journal.read_text(encoding="utf-8")
 
 
-def test_unknown_account_country_falls_back_to_the_list(tmp_path: Path) -> None:
+def test_unknown_account_country_refuses_purchase_without_guessing(tmp_path: Path) -> None:
     tools, lookup = Tools(country=""), Lookup(0)
+    journal = tmp_path / "j"
+    with pytest.raises(LicenseDenied) as caught:
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=lookup, journal=journal)
+    assert "страну аккаунта" in str(caught.value)
+    assert "обновите ipatool" in str(caught.value).casefold()
+    assert lookup.calls == [] and tools.purchases == []
+    assert not journal.exists()
+
+
+def test_account_country_error_also_refuses(tmp_path: Path) -> None:
+    class Broken(Tools):
+        def account_country(self) -> str:
+            raise ToolUnavailable("failed to get account: not logged in")
+
+    tools, lookup = Broken(), Lookup(0)
+    with pytest.raises(LicenseDenied):
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=lookup, journal=tmp_path / "j")
+    assert lookup.calls == [] and tools.purchases == []
+
+
+def test_price_is_looked_up_only_in_the_account_country(tmp_path: Path) -> None:
+    tools, lookup = Tools(country="us"), Lookup(0)
     run_with_free_license(STORE, Download(tools), tools=tools, lookup=lookup, journal=tmp_path / "j")
-    assert lookup.calls == [(STORE, None)]
+    assert lookup.calls == [(STORE, ("us",))]
+
+
+def test_default_lookup_has_no_fallback_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    from apprestore_core import catalog, license_gate
+
+    seen: list[object] = []
+    monkeypatch.setattr(catalog, "lookup_itunes_offer", lambda sid, countries: seen.append(countries) or None)
+    assert license_gate.lookup_offer(STORE, ()) is None
+    license_gate.lookup_offer(STORE, ("us",))
+    assert seen == [("us",)]
 
 
 def test_app_missing_in_account_country_is_refused(tmp_path: Path) -> None:

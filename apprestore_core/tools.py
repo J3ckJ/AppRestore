@@ -32,6 +32,9 @@ from .paths import (
 )
 
 
+
+PURCHASE_TIMEOUT_SECONDS = 90.0
+
 class ToolUnavailable(RuntimeError):
     pass
 
@@ -1232,7 +1235,9 @@ class AppRestoreTools:
         result = self.runner.run(
             args,
             capture=True,
-            timeout=180,
+            # Hard cap: the runner kills ipatool's process tree on expiry, so a
+            # hung purchase cannot hold the journal lock (→ purchase_uncertain).
+            timeout=PURCHASE_TIMEOUT_SECONDS,
             env=self._ipatool_env(),
         )
         payload: dict[str, Any] = {}
@@ -1258,13 +1263,18 @@ class AppRestoreTools:
         return payload
 
     def account_country(self) -> str:
-        """Country code of the signed-in Apple ID, ``""`` when ipatool does not say."""
+        """Country of the signed-in Apple ID from ``auth info``; ``""`` = unknown.
+
+        ``countryCode`` first, else the raw ``storeFront`` via ``storefronts``.
+        No session, an old ipatool without either field, or any error: ``""``.
+        Purchase paths refuse on ``""``; only read-only paths may fall back.
+        """
 
         from .storefronts import account_country
 
         try:
             return account_country(self.ipatool_auth_info())
-        except Exception:  # noqa: BLE001 - unknown country means fallback list
+        except Exception:  # noqa: BLE001 - unknown country
             return ""
 
     def search_apps(self, term: str, *, limit: int = 10) -> list[dict[str, str]]:
