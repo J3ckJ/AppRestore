@@ -6,6 +6,11 @@
 # 301 makes login fail before the password is checked. There is no newer
 # GitHub release, so AppRestore ships this build and checks its archive hash.
 #
+# On top of that commit AppRestore applies its own patches from
+# packaging/patches/ (each pinned by SHA-256 below):
+#   ipatool-auth-info-country.patch - `auth info` also prints the signed-in
+#   account's raw storeFront and its ISO countryCode. Read-only.
+#
 # Usage: packaging/build-ipatool.sh windows-amd64|macos-arm64|macos-amd64
 set -euo pipefail
 
@@ -51,6 +56,31 @@ git -C "$work/src" fetch --depth 1 origin "$commit"
 git -C "$work/src" checkout --detach FETCH_HEAD
 test "$(git -C "$work/src" rev-parse HEAD)" = "$commit"
 
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
+# name:sha256 of every patch, applied in this order.
+patches=(
+  "ipatool-auth-info-country.patch:32f5b0db7a8aefbe31b6cc1b6dea0b3590a4db2a24c8790d959b88332ab34531"
+)
+for entry in "${patches[@]}"; do
+  patch_name="${entry%%:*}"
+  patch_sha="${entry##*:}"
+  patch_file="$root/packaging/patches/$patch_name"
+  actual_sha="$(sha256_of "$patch_file")"
+  if [[ "$actual_sha" != "$patch_sha" ]]; then
+    echo "ipatool patch $patch_name SHA-256 mismatch: expected $patch_sha, got $actual_sha" >&2
+    exit 1
+  fi
+  git -C "$work/src" apply --check "$patch_file"
+  git -C "$work/src" apply "$patch_file"
+done
+
 stage="$work/stage"
 mkdir -p "$stage/bin"
 
@@ -74,13 +104,17 @@ fi
     .
 )
 
-# These sentences exist only after the redirect fix. v2.6.0 does not contain them.
+# The first two sentences exist only after the redirect fix (v2.6.0 does not
+# contain them). The exported appstore.CountryCodeFromStoreFront symbol exists
+# only after the auth info country patch ("countryCode" alone is already in
+# v2.6.0, so it cannot serve as a marker; the build does not strip symbols).
 for marker in \
   "too many authentication redirects" \
-  "unsupported authentication redirect status"
+  "unsupported authentication redirect status" \
+  "appstore.CountryCodeFromStoreFront"
 do
   if ! grep -a -F -q "$marker" "$stage/bin/$name"; then
-    echo "built ipatool is missing the login redirect fix: $marker" >&2
+    echo "built ipatool is missing an expected fix: $marker" >&2
     exit 1
   fi
 done
