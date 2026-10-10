@@ -24,9 +24,12 @@ from apprestore_core.models import MissingApp, OffloadedApp
 GROUP_REMOVED = "removed"
 GROUP_REGION = "region"
 GROUP_OFFLOADED = "offloaded"
-GROUP_ORDER: tuple[str, ...] = (GROUP_REMOVED, GROUP_REGION, GROUP_OFFLOADED)
+#: Offline only: removed + region folded into one unchecked group (Ника §6).
+GROUP_NOPHONE = "nophone"
+GROUP_ORDER: tuple[str, ...] = (GROUP_REMOVED, GROUP_NOPHONE, GROUP_REGION, GROUP_OFFLOADED)
 GROUP_TITLES: dict[str, str] = {
     GROUP_REMOVED: "Удалённые из App Store",
+    GROUP_NOPHONE: "Нет на iPhone",
     GROUP_REGION: "Нет в регионе",
     GROUP_OFFLOADED: "Сгруженные",
 }

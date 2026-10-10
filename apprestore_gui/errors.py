@@ -56,7 +56,7 @@ def explain_user_error(message: str) -> str:
         )
     if any(hint in low for hint in _NETWORK):
         return (
-            "Сервер Apple не ответил. Проверьте интернет или VPN и повторите."
+            "Сервер Apple не ответил. Проверьте подключение к интернету и попробуйте ещё раз."
         )
     if any(hint in low for hint in _DEVICE):
         return "iPhone не ответил. Разблокируйте его и подключите кабелем ещё раз."

@@ -8,6 +8,7 @@ Row {
     property string glyph: "info"
     property bool wrap: false
     property int maxWidth: Theme.fineWidth
+    property color color: Theme.ink3Text   // спека §5: ink3 мелким не проходит контраст
     spacing: wrap ? 8 : 7
     Glyph {
         Accessible.ignored: true
@@ -18,7 +19,7 @@ Row {
     T {
         id: label
         token: "hint"
-        color: Theme.ink3Text   // спека §5: ink3 мелким не проходит контраст
+        color: root.color
         text: root.text
         width: root.wrap ? root.maxWidth - 22 : implicitWidth
         wrapMode: root.wrap ? Text.WordWrap : Text.NoWrap

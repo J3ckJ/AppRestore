@@ -11,7 +11,19 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from apprestore_gui.ui4b.catalog import GROUP_ORDER, GROUP_REGION, GROUP_REMOVED, GROUP_TITLES, RestoreItem, short_name_of
+from dataclasses import replace
+
+from apprestore_gui.ui4b.catalog import (
+    ACTION_NONE,
+    ACTION_OFFLOADED,
+    GROUP_NOPHONE,
+    GROUP_ORDER,
+    GROUP_REGION,
+    GROUP_REMOVED,
+    GROUP_TITLES,
+    RestoreItem,
+    short_name_of,
+)
 from apprestore_gui.ui4b.formatting import format_size
 from apprestore_gui.ui4b.space import UNKNOWN_SPACE, DeviceSpace, SpacePlan, plan_space
 
@@ -36,7 +48,10 @@ class Match:
 
 
 OFFLINE_ROW_NOTE = "не проверено"
-OFFLINE_FOOTER = "Нет интернета, вернуть можно, когда он появится."
+#: Лена 10.10: offloaded ones the iPhone downloads itself (no license, no
+#: gate), so they can be restored offline; everything through the gate cannot.
+OFFLINE_FOOTER = "Нет интернета: сейчас можно вернуть только сгруженные."
+OFFLINE_RAIL_SUB = "проверим, когда будет сеть"
 
 
 def parse_query(text: str) -> tuple[str, str]:
@@ -104,6 +119,7 @@ class Selection:
         self.mark_color = mark_color
         #: No internet: the list is what the phone and the cache know, unchecked.
         self.offline = False
+        self._source: list[RestoreItem] = []
         self.set_items(items, selected=selected)
 
     # -- data ------------------------------------------------------------------
@@ -116,7 +132,8 @@ class Selection:
         """New list; marks survive for keys that are still there."""
 
         first = not self._items
-        self._items = list(items)
+        self._source = list(items)
+        self._items = self._derive(self._source)
         self._by_key = {item.key: item for item in self._items}
         if selected is not None:
             wanted = set(selected)
@@ -126,6 +143,38 @@ class Selection:
             wanted = set(self._selected)
         self._selected = {key for key in wanted if key in self._by_key and self._by_key[key].selectable}
         if self.rail != RAIL_ALL and self.rail not in GROUP_ORDER:
+            self.rail = RAIL_ALL
+
+    def _derive(self, items: list[RestoreItem]) -> list[RestoreItem]:
+        if not self.offline:
+            return list(items)
+        # Without internet the store status is unknown: removed and region fold
+        # into «Нет на iPhone», unchecked and not selectable (they need the gate).
+        return [
+            item
+            if item.action == ACTION_OFFLOADED
+            else replace(item, group=GROUP_NOPHONE, action=ACTION_NONE, note=OFFLINE_ROW_NOTE)
+            for item in items
+        ]
+
+    def set_offline(self, offline: bool) -> None:
+        """Marks of store apps are parked while offline and come back with the network."""
+
+        offline = bool(offline)
+        if offline == self.offline:
+            return
+        self.offline = offline
+        before = set(self._selected)
+        self._items = self._derive(self._source)
+        self._by_key = {item.key: item for item in self._items}
+        if offline:
+            self._parked = {k for k in before if k in self._by_key and not self._by_key[k].selectable}
+            wanted = before
+        else:
+            wanted = before | getattr(self, "_parked", set())
+            self._parked = set()
+        self._selected = {k for k in wanted if k in self._by_key and self._by_key[k].selectable}
+        if self.rail != RAIL_ALL and not any(i.group == self.rail for i in self._items):
             self.rail = RAIL_ALL
 
     def set_space(self, space: DeviceSpace) -> None:
@@ -262,7 +311,12 @@ class Selection:
         )
         for group in GROUP_ORDER:
             in_group = [item for item in visible if item.group == group]
-            if group == GROUP_REGION:
+            hideable = group in (GROUP_REGION, GROUP_NOPHONE) or (self.offline and group == GROUP_REMOVED)
+            if hideable and not any(i.group == group for i in self._items):
+                continue  # Ника: no classification / empty → no group at all (no «0»)
+            if group == GROUP_NOPHONE:
+                sub = OFFLINE_RAIL_SUB
+            elif group == GROUP_REGION:
                 sub = "нельзя выбрать"
             elif not in_group:
                 sub = "—"
@@ -279,7 +333,7 @@ class Selection:
                 }
             )
         # Concept order in the rail: all, removed, offloaded, region.
-        order = {RAIL_ALL: 0, GROUP_REMOVED: 1, "offloaded": 2, GROUP_REGION: 3}
+        order = {RAIL_ALL: 0, GROUP_REMOVED: 1, GROUP_NOPHONE: 1, "offloaded": 2, GROUP_REGION: 3}
         rows.sort(key=lambda row: order.get(str(row["key"]), 9))
         return rows
 
@@ -298,7 +352,9 @@ class Selection:
                 continue
             total = self.group_total(group)
             state = self.group_state(group)
-            if group == GROUP_REGION:
+            if group == GROUP_NOPHONE:
+                action = ""
+            elif group == GROUP_REGION:
                 action = "Подробнее"
             elif searching:
                 action = "Снять найденные" if state == CHECK_ON else "Выбрать найденные"
@@ -333,12 +389,10 @@ class Selection:
                         "bundleId": item.bundle_id,
                         "sizeText": format_size(item.size_bytes),
                         "sizeKnown": item.size_bytes is not None,
-                        "note": OFFLINE_ROW_NOTE
-                        if self.offline
-                        else item.note
+                        "note": item.note
                         if item.note
                         else ("" if item.size_bytes is not None else "размер узнаем при скачивании"),
-                        "unverified": self.offline,
+                        "unverified": item.group == GROUP_NOPHONE,
                         "hasIpaHint": group == GROUP_REGION,
                         "check": CHECK_DISABLED if not item.selectable else (CHECK_ON if checked else CHECK_OFF),
                         "selected": checked,

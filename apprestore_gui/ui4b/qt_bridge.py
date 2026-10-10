@@ -205,6 +205,9 @@ class SourceBase(QObject):
     def submit_code(self, code: str) -> None:
         pass
 
+    def cancel_login(self) -> None:
+        pass
+
 
 class SessionSource(SourceBase):
     """Live data from :class:`QuickSession`; installs go through its gated calls."""
@@ -363,6 +366,10 @@ class SessionSource(SourceBase):
     def submit_code(self, code: str) -> None:
         self.session.submitCode(code)
 
+    def cancel_login(self) -> None:
+        if hasattr(self.session, "cancelLogin"):
+            self.session.cancelLogin()
+
 
 class Restore4b(QObject):
     """Everything the 4b QML reads. One ``changed`` signal; QML re-reads properties."""
@@ -411,7 +418,7 @@ class Restore4b(QObject):
             self._signin_open = False
         self.selection.set_items(self.source.items())
         self.selection.set_space(self.source.space())
-        self.selection.offline = not src.online
+        self.selection.set_offline(not src.online)
         checked, total, done = self.source.scan()
         self.scan.update(checked, total)
         if done:
@@ -570,7 +577,7 @@ class Restore4b(QObject):
             "warnBold": bold,
             "warnText": rest,
             "go": f"Вернуть {plan.count}" if plan.count else "Вернуть",
-            "goEnabled": not plan.blocked and not self._checking_space and not self.flow.running and self.source.online,
+            "goEnabled": bool(plan.count) and not plan.blocked and not self._checking_space and not self.flow.running,
         }
 
     # -- picker slots ------------------------------------------------------------
@@ -664,8 +671,10 @@ class Restore4b(QObject):
     def restoreSelected(self) -> None:
         """Fresh free-space check, the license count, then the queue (or a sheet)."""
 
-        if self._checking_space or self.flow.running or self._consent or not self.source.online:
+        if self._checking_space or self.flow.running or self._consent:
             return
+        if not self.source.online and not self.selection.selected_items():
+            return  # offline: only offloaded ones can go (the rest are not selectable)
         self._checking_space = True
         self._refresh()
         chosen = self.selection.selected_items()
@@ -677,6 +686,8 @@ class Restore4b(QObject):
         except Exception:  # noqa: BLE001
             space = UNKNOWN_SPACE
         try:
+            if not self.source.online:
+                raise LookupError("offline: nothing to look up (only offloaded ones go)")
             owned = self.source.owned_store_ids()
             prices = self.source.free_prices(license_candidates(chosen, owned))
         except Exception:  # noqa: BLE001 - unknown: the gate decides per app
@@ -780,6 +791,14 @@ class Restore4b(QObject):
         self._refresh()
 
     @Slot()
+    def cancelLogin(self) -> None:
+        """«Отмена»/Esc in the sheet: stop a running sign-in, then close the sheet."""
+
+        if self.source.auth_phase in ("running", "need_code"):
+            self.source.cancel_login()
+        self.closeSignIn()
+
+    @Slot()
     def closeSignIn(self) -> None:
         self._signin_open = False
         self._refresh()
@@ -792,30 +811,75 @@ class Restore4b(QObject):
         «Вернуть» again; nothing restarts by itself.
         """
 
-        src = self.source
-        phase = src.auth_phase or "out"
-        return {
-            "open": self._signin_open,
-            "phase": phase,
-            "busy": phase == "running",
-            "code": phase == "need_code",
-            "status": src.auth_status,
-            "email": src.account_email,
-            "title": "Код подтверждения" if phase == "need_code" else "Вход в Apple ID",
-            "sub": (
-                "Введите 6 цифр, которые пришли на ваши устройства Apple."
-                if phase == "need_code"
-                else "Пароль уходит только в Apple и не сохраняется программой."
-            ),
-        }
+        return signin_view(
+            open_=self._signin_open,
+            phase=self.source.auth_phase or "out",
+            status=self.source.auth_status,
+            email=self.source.account_email,
+            relogin=bool(self.source.relogin or self.flow.needs_signin or self.flow._relogin_for_store is not None),
+        )
 
     @Slot(str, str)
     def login(self, email: str, password: str) -> None:
         self.source.login(email, password)
 
+    @Slot(str, result=str)
+    def codeDigits(self, text: str) -> str:
+        return code_digits(text)
+
+    @Slot(result=str)
+    def clipboardText(self) -> str:
+        from PySide6.QtGui import QGuiApplication
+
+        board = QGuiApplication.clipboard()
+        return board.text() if board is not None else ""
+
     @Slot(str)
     def submitCode(self, code: str) -> None:
         self.source.submit_code(code)
+
+
+WRONG_PASSWORD_PREFIX = "Apple не приняла пароль"
+
+
+def signin_view(*, open_: bool, phase: str, status: str, email: str, relogin: bool) -> dict[str, object]:
+    """Texts of the sign-in sheet (Ника, часть 4 §2). Pure: tested without Qt."""
+
+    from apprestore_gui.auth_pty import WRONG_CODE_TEXT
+
+    code = phase == "need_code"
+    error = status if (status.startswith(WRONG_PASSWORD_PREFIX) or status == WRONG_CODE_TEXT) else ""
+    if code:
+        title = "Код подтверждения"
+        sub = "Apple отправила код на ваши устройства: iPhone, iPad или Mac. Введите 6 цифр."
+    elif relogin:
+        title = "Войдите заново"
+        sub = "Apple закрыла сессию. Так бывает раз в несколько недель, с аккаунтом всё в порядке."
+    else:
+        title = "Вход в Apple ID"
+        sub = "Нужен для удалённых из App Store приложений: они скачиваются на <b>ваш</b> Apple ID."
+    return {
+        "open": open_,
+        "phase": phase,
+        "busy": phase == "running",
+        "code": code,
+        "status": "" if error else status,
+        "error": error,
+        "email": email,
+        # in the re-login sheet the address is fixed: same account (Ника #5)
+        "emailReadOnly": bool(relogin and email),
+        "title": title,
+        "sub": sub,
+        "codeHint": "Код не пришёл — нажмите «Отмена» и войдите ещё раз, Apple пришлёт новый.",
+        "fine": "Пароль уходит только в Apple. Программа его не хранит; вход остаётся на этом компьютере, в связке ключей.",
+        "go": "Подтвердить" if code else "Войти",
+    }
+
+
+def code_digits(text: str) -> str:
+    """Pasted 2FA code: digits only, at most 6 («482 913», «482-913» → 482913)."""
+
+    return "".join(ch for ch in str(text or "") if ch.isdigit())[:6]
 
 
 def is_on(check: str) -> bool:

@@ -361,20 +361,36 @@ def test_no_consent_when_everything_is_on_the_account(qapp) -> None:
 # -- «Что вернуть» без сети -----------------------------------------------------------------
 
 
-def test_picker_offline_marks_unverified_and_disables_go(qapp) -> None:
+def test_picker_offline_folds_groups_and_allows_only_offloaded(qapp) -> None:
     source = FakeSource("picker-offline")
     controller = Restore4b(source)
     controller.openPicker()
-    rows = [r for r in controller.selection.rows() if r["kind"] == "app"]
-    assert rows and all(r["note"] == "не проверено" and r["unverified"] for r in rows)
-    controller.toggle(rows[0]["key"])  # marking still works
-    assert controller.footer["goEnabled"] is False
-    assert controller.footer["warnText"] == "Нет интернета, вернуть можно, когда он появится."
-    controller.restoreSelected()
-    assert not controller.flow.running and not source.calls
-    source.go_online()
-    assert [c[0] for c in source.calls] == ["recheck"]  # read only, nothing bought or installed
+    rows = controller.selection.rows()
+    groups = [r["group"] for r in rows if r["kind"] == "header"]
+    assert groups == ["nophone", "offloaded"]  # removed + region folded, region not shown
+    nophone = [r for r in rows if r["kind"] == "app" and r["group"] == "nophone"]
+    assert nophone and all(r["note"] == "не проверено" and r["unverified"] and not r["selectable"] for r in nophone)
+    rail = [r["key"] for r in controller.selection.rail_rows()]
+    assert "region" not in rail and "removed" not in rail and "nophone" in rail
+    assert controller.footer["goEnabled"] is False  # store apps were marked, none can go offline
+    assert controller.footer["warnText"] == "Нет интернета: сейчас можно вернуть только сгруженные."
+    controller.toggle(nophone[0]["key"])  # not selectable: nothing happens
+    off = next(r for r in rows if r["kind"] == "app" and r["group"] == "offloaded")
+    controller.toggle(off["key"])
     assert controller.footer["goEnabled"] is True
+    controller.restoreSelected()
+    wait(qapp, lambda: controller.flow.running)
+    assert [e.item.key for e in controller.flow.queue.entries] == [off["key"]]
+    assert [c[0] for c in source.calls] == ["restore_offloaded"] and source.lookups == []
+    controller.stop()
+    controller.dismissDone()
+    source.go_online()
+    assert [c[0] for c in source.calls][-1] == "recheck"  # read only
+    assert not any(c[0] == "install_store" for c in source.calls)
+    groups = [r["group"] for r in controller.selection.rows() if r["kind"] == "header"]
+    assert "removed" in groups and "nophone" not in groups
+    # marks of store apps come back with the network
+    assert any(i.group == "removed" for i in controller.selection.selected_items())
 
 
 def test_session_source_rechecks_read_only_when_network_returns(qapp) -> None:
@@ -391,3 +407,46 @@ def test_session_source_rechecks_read_only_when_network_returns(qapp) -> None:
     names = [c[0] for c in session.calls]
     assert names.count("loadPurchases") == 1
     assert not any(n.startswith(("install", "purchase", "restore")) for n in names)
+
+
+# -- вход (часть 4) ---------------------------------------------------------------------
+
+
+def test_signin_view_states() -> None:
+    from apprestore_gui.auth_pty import WRONG_CODE_TEXT
+    from apprestore_gui.ui4b.qt_bridge import code_digits, signin_view
+
+    v = signin_view(open_=True, phase="out", status="", email="", relogin=False)
+    assert v["title"] == "Вход в Apple ID" and not v["emailReadOnly"]
+    r = signin_view(open_=True, phase="out", status="", email="m@example.com", relogin=True)
+    assert r["title"] == "Войдите заново" and r["emailReadOnly"] is True
+    w = signin_view(open_=True, phase="out", status=WRONG_CODE_TEXT, email="m@example.com", relogin=False)
+    assert w["error"] == WRONG_CODE_TEXT and not w["code"] and w["go"] == "Войти"
+    c = signin_view(open_=True, phase="need_code", status="", email="m", relogin=False)
+    assert c["code"] and "Отмена" in c["codeHint"] and "снова" not in c["go"]
+    assert code_digits("482 913") == code_digits("482-913") == "482913"
+    assert code_digits("1234567") == "123456"
+
+
+def test_cancel_login_stops_running_signin(qapp) -> None:
+    source = FakeSource("signin")
+    stopped = []
+    source.cancel_login = lambda: stopped.append(True)  # type: ignore[method-assign]
+    controller = Restore4b(source)
+    controller.openSignIn()
+    source.auth_phase = "running"
+    controller.cancelLogin()
+    assert stopped == [True] and not controller.signIn["open"]
+
+
+def test_signin_sheet_relogin_email_is_read_only(qapp) -> None:
+    source = FakeSource("relogin")
+    source.account_email = "m@example.com"
+    controller = Restore4b(source)
+    controller.openSignIn()
+    engine, icons, warnings = open_window(qapp, controller)
+    window = engine.rootObjects()[0]
+    field = window.findChild(QQuickItem, "signInEmail")
+    assert field is not None and field.property("readOnly") is True
+    assert warnings == []
+    del window, engine, icons

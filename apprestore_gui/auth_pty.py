@@ -307,7 +307,37 @@ def _apple_login_host_reachable(env: dict[str, str], timeout: float = 8) -> bool
         return False
 
 
-def _explain_login_failure(exit_status: object, transcript: str) -> str:
+#: Sign-in failed after a 2FA code went in: ipatool does not let you retry the
+#: code, the login is over (Ника, часть 4, auth-code-wrong).
+WRONG_CODE_TEXT = "Код не подошёл, и Apple завершила вход. Введите пароль ещё раз — придёт новый код."
+_WRONG_CODE_HINTS = (
+    "invalid verification code",
+    "incorrect verification code",
+    "verification code is incorrect",
+    "invalid code",
+    "incorrect code",
+    "wrong code",
+    "code is incorrect",
+    "code was incorrect",
+)
+
+
+def is_wrong_code(transcript: str, *, code_sent: bool = False) -> bool:
+    """True when the failure is the 2FA code (explicit text, or any non-network,
+    non-password failure right after a code was sent)."""
+
+    text = (transcript or "").casefold()
+    if any(hint in text for hint in _WRONG_CODE_HINTS):
+        return True
+    if not code_sent:
+        return False
+    if any(h in text for h in ("invalid password", "incorrect password", "wrong password", "bad credentials")):
+        return False
+    network = any(h in text for h in ("i/o timeout", "tls handshake timeout", "no such host", "connection refused"))
+    return not network
+
+
+def _explain_login_failure(exit_status: object, transcript: str, *, code_sent: bool = False) -> str:
     text = transcript.casefold()
     network = (
         "failed to get bag" in text
@@ -317,10 +347,11 @@ def _explain_login_failure(exit_status: object, transcript: str) -> str:
     )
     if network:
         return (
-            "Сервер Apple не ответил (init.itunes.apple.com). "
-            "Прямое соединение обрывается по таймауту. "
-            "Включите VPN или прокси Windows и нажмите «Войти» ещё раз."
+            "Сервер Apple не ответил. "
+            "Проверьте подключение к интернету и попробуйте ещё раз."
         )
+    if is_wrong_code(transcript, code_sent=code_sent):
+        return WRONG_CODE_TEXT
     if any(hint in text for hint in ("invalid password", "incorrect password", "wrong password", "bad credentials")):
         return "Apple не приняла пароль. Проверьте его и нажмите «Войти» ещё раз."
     if "http 204" in text or "empty or non-plist" in text:
@@ -331,11 +362,7 @@ def _explain_login_failure(exit_status: object, transcript: str) -> str:
             "когда магазин приложений вход не принимает."
         )
     if "http 301" in text:
-        return (
-            "Пароль ушёл, но Apple не приняла вход: сервер ответил перенаправлением "
-            "(HTTP 301) вместо подтверждения. Так бывает, когда сеть до Apple режется. "
-            "Попробуйте ещё раз позже или через VPN."
-        )
+        return "Apple не приняла вход. Попробуйте ещё раз позже."
     return f"Вход не удался (код {exit_status}). Текст ipatool показан выше."
 
 
@@ -976,9 +1003,8 @@ def _drive_windows_login(
     if not _apple_login_host_reachable(env):
         return AuthResult(
             False,
-            "Сервер Apple не ответил (init.itunes.apple.com). "
-            "Прямое соединение обрывается по таймауту. "
-            "Включите VPN или прокси Windows и нажмите «Войти» ещё раз.",
+            "Сервер Apple не ответил. "
+            "Проверьте подключение к интернету и попробуйте ещё раз.",
         )
     say("Запускаем ipatool. Первый вход может занять несколько минут: скачивается служебный компонент.")
     try:
@@ -1109,7 +1135,7 @@ def _drive_windows_login(
         return AuthResult(True, "Вход выполнен. Сессия сохранена в ipatool.")
     if asked_code and not sent_code:
         return AuthResult(False, "Вход остановлен: код из сообщения не отправлен.")
-    return AuthResult(False, _explain_login_failure(exit_status, transcript))
+    return AuthResult(False, _explain_login_failure(exit_status, transcript, code_sent=sent_code))
 
 
 def _login_windows(

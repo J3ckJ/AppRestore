@@ -856,3 +856,46 @@ def test_limit_slot_text_all_cases(tmp_path) -> None:
         lg.record_acquire(f"1{i}", None, "us", journal_path=journal, price=0)
     when = next_slot(journal)
     assert when is not None and when.tzinfo is not None and when > dt.datetime.now(dt.timezone.utc)
+
+
+# -- R5: в пользовательских текстах нет «VPN»; неверный код 2FA ------------------------------
+
+
+def test_no_vpn_in_user_texts() -> None:
+    import ast
+    from pathlib import Path as P
+
+    root = P(__file__).resolve().parents[1]
+    bad = []
+    for path in list((root / "apprestore_gui").rglob("*.py")) + list((root / "apprestore_core").rglob("*.py")) + list(
+        (root / "apprestore_gui" / "qml4b").rglob("*.qml")
+    ):
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".py":
+            tree = ast.parse(text)
+            docs = {
+                id(node.body[0].value)
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant)
+            }
+            strings = [
+                n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs
+            ]
+            # docstrings/comments about proxies are not user texts: only Cyrillic strings count
+            strings = [s for s in strings if any("а" <= ch <= "я" for ch in s.casefold())]
+        else:
+            strings = [_strip_comments(text)]
+        bad += [f"{path.name}: {s[:60]}" for s in strings if "vpn" in s.casefold()]
+    assert bad == []
+
+
+def test_wrong_2fa_code_goes_back_to_password_form() -> None:
+    from apprestore_gui.auth_pty import WRONG_CODE_TEXT, _explain_login_failure, is_wrong_code
+
+    assert _explain_login_failure(1, "ERR invalid verification code") == WRONG_CODE_TEXT
+    assert _explain_login_failure(1, "ERR something failed", code_sent=True) == WRONG_CODE_TEXT
+    assert _explain_login_failure(1, "ERR something failed") != WRONG_CODE_TEXT
+    assert not is_wrong_code("dial tcp: i/o timeout", code_sent=True)
+    assert "VPN" not in _explain_login_failure(1, "failed to get bag: init.itunes.apple.com timeout")

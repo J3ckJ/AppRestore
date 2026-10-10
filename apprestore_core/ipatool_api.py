@@ -148,7 +148,7 @@ MESSAGES_RU: Mapping[ErrorCode, str] = {
     ErrorCode.NO_CATALOG_VERSION: "В каталоге Apple нет актуальной версии (часто снятое приложение). Нужна сохранённая версия или лицензия.",
     ErrorCode.RATE_LIMITED: "Слишком много попыток входа. Подождите несколько минут.",
     ErrorCode.AUTH_SERVER_UNUSABLE: "Сервер входа Apple не ответил нормально. Повторите позже или из другой сети.",
-    ErrorCode.NETWORK: "Нет связи с Apple. Проверьте интернет, VPN или DNS.",
+    ErrorCode.NETWORK: "Нет связи с Apple. Проверьте подключение к интернету и попробуйте ещё раз.",  # R5 (Лена): без VPN
     ErrorCode.TIMEOUT: "Apple не ответила вовремя. Проверьте интернет и повторите.",
     ErrorCode.INVALID_ARGUMENT: "Неверный параметр запроса к ipatool.",
     ErrorCode.FLAG_UNSUPPORTED: "Эта сборка ipatool не поддерживает нужную функцию. Обновите AppRestore.",

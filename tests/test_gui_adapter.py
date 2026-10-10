@@ -178,8 +178,9 @@ def test_apple_redirect_login_is_explained_in_russian() -> None:
         'or from another network"'
     )
     text = _explain_login_failure(1, message)
-    assert "HTTP 301" in text
-    assert "VPN" in text
+    # Ника §4 + R5 (Лена): short, no technical details, no VPN advice
+    assert text == "Apple не приняла вход. Попробуйте ещё раз позже."
+    assert "VPN" not in text
     assert "код 1" not in text
 
 

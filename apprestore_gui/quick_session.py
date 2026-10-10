@@ -646,6 +646,15 @@ class QuickSession(QObject):
         job.submit("code", code)
         self._set_auth("running", "Код отправлен. Ждём ответ Apple…")
 
+    @Slot()
+    def cancelLogin(self) -> None:
+        """«Отмена» while signing in: stop ipatool (AppleLogin.cancel); nothing is retried."""
+
+        job = self._auth_job
+        if job is not None:
+            job.cancel()
+            self._set_auth("running", "Отменяем вход…")
+
     @Slot(str)
     def unlock(self, passphrase: str) -> None:
         passphrase = passphrase.strip()
