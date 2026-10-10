@@ -429,3 +429,119 @@ def test_onboarding_steps() -> None:
     assert [s["state"] for s in ob.stepper(4)] == ["ok", "ok", "ok", "on"]
     assert ob.step(connected=True, signed_in=False, scan_done=True) == 0
     assert ob.finished
+
+
+# -- sign in again: no auto-continue (Ника/Лена) -----------------------------------
+
+class RecordingBackend:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    def restore_offloaded(self, keys):
+        self.calls.append(("restore", list(keys)))
+
+    def install_store(self, store_id):
+        self.calls.append(("store", store_id))
+
+    def install_ipa(self, path):
+        self.calls.append(("ipa", path))
+
+
+def _store_items(count: int = 3):
+    from apprestore_gui.ui4b.fake_data import removed_items
+
+    return removed_items()[:count]
+
+
+def test_needs_signin_recognises_session_failures() -> None:
+    from apprestore_gui.ui4b.flow import needs_signin
+
+    assert needs_signin("Отказ -128")
+    assert needs_signin("Apple: error -128 (MZFinance)")
+    assert needs_signin("Сессия Apple ID истекла. Войдите заново.")
+    assert needs_signin("password token is expired")
+    assert not needs_signin("")
+    assert not needs_signin("Недостаточно места на iPhone")
+    assert not needs_signin("Код 1128 не найден")
+    assert not needs_signin("license already exists")
+
+
+def test_session_failure_drops_the_run_and_signin_does_not_resume() -> None:
+    from apprestore_gui.ui4b.flow import RestoreFlow
+    from apprestore_gui.ui4b.home import STATE_MISSING, STATE_SIGNIN, HomeInput, home_view
+    from apprestore_gui.ui4b.space import DeviceSpace
+
+    backend = RecordingBackend()
+    flow = RestoreFlow(backend)
+    items = _store_items()
+    space = DeviceSpace(total_bytes=128 * 10**9, free_bytes=50 * 10**9)
+    flow.observe_account(True, "in", False)
+    flow.begin(items, space)
+    assert backend.calls == [("store", items[0].store_id)]
+
+    flow.on_install_settled(items[0].store_id, False, "Отказ -128")
+    assert flow.needs_signin and not flow.running
+    assert flow.queue.entries == []  # nothing kept to resume
+    view = home_view(HomeInput(connected=True, signed_in=True, items=items, space=space,
+                               relogin=flow.needs_signin))
+    assert view["state"] == STATE_SIGNIN
+    assert view["cta"] == "Войти заново"
+    text = " ".join(str(view.get(k, "")) for k in ("over", "title", "lead", "fine", "hint"))
+    assert "автомат" not in text.casefold() and "продолж" not in text.casefold()
+
+    # Late signals from the dropped run change nothing.
+    flow.on_install_settled(items[1].store_id, True, "")
+    flow.on_progress(50, "Скачиваю")
+    # «Войти заново» → 2FA → signed in again.
+    flow.observe_account(True, "running", False)
+    flow.observe_account(True, "need_code", False)
+    flow.observe_account(True, "in", False)
+    assert not flow.needs_signin
+    assert backend.calls == [("store", items[0].store_id)]  # no new install by itself
+    view = home_view(HomeInput(connected=True, signed_in=True, items=items, space=space,
+                               queue=flow.queue if flow.queue.entries else None,
+                               relogin=flow.needs_signin))
+    assert view["state"] == STATE_MISSING
+    assert view["cta"].startswith("Вернуть")
+
+    # The user presses «Вернуть» again: a new run from the first app.
+    flow.begin(items, space)
+    assert backend.calls[-1] == ("store", items[0].store_id)
+
+
+def test_expired_session_during_run_drops_it_and_first_signin_does_not_start() -> None:
+    from apprestore_gui.ui4b.flow import RestoreFlow
+    from apprestore_gui.ui4b.space import DeviceSpace
+
+    backend = RecordingBackend()
+    flow = RestoreFlow(backend)
+    items = _store_items(2)
+    space = DeviceSpace(total_bytes=128 * 10**9, free_bytes=50 * 10**9)
+    flow.observe_account(True, "in", False)
+    flow.begin(items, space)
+    flow.observe_account(True, "in", True)  # QuickSession.sessionRelogin
+    assert not flow.running and flow.needs_signin
+    flow.observe_account(False, "out", True)
+    flow.observe_account(True, "in", False)
+    assert not flow.needs_signin and not flow.running
+    assert len(backend.calls) == 1
+
+    # Plain first sign-in from the «Войдите в Apple ID» state starts nothing either.
+    backend2 = RecordingBackend()
+    flow2 = RestoreFlow(backend2)
+    flow2.observe_account(False, "out", False)
+    flow2.observe_account(True, "in", False)
+    assert backend2.calls == [] and not flow2.running
+
+
+def test_restore_settled_with_session_error_drops_offloaded_batch() -> None:
+    from apprestore_gui.ui4b.fake_data import offloaded_items
+    from apprestore_gui.ui4b.flow import RestoreFlow
+    from apprestore_gui.ui4b.space import DeviceSpace
+
+    backend = RecordingBackend()
+    flow = RestoreFlow(backend)
+    items = offloaded_items()[:2]
+    flow.begin(items, DeviceSpace(total_bytes=10**11, free_bytes=5 * 10**10))
+    flow.on_restore_settled(f"{items[0].name}: Сессия Apple ID истекла. Войдите заново.")
+    assert flow.needs_signin and flow.queue.entries == []

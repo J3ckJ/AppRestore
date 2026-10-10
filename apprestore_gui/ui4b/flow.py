@@ -10,17 +10,41 @@ old window uses:
   price 0 in the account's country, 5/day + 15 total, journal);
 * local IPA → ``QuickSession.installSaved``.
 
+When Apple wants the user again (expired session, «отказ -128», any
+ipatool session code) the run stops and is dropped: nothing waits to resume.
+After «Войти заново» / a fresh sign-in the user lands on the home screen and
+presses «Вернуть» again (Ника/Лена: no auto-continue, no «продолжим
+автоматически»).
+
 No Qt here: :class:`Backend` is whatever performs those calls.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable
 from typing import Protocol
+
+from apprestore_core.ipatool_api import MESSAGES_RU, SESSION_CODES, classify_error
 
 from apprestore_gui.ui4b.catalog import ACTION_IPA, ACTION_OFFLOADED, ACTION_STORE, RestoreItem
 from apprestore_gui.ui4b.queue import CURRENT, WAIT, RestoreQueue
 from apprestore_gui.ui4b.space import DeviceSpace, SpacePlan, plan_space
+
+
+_REFUSAL_128 = re.compile(r"(?<![\w-])-128\b")
+_SESSION_TEXTS = tuple(MESSAGES_RU[code].casefold() for code in SESSION_CODES if code in MESSAGES_RU)
+
+
+def needs_signin(text: str) -> bool:
+    """The failure means «sign in again», not «this app did not work»."""
+
+    if not text:
+        return False
+    if _REFUSAL_128.search(text) or classify_error(text) in SESSION_CODES:
+        return True
+    folded = text.casefold()
+    return any(message in folded for message in _SESSION_TEXTS) or "войдите заново" in folded
 
 
 class Backend(Protocol):
@@ -39,6 +63,9 @@ class RestoreFlow:
         self.last_plan: SpacePlan | None = None
         self._batch: set[str] = set()
         self._started: set[str] = set()
+        #: The run was dropped because Apple wants the user to sign in again.
+        self.needs_signin = False
+        self._account: tuple[bool, str, bool] | None = None
 
     @property
     def running(self) -> bool:
@@ -55,6 +82,7 @@ class RestoreFlow:
             return plan
         self._batch = set()
         self._started = set()
+        self.needs_signin = False
         self.queue.start(chosen)
         self._kick()
         self.on_change()
@@ -103,6 +131,9 @@ class RestoreFlow:
     def on_restore_settled(self, errors: str) -> None:
         """End of the offloaded batch: whatever did not report back failed."""
 
+        if self.queue.entries and needs_signin(errors):
+            self.interrupt_for_signin()
+            return
         lines = [line for line in (errors or "").splitlines() if line.strip()]
         for key in list(self._batch):
             entry = self.queue._find(key)
@@ -115,6 +146,9 @@ class RestoreFlow:
         self.on_change()
 
     def on_install_settled(self, store_id: str, ok: bool, text: str) -> None:
+        if not ok and self.queue.entries and needs_signin(text):
+            self.interrupt_for_signin()
+            return
         self.queue.settle(store_id, ok, text)
         self._kick()
         self.on_change()
@@ -122,3 +156,42 @@ class RestoreFlow:
     def stop(self) -> None:
         self.queue.stop()
         self.on_change()
+
+    def interrupt_for_signin(self) -> None:
+        """Drop the run: no queue, no done screen, nothing kept to resume."""
+
+        self.queue = RestoreQueue()
+        self._batch = set()
+        self._started = set()
+        self.needs_signin = True
+        self.on_change()
+
+    def on_signed_in(self) -> None:
+        """Back on the home screen; the user presses «Вернуть» again."""
+
+        if self.needs_signin:
+            self.needs_signin = False
+            self.on_change()
+
+    def observe_account(self, signed_in: bool, auth_phase: str = "", relogin: bool = False) -> None:
+        """Follow QuickSession's account state.
+
+        ``relogin`` (expired session) during a run drops it; a fresh sign-in
+        (signed out → in, auth phase → ``in``, or relogin cleared) only clears
+        the flag. Nothing is started from here.
+        """
+
+        before = self._account
+        self._account = (bool(signed_in), auth_phase, bool(relogin))
+        if relogin and self.queue.active:
+            self.interrupt_for_signin()
+        if before is None:
+            return
+        was_signed, was_phase, was_relogin = before
+        fresh = (
+            (signed_in and not was_signed)
+            or (auth_phase == "in" and was_phase not in ("", "in"))
+            or (was_relogin and not relogin and signed_in)
+        )
+        if fresh and not relogin:
+            self.on_signed_in()

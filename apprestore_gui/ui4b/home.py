@@ -59,6 +59,8 @@ class HomeInput:
     done_dismissed: bool = False
     phone_apps: Sequence[PhoneApp] = ()
     region_name: str = ""
+    #: Apple wants the user again (expired session / «отказ -128»).
+    relogin: bool = False
 
 
 def _minutes(count: int) -> str:
@@ -154,6 +156,20 @@ def home_view(inp: HomeInput) -> dict[str, object]:
                 "Нажмите «Доверять» и введите код телефона",
             ],
             links=["Не получается подключить"],
+        )
+    elif inp.relogin and not (queue is not None and queue.active):
+        # No promise to continue: after signing in the user is back on the
+        # home screen and presses «Вернуть» again.
+        state = STATE_SIGNIN
+        view.update(
+            over="Сессия Apple ID истекла",
+            title="Войдите\nзаново",
+            lead="Apple попросил войти ещё раз. После входа вернётесь сюда "
+            "и снова нажмёте «Вернуть».",
+            cta="Войти заново",
+            fine="Вход хранится только на этом компьютере, в связке ключей под вашим паролем. "
+            "Код подтверждения придёт на ваши устройства Apple.",
+            links=["Есть файл IPA", "Почему это безопасно"],
         )
     elif queue is not None and queue.active:
         state = STATE_INSTALLING
