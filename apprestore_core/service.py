@@ -303,6 +303,36 @@ class AppRestoreService:
         if not normalized or "@" not in normalized:
             raise AppRestoreError("a valid Apple ID email is required")
         self.tools.ipatool_login(normalized)
+        self.note_account(normalized)
+
+    # -- account lifecycle: the one place every front end goes through --------
+
+    def sign_out(self) -> None:
+        """``ipatool auth revoke`` and delete local personal data of the account.
+
+        The cached purchase list is deleted even if revoke fails: the user
+        asked to sign out, and the list must not outlive that.
+        """
+
+        from .purchases_cache import forget_purchases_cache
+
+        try:
+            self.tools.ipatool_revoke()
+        finally:
+            forget_purchases_cache()
+
+    def note_account(self, email: str) -> None:
+        """``email`` is now the open Apple ID (login or switch).
+
+        A purchase list cached for any other account is deleted.
+        """
+
+        from .purchases_cache import PurchasesCache
+
+        try:
+            PurchasesCache().claim(email)
+        except OSError:
+            pass
 
     def _build_download_attempts(
         self,

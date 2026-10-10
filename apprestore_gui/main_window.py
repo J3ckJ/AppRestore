@@ -1984,6 +1984,7 @@ class MainWindow(QMainWindow):
             self._set_code_field_visible(False)
             self._set_auth_status(auth.message, OK)
             self.log("ok  вход выполнен")
+            self._note_signed_in_account()
             self._continue_pending_file_install()
             if self._device is not None:
                 self._apply_devices([self._device])
@@ -1998,6 +1999,16 @@ class MainWindow(QMainWindow):
         if job is not None:
             job.cancel()
         self._set_auth_status("Останавливаем вход…", MUTED)
+
+    def _note_signed_in_account(self) -> None:
+        """Another Apple ID than the cached one → its purchase list is deleted."""
+
+        email_edit = self.pages["account"].findChild(QLineEdit, "auth_email")
+        email = email_edit.text().strip() if email_edit is not None else ""
+        try:
+            self.service.note_account(email)
+        except Exception:  # noqa: BLE001 - housekeeping must not break the login
+            pass
 
     def _revoke(self) -> None:
         if self._auth_job is not None:

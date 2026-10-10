@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 import apprestore_core.ipatool_api as api  # noqa: E402
-from apprestore_core.purchases_cache import CachedPurchase, PurchasesCache, account_key  # noqa: E402
+from apprestore_core.purchases_cache import CachedPurchase, PurchasesCache  # noqa: E402
 from apprestore_gui import quick_session as qs  # noqa: E402
 from apprestore_gui.purchases import PurchasesLoader, SessionChecker  # noqa: E402
 
@@ -105,10 +105,11 @@ def test_no_network_keeps_the_account(session) -> None:
 def test_sign_out_deletes_purchases_cache(session) -> None:
     s, _prompts, cache = session
     s._purchases.set_account(EMAIL)
-    cache.save(account_key(EMAIL), [CachedPurchase(1, "com.example.a", "A", "")])
+    cache.save(cache.account_key(EMAIL), [CachedPurchase(1, "com.example.a", "A", "")])
     s._purchases.show_cached()
     assert len(s.purchases) == 1
     s.signOut()
+    assert s.service.revoked == 1  # core sign_out (revoke + cache delete) via GuiService
     assert not cache.path.exists()
     assert s.purchases == [] and s.sessionState == "unknown"
 

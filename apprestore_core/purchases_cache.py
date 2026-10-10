@@ -4,12 +4,16 @@ The purchase history is personal data, so (Лена's rules):
 
 * only ``track_id``, ``bundle_id``, ``name`` and ``purchase_date`` are kept:
   no email, guid, tokens, prices or versions;
-* the account is identified by a salted SHA-256 of the normalised email,
-  never by the email itself;
+* the account is identified by a SHA-256 of the normalised email with a
+  random per-install salt (``salt``, 32 bytes from ``secrets``), never by
+  the email itself. A missing or damaged salt file means a new salt, so any
+  existing cache no longer matches and is deleted as foreign;
 * entries are de-duplicated by ``track_id`` (first occurrence wins, the list
   stays newest first);
-* the folder is 0700 and the file 0600 (on Windows it lives in the user
-  profile next to the ipatool vault, where the ACL already limits access);
+* ``~/.apprestore`` and its ``purchases`` folder are 0700 (tightened if an
+  older install left them wider), the cache and the salt 0600. On Windows
+  both live in the user profile next to the ipatool vault and rely on the
+  profile ACL (see SECURITY.md);
 * writes are atomic: a 0600 temporary file in the same folder, fsync, then
   ``os.replace``;
 * the cache is deleted on sign-out and when another account is opened;
@@ -22,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import stat
 import tempfile
 from collections.abc import Iterable, Mapping
@@ -31,25 +36,125 @@ from pathlib import Path
 
 FORMAT_VERSION = 1
 FILE_NAME = "purchases-cache.json"
-_SALT = "apprestore-purchases-cache-v1:"
-_FIELDS = ("track_id", "bundle_id", "name", "purchase_date")
+SALT_NAME = "salt"
+SALT_BYTES = 32
+_KEY_PREFIX = b"apprestore-purchases-cache-v2:"
+
+
+def app_dir() -> Path:
+    return Path.home() / ".apprestore"
 
 
 def cache_dir() -> Path:
-    return Path.home() / ".apprestore" / "purchases"
+    return app_dir() / "purchases"
 
 
 def cache_path(root: Path | None = None) -> Path:
     return (root or cache_dir()) / FILE_NAME
 
 
-def account_key(email: str) -> str:
-    """Stable, non-reversible-at-a-glance key for one Apple ID."""
+def _private_dir(folder: Path) -> None:
+    """mkdir 0700; tighten an existing folder that is wider (POSIX)."""
+
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name == "nt":
+        return
+    mode = stat.S_IMODE(folder.stat().st_mode)
+    if mode & 0o077:
+        os.chmod(folder, mode & 0o700)
+
+
+def _secure_dir(folder: Path) -> None:
+    if folder == cache_dir():
+        _private_dir(app_dir())
+    _private_dir(folder)
+
+
+def _write_private(path: Path, data: bytes, *, exclusive: bool = False) -> bool:
+    """Atomic 0600 write: temp file in the same folder, fsync, then rename.
+
+    ``exclusive``: never replace an existing file (hard link instead of
+    replace); returns False when another process won the race.
+    """
+
+    folder = path.parent
+    _secure_dir(folder)
+    fd, tmp_name = tempfile.mkstemp(prefix=".purchases-", suffix=".tmp", dir=folder)  # 0600
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            if os.name != "nt":
+                os.fchmod(handle.fileno(), stat.S_IRUSR | stat.S_IWUSR)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if exclusive:
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                return False
+            except OSError:
+                # No hard links (some Windows/network file systems).
+                if path.exists():
+                    return False
+                os.replace(tmp, path)
+                tmp = None  # type: ignore[assignment]
+        else:
+            os.replace(tmp, path)
+            tmp = None  # type: ignore[assignment]
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    if os.name != "nt":
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    return True
+
+
+def _read_salt(path: Path) -> bytes | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    return data if len(data) == SALT_BYTES else None
+
+
+def install_salt(root: Path | None = None) -> bytes:
+    """The per-install random salt; created (atomically) when missing/damaged."""
+
+    path = (root or cache_dir()) / SALT_NAME
+    salt = _read_salt(path)
+    if salt is not None:
+        return salt
+    damaged = path.exists()
+    fresh = secrets.token_bytes(SALT_BYTES)
+    if damaged:
+        _write_private(path, fresh)  # replace the broken file
+        # A cache keyed with the lost salt can no longer be matched.
+        try:
+            cache_path(root).unlink()
+        except OSError:
+            pass
+        return fresh
+    if _write_private(path, fresh, exclusive=True):
+        try:
+            cache_path(root).unlink()  # written under an older/unknown salt
+        except OSError:
+            pass
+        return fresh
+    return _read_salt(path) or install_salt(root)
+
+
+def account_key(email: str, root: Path | None = None) -> str:
+    """Key for one Apple ID: sha256(prefix + per-install salt + email)."""
 
     cleaned = (email or "").strip().lower()
     if not cleaned:
         return ""
-    return hashlib.sha256((_SALT + cleaned).encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(_KEY_PREFIX + install_salt(root) + cleaned.encode("utf-8"))
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -116,12 +221,6 @@ class CacheSnapshot:
     updated: str
 
 
-def _secure_dir(folder: Path) -> None:
-    folder.mkdir(parents=True, exist_ok=True)
-    if os.name != "nt":
-        os.chmod(folder, stat.S_IRWXU)  # 0700
-
-
 class PurchasesCache:
     """One file, one account at a time."""
 
@@ -131,6 +230,26 @@ class PurchasesCache:
     @property
     def path(self) -> Path:
         return cache_path(self._root)
+
+    def account_key(self, email: str) -> str:
+        return account_key(email, self._root)
+
+    def claim(self, email: str) -> None:
+        """``email`` is now the open account: drop a cache of any other one."""
+
+        key = self.account_key(email)
+        if not key:
+            self.delete()
+            return
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            self.delete()
+            return
+        if not isinstance(payload, dict) or payload.get("account") != key:
+            self.delete()
 
     def load(self, account: str) -> CacheSnapshot | None:
         """The cached list for ``account`` (see :func:`account_key`), else None.
@@ -192,27 +311,7 @@ class PurchasesCache:
             "items": rows,
         }
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        folder = self.path.parent
-        _secure_dir(folder)
-        # mkstemp creates the file with 0600 on POSIX.
-        fd, tmp_name = tempfile.mkstemp(prefix=".purchases-", suffix=".tmp", dir=folder)
-        tmp = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                if os.name != "nt":
-                    os.fchmod(handle.fileno(), stat.S_IRUSR | stat.S_IWUSR)
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp, self.path)
-        except BaseException:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            raise
-        if os.name != "nt":
-            os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
+        _write_private(self.path, data)
 
     def delete(self) -> None:
         try:
@@ -232,3 +331,9 @@ class PurchasesCache:
                     leftover.unlink()
                 except OSError:
                     pass
+
+
+def forget_purchases_cache(root: Path | None = None) -> None:
+    """Sign-out from any front end: the cached purchase list goes away."""
+
+    PurchasesCache(root).delete()

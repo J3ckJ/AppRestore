@@ -234,7 +234,7 @@ class PurchasesLoader:
         Returns True when the account changed.
         """
 
-        key = account_key(email)
+        key = self._cache.account_key(email)
         with self._lock:
             if key == self._account:
                 return False

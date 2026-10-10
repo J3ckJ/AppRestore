@@ -174,9 +174,18 @@ class GuiService:
             return False
 
     def revoke(self) -> None:
+        """Sign out: revoke and delete the cached purchase list (core.sign_out)."""
+
         if self.demo_mode:
             return
-        self.core.tools.ipatool_revoke()
+        self.core.sign_out()
+
+    def note_account(self, email: str) -> None:
+        """A login/switch opened ``email``: drop another account's cached data."""
+
+        if self.demo_mode or "@" not in (email or ""):
+            return
+        self.core.note_account(email.strip())
 
     def restore_offloaded(
         self,

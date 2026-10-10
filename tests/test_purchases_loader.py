@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import apprestore_core.ipatool_api as api
-from apprestore_core.purchases_cache import CachedPurchase, PurchasesCache, account_key
+from apprestore_core.purchases_cache import CachedPurchase, PurchasesCache
 from apprestore_gui import purchases as pm
 
 EMAIL = "person@example.com"
@@ -154,7 +154,7 @@ def test_all_mode_one_page_saves_cache(tmp_path: Path) -> None:
     assert [c[1:3] for c in runner.calls] == [["list-purchases", "--all"]]
     final = views[-1]
     assert not final.busy and final.count == 150 and final.progress == "150 из 150"
-    snapshot = cache.load(account_key(EMAIL))
+    snapshot = cache.load(cache.account_key(EMAIL))
     assert snapshot is not None and len(snapshot.items) == 150 and snapshot.complete
 
 
@@ -190,7 +190,7 @@ def test_progress_without_total_is_just_a_count(tmp_path: Path) -> None:
 
 def test_cached_list_shows_first_then_refresh_replaces_it(tmp_path: Path) -> None:
     cache = PurchasesCache(tmp_path)
-    cache.save(account_key(EMAIL), [CachedPurchase(999, "com.example.old", "Old", "")], total=1)
+    cache.save(cache.account_key(EMAIL), [CachedPurchase(999, "com.example.old", "Old", "")], total=1)
     runner = Runner({"all": api.RunResult(0, _line(totalCount=2, apps=_apps(1, 2)), "")})
     loader, _cache, views = _loader(tmp_path, runner)
     loader.set_account(EMAIL)
@@ -204,7 +204,7 @@ def test_cached_list_shows_first_then_refresh_replaces_it(tmp_path: Path) -> Non
 
 def test_cancel_sets_event_and_stops_before_next_page(tmp_path: Path) -> None:
     cache = PurchasesCache(tmp_path)
-    cache.save(account_key(EMAIL), [CachedPurchase(5, "com.example.five", "Five", "")])
+    cache.save(cache.account_key(EMAIL), [CachedPurchase(5, "com.example.five", "Five", "")])
     runner = Runner({"pages": {1: _page(1, 100, 300), 2: _page(2, 100, 300), 3: _page(3, 100, 300)}})
     runner.gates[2] = threading.Event()
     runner.entered[2] = threading.Event()
@@ -221,7 +221,7 @@ def test_cancel_sets_event_and_stops_before_next_page(tmp_path: Path) -> None:
     final = views[-1]
     assert not final.busy and final.note.startswith("Остановлено")
     # A cancelled refresh does not overwrite the cache.
-    snapshot = cache.load(account_key(EMAIL))
+    snapshot = cache.load(cache.account_key(EMAIL))
     assert snapshot is not None and [i.track_id for i in snapshot.items] == [5]
 
 
@@ -322,3 +322,13 @@ def test_gui_runner_maps_pty_timeout(monkeypatch) -> None:
     check = client.session_alive()
     assert check.state is api.SessionState.NO_NETWORK
     assert check.error is not None and check.error.code is api.ErrorCode.TIMEOUT
+
+
+def test_ipatool_error_without_russian_text_is_not_quoted() -> None:
+    from apprestore_gui.errors import IPATOOL_FALLBACK_TEXT, explain_ipatool_error
+
+    error = api.IpatoolError(api.ErrorCode.UNKNOWN, f"raw {EMAIL} guid=ABC")
+    error.message_ru = ""
+    text = explain_ipatool_error(error)
+    assert text == IPATOOL_FALLBACK_TEXT
+    assert EMAIL not in text and "raw" not in text

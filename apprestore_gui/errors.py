@@ -21,6 +21,8 @@ from apprestore_core.error_signal import (  # noqa: F401 - re-exported
 )
 from apprestore_core.license_gate import is_store_refusal
 
+IPATOOL_FALLBACK_TEXT = "ipatool не смог выполнить запрос. Повторите позже."
+
 STORE_REFUSED_TEXT = "Apple сейчас не выдаёт это приложение для вашего аккаунта."
 
 NOT_OWNED_TEXT = (
@@ -121,4 +123,8 @@ def explain_ipatool_error(error: BaseException) -> str:
     message = getattr(error, "message_ru", "")
     if isinstance(message, str) and message.strip():
         return message.strip()
+    if type(error).__name__ == "IpatoolError" or hasattr(error, "detail"):
+        # A typed ipatool error without a Russian text: never quote the raw
+        # ipatool output (it may carry account data) — fixed sentence only.
+        return IPATOOL_FALLBACK_TEXT
     return explain_user_error(str(error))

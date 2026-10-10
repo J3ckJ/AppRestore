@@ -1049,7 +1049,7 @@ def main(argv: list[str] | None = None) -> int:
             return _command_missing(service, args.udid, args.json)
         if args.command == "auth":
             if args.revoke:
-                service.tools.ipatool_revoke()
+                service.sign_out()
                 if args.json:
                     _json_dump({"revoked": True})
                 return 0
