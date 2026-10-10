@@ -22,12 +22,8 @@ SIGNED_IN = {
     "time": "2026-10-10T17:00:00+03:00",
 }
 
-MAKS_BINARY = Path(
-    os.environ.get(
-        "APPRESTORE_TEST_IPATOOL_COUNTRY",
-        "/workspace/apprestore/maks-scratch/ipatool-country-bin/ipatool",
-    )
-)
+# A locally built ipatool with patch 0001; the live check is skipped without it.
+MAKS_BINARY = Path(os.environ.get("APPRESTORE_TEST_IPATOOL_COUNTRY") or "bin/ipatool-with-0001")
 
 
 def test_signed_in_fixture_is_us() -> None:

@@ -430,9 +430,7 @@ def test_apple_failure_type_empty_on_success():
 
 def test_failure_type_refusal_not_written_to_journal(tmp_path):
     """FailureType 2040 (разный регистр) -> отказ -> в журнал НЕ попадает."""
-    import sys
-    sys.path.insert(0, "/workspace/apprestore/maks-share")
-    import license_guard as lg
+    from apprestore_core import license_guard as lg
 
     journal = tmp_path / "licenses_acquired.jsonl"
 
@@ -631,9 +629,7 @@ def test_session_alive_store_mismatch_is_not_expired():
 
 
 def test_store_mismatch_refusal_not_written_to_journal(tmp_path):
-    import sys
-    sys.path.insert(0, "/workspace/apprestore/maks-share")
-    import license_guard as lg
+    from apprestore_core import license_guard as lg
 
     journal = tmp_path / "licenses_acquired.jsonl"
 
