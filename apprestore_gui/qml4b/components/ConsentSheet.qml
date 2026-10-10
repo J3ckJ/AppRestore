@@ -1,7 +1,7 @@
 import QtQuick
 import "../theme"
 
-// Before a run: how many apps get a new free license on the Apple ID, and
+// Before a run (Ника 02 §5.2): how many apps get a new license on the Apple ID, and
 // how much of the 5/24 h · 15 total limit is left (license_guard.read_counts,
 // read again each time this sheet opens). Nothing starts until a choice.
 Sheet {
@@ -32,6 +32,14 @@ Sheet {
             wrapMode: Text.WordWrap
             text: root.c.names || ""
         }
+        Item { width: 1; height: 12 }
+        T {
+            objectName: "consentAbout"
+            token: "sheetSub"
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: root.c.about || ""
+        }
         Item { width: 1; height: 18 }
         Rectangle {
             width: parent.width
@@ -55,10 +63,11 @@ Sheet {
         InfoLine {
             id: warn
             maxWidth: col.width
-            visible: (root.c.warn || "") !== ""
+            objectName: "consentFine"
+            visible: (root.c.fine || "") !== ""
             wrap: true
             glyph: "info"
-            text: root.c.warn || ""
+            text: root.c.fine || ""
         }
         Item { width: 1; height: 8; visible: paid.visible }
         InfoLine {

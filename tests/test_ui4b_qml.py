@@ -287,7 +287,7 @@ def test_store_mismatch_screen_buttons(qapp) -> None:
     assert controller.home["state"] == "missing"
 
 
-# -- согласие на бесплатные лицензии ---------------------------------------------------
+# -- согласие на лицензии ---------------------------------------------------
 
 
 def _record(journal, n: int, prefix: str = "9") -> None:
@@ -314,7 +314,7 @@ def test_consent_numbers_are_read_counts_every_time(qapp, tmp_path) -> None:
     consent = _open_consent(qapp, controller, source)
     today, total = read_counts(journal)
     assert (consent["usedToday"], consent["usedTotal"]) == (today, total) == (2, 2)
-    assert consent["limit"] == f"Осталось на сегодня: {5 - today} из 5, всего: {15 - total} из 15."
+    assert consent["limit"] == f"Осталось сегодня — {5 - today} из 5 · Осталось всего — {15 - total} из 15"
     assert consent["k"] == 2
     assert not [c for c in source.calls if c[0] == "install_store"], "nothing starts before a choice"
     controller.consentCancel()
@@ -324,7 +324,7 @@ def test_consent_numbers_are_read_counts_every_time(qapp, tmp_path) -> None:
     consent = _open_consent(qapp, controller, source)
     today, total = read_counts(journal)
     assert (consent["usedToday"], consent["usedTotal"]) == (today, total) == (4, 4)
-    assert consent["limit"] == "Осталось на сегодня: 1 из 5, всего: 11 из 15."
+    assert consent["limit"] == "Осталось сегодня — 1 из 5 · Осталось всего — 11 из 15"
     engine, icons, warnings = open_window(qapp, controller)
     window = engine.rootObjects()[0]
     sheet = window.findChild(QQuickItem, "consentLimit")
@@ -560,7 +560,7 @@ def test_smoke12_17_continue_notice_then_plus_k_in_read_counts(qapp, tmp_path) -
 
     controller, source, journal, bought, notes, before, after = _run_choice(qapp, tmp_path, "consentContinue")
     k = 2
-    assert len(bought) == k and notes.count("Бесплатное приложение будет добавлено на ваш Apple ID.") == k
+    assert len(bought) == k and notes.count("Приложение будет добавлено на ваш Apple ID, если Apple его выдаст.") == k
     assert (after[0] - before[0], after[1] - before[1]) == (k, k)
     statuses = [json.loads(line)["status"] for line in journal.read_text(encoding="utf-8").splitlines()]
     assert statuses == ["acquired"] * k  # append-only, nothing extra
@@ -584,9 +584,9 @@ def test_smoke12_notice_visible_in_queue(qapp, tmp_path) -> None:
     controller = Restore4b(source)
     controller.primaryAction()
     wait(qapp, lambda: controller.flow.running)
-    source.progress.emit(-1, "Бесплатное приложение будет добавлено на ваш Apple ID.")
+    source.progress.emit(-1, "Приложение будет добавлено на ваш Apple ID, если Apple его выдаст.")
     rows = controller.home["queue"]
-    assert any("Бесплатное приложение будет добавлено" in str(r.get("detail")) for r in rows)
+    assert any("Приложение будет добавлено на ваш Apple ID, если Apple его выдаст" in str(r.get("detail")) for r in rows)
 
 
 def test_smoke5_no_password_or_code_in_ui_state(qapp) -> None:

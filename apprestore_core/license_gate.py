@@ -14,7 +14,7 @@ AppRestore sends it only from here, and only like this:
    purchase and its journal line run under one cross-process file lock
    (``license_journal.acquire_and_record`` → Макс's ``acquire_and_record``,
    ``<journal>.lock``); the download runs after it is released.
-4. ``notify(LICENSE_NOTICE)`` — «бесплатное приложение будет добавлено…».
+4. ``notify(LICENSE_NOTICE)`` — «Приложение будет добавлено на ваш Apple ID, если Apple его выдаст.»
 5. A separate ``ipatool purchase`` with a one-shot ``PurchaseGrant`` (R2:
    ``download`` never carries ``--purchase``).
    * success → journal ``acquired`` right away;
@@ -49,9 +49,9 @@ from .service import AppRestoreError
 
 T = TypeVar("T")
 
-LICENSE_NOTICE = "Бесплатное приложение будет добавлено на ваш Apple ID."
-#: §1.14 (price unknown, region_probe flag): never «бесплатное».
-REGION_NOTICE = "Приложение будет добавлено на ваш Apple ID, если Apple его выдаст."
+#: Ника 01 §… / 02 §5.3 (Лена): one notice for every license; no «бесплатно» on the license path.
+LICENSE_NOTICE = "Приложение будет добавлено на ваш Apple ID, если Apple его выдаст."
+REGION_NOTICE = LICENSE_NOTICE  # §1.14 path: the same text
 _NOT_OWNED = "Этого приложения нет на вашем Apple ID (нет лицензии)"
 UNKNOWN_COUNTRY_TEXT = (
     f"{_NOT_OWNED}. Не удалось определить страну аккаунта Apple ID, поэтому "
@@ -104,13 +104,15 @@ def is_needs_patched(message: str) -> bool:
     return NEEDS_PATCHED_IPATOOL_TEXT.casefold() in (message or "").casefold()
 #: Start of refusal_text() for the limit: front ends match it to list the app
 #: under «не хватило лимита».
-LIMIT_REFUSAL_TEXT = "Лимит бесплатных лицензий исчерпан"
+LIMIT_REFUSAL_TEXT = "Лимит лицензий исчерпан"
+_OLD_LIMIT_REFUSAL_TEXT = "Лимит бесплатных лицензий исчерпан"  # still recognised
 
 
 def is_limit_refusal(message: str) -> bool:
     """The gate refused because the 5/24 h or 15 total limit is used up."""
 
-    return LIMIT_REFUSAL_TEXT.casefold() in (message or "").casefold()
+    folded = (message or "").casefold()
+    return LIMIT_REFUSAL_TEXT.casefold() in folded or _OLD_LIMIT_REFUSAL_TEXT.casefold() in folded
 
 
 def is_store_mismatch(message: str) -> bool:
@@ -164,7 +166,7 @@ def lookup_offer(store_id: str, countries: tuple[str, ...]) -> dict[str, object]
 def refusal_text(verdict: Verdict) -> str:
     reason = verdict.reason.casefold()
     if "платное" in reason:
-        return f"{_NOT_OWNED}. Это платное приложение: AppRestore получает только бесплатные."
+        return f"{_NOT_OWNED}. Это платное приложение: на платные AppRestore лицензию не берёт."
     if "цена" in reason:
         return (
             f"{_NOT_OWNED}. Apple не показывает его цену "

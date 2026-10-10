@@ -6,7 +6,7 @@ Apple ID are counted once:
 * «нет на аккаунте» — the store id is not in the purchase history
   (``list-purchases`` through ``ipatool_api.all_purchases`` /
   ``iter_purchases``, the same list ``purchases.py`` keeps);
-* «бесплатное» — price 0 in iTunes lookup in the account's country.
+* «цена 0» — price 0 in iTunes lookup in the account's country (user texts never say «бесплатно»).
 
 K = apps that are both. Paid apps that are not on the account never enter the
 run (AppRestore does not take paid ones). K = 0 → no sheet.
@@ -32,6 +32,11 @@ from .formatting import join_names, plural
 
 #: Consent line when K holds region_probe-flagged apps with an unknown price (§1.14).
 ATTEMPT_NOTE = "Если приложение окажется платным, Apple откажет в выдаче. Отказ лимит не тратит"
+
+ABOUT = (
+    "Это то же, что нажать «Получить» в App Store: деньги не списываются, приложения останутся "
+    "в ваших покупках. Лицензию берём для каждого приложения отдельно."
+)
 
 CONTINUE = "continue"
 OWNED_ONLY = "owned_only"
@@ -119,20 +124,18 @@ def consent_view(
     k = plan.k
     fits = min(left_today, left_total)
     flagged = any(i.store_status for i in plan.need)
-    lead = (
-        f"Для {k} {plural(k, 'приложения', 'приложений', 'приложений')} программа возьмёт "
-        # §1.14: with region_probe-flagged apps in K the price is unknown — no «бесплатн…»
-        + ("лицензию на ваш Apple ID." if flagged else "бесплатную лицензию на ваш Apple ID.")
-    )
+    # Ника 02 §5.2: K inside the sentence (genitive plural), never «бесплатную» (Лена)
+    lead = f"Для {k} {plural(k, 'приложения', 'приложений', 'приложений')} программа возьмёт лицензию на ваш Apple ID."
+    base_fine = "Уже купленные и сгруженные в лимит не входят."
     warn = ""
     if fits == 0:
-        warn = "Лимит бесплатных лицензий исчерпан: эти приложения не вернём, они будут в итоге списком «не хватило лимита»."
+        fine = "Сегодня лицензий больше нет. Поставим только то, что не требует лицензии."
+        warn = fine
     elif k > fits:
-        rest = k - fits
-        warn = (
-            f"Лимита хватит на {fits}: ещё {rest} {plural(rest, 'приложение', 'приложения', 'приложений')} "
-            "не вернём, они будут в итоге списком «не хватило лимита»."
-        )
+        fine = f"Сегодня хватит на {fits} из {k}. Остальные не тронем и покажем в итоге, сами на завтра не ставим. {base_fine}"
+        warn = fine
+    else:
+        fine = base_fine
     attempt = ""
     if flagged:
         # LEGAL §1.14: unknown price, region_probe flag — say what Apple may do
@@ -142,11 +145,13 @@ def consent_view(
         paid = f"Платные не возвращаем: {join_names([i.label for i in plan.paid])}."
     return {
         "open": True,
-        "title": "Бесплатные лицензии",
+        "title": "Перед началом",
+        "about": ABOUT,
+        "fine": fine,
         "k": k,
         "lead": lead,
         "names": join_names([i.label for i in plan.need], limit=6),
-        "limit": f"Осталось на сегодня: {left_today} из {daily_limit}, всего: {left_total} из {total_limit}.",
+        "limit": f"Осталось сегодня — {left_today} из {daily_limit} · Осталось всего — {left_total} из {total_limit}",
         "leftToday": left_today,
         "leftTotal": left_total,
         "usedToday": used_today,

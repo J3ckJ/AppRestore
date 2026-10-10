@@ -774,7 +774,7 @@ def test_svg_icons_use_theme_colours() -> None:
             assert f'"{full}"' in theme, f"{path.name}: {colour} is not a Theme colour"
 
 
-# -- бесплатные лицензии: план и экран согласия --------------------------------------------
+# -- лицензии: план и экран согласия --------------------------------------------
 
 
 def test_plan_licenses_counts_only_free_and_not_owned() -> None:
@@ -801,13 +801,20 @@ def test_consent_view_texts_from_counts() -> None:
 
     plan = licenses.plan_licenses(removed4(), set(), {i.store_id: 0 for i in removed4()})
     v = licenses.consent_view(plan, (2, 9))
-    assert v["lead"] == "Для 4 приложений программа возьмёт бесплатную лицензию на ваш Apple ID."
-    assert v["limit"] == "Осталось на сегодня: 3 из 5, всего: 6 из 15."
-    assert v["warn"].startswith("Лимита хватит на 3: ещё 1 приложение не вернём")
+    # Ника 02 §5.2: K inside the sentence, no «бесплатн…» on any license text
+    assert v["lead"] == "Для 4 приложений программа возьмёт лицензию на ваш Apple ID."
+    assert v["title"] == "Перед началом"
+    assert v["about"].startswith("Это то же, что нажать «Получить» в App Store")
+    assert v["limit"] == "Осталось сегодня — 3 из 5 · Осталось всего — 6 из 15"
+    assert v["fine"].startswith("Сегодня хватит на 3 из 4. Остальные не тронем и покажем в итоге")
+    assert "бесплатн" not in repr(v).casefold()
     assert (v["go"], v["owned"], v["cancel"]) == ("Продолжить", "Только уже купленные", "Отмена")
     one = licenses.plan_licenses(removed4()[:1], set(), {removed4()[0].store_id: 0})
-    assert licenses.consent_view(one, (0, 0))["lead"].startswith("Для 1 приложения ")
-    assert licenses.consent_view(one, (5, 5))["warn"].startswith("Лимит бесплатных лицензий исчерпан")
+    assert licenses.consent_view(one, (0, 0))["lead"] == "Для 1 приложения программа возьмёт лицензию на ваш Apple ID."
+    assert licenses.consent_view(one, (0, 0))["fine"] == "Уже купленные и сгруженные в лимит не входят."
+    assert licenses.consent_view(one, (5, 5))["fine"] == "Сегодня лицензий больше нет. Поставим только то, что не требует лицензии."
+    two = licenses.plan_licenses(removed4()[:2], set(), {i.store_id: 0 for i in removed4()[:2]})
+    assert licenses.consent_view(two, (0, 0))["lead"].startswith("Для 2 приложений ")
     assert licenses.consent_view(one, (0, 0))["ownedEnabled"] is False
 
 
@@ -830,7 +837,7 @@ def test_limit_refusal_goes_to_not_enough_limit_and_others_continue() -> None:
     assert [c[1] for c in backend.calls] == [i.store_id for i in items]  # each through the gate
     view = home_view(HomeInput(connected=True, signed_in=True, items=items, queue=flow.queue))
     assert view["state"] == "done"
-    assert "На Т-Банк и ВТБ не хватило лимита бесплатных лицензий." in view["lead"]
+    assert "На Т-Банк и ВТБ не хватило лимита лицензий." in view["lead"]
     assert "Платные не возвращаем: <b>Тинькофф Про</b>" in view["lead"]
     assert "поставим завтра" not in view["lead"] and "Сами на завтра не ставим." in view["lead"]
 
@@ -913,7 +920,7 @@ def test_limit_total_summary_has_no_time_and_explains() -> None:
     items = removed4()
     flow.begin(items, DeviceSpace(128 * GB, 50 * GB))
     for i, it in enumerate(items):
-        flow.on_install_settled(it.store_id, i != 3, "Лимит бесплатных лицензий исчерпан: всего 15/15")
+        flow.on_install_settled(it.store_id, i != 3, "Лимит лицензий исчерпан: всего 15/15")
     v = home_view(HomeInput(connected=True, signed_in=True, items=items, queue=flow.queue, limit_total=True))
     assert "Для Альфа лицензий больше нет." in v["lead"] and "освободится" not in v["lead"]
     assert "сгруженные возвращаются как обычно" in v["fine"]

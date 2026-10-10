@@ -313,12 +313,12 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             if inp.limit_total:
                 lead = (lead + " " if lead else "") + f"Для {names} лицензий больше нет."
                 view["fine"] = (
-                    "На этом компьютере AppRestore уже взял 15 бесплатных лицензий — это общий предел, "
+                    "На этом компьютере AppRestore уже взял 15 лицензий — это общий предел, "
                     "новых он больше не берёт. Приложения, которые уже есть на вашем Apple ID, "
                     "и сгруженные возвращаются как обычно."
                 )
             else:
-                lead = (lead + " " if lead else "") + f"На {names} не хватило лимита бесплатных лицензий."
+                lead = (lead + " " if lead else "") + f"На {names} не хватило лимита лицензий."
                 if inp.limit_note:
                     lead += f" {inp.limit_note}."
                 lead += " Сами на завтра не ставим."

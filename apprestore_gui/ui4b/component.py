@@ -35,7 +35,7 @@ def details_text(missing: Iterable[str]) -> str:
     parts = [what[name] for name in missing if name in what] or ["без нужных дополнений"]
     return (
         "Для удалённых из App Store AppRestore использует ipatool со своими дополнениями. "
-        "Сейчас установлен ipatool " + " и ".join(parts) + ", поэтому новые бесплатные лицензии "
+        "Сейчас установлен ipatool " + " и ".join(parts) + ". Поэтому новые лицензии "
         "не берутся. Сгруженные и уже купленные приложения это не затрагивает."
     )
 
