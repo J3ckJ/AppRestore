@@ -75,16 +75,25 @@ _STORE_REFUSAL = (
 )
 #: failureType / FailureType with a numeric code, or a customerMessage field:
 #: only Apple's own answer carries these.
-_STORE_REFUSAL_FIELD = re.compile(r"failuretype\W{0,4}\d+|customermessage")
+_STORE_REFUSAL_FIELD = re.compile(r"failuretype\W{0,4}-?\d+|customermessage")
+#: The app is not sold in the Apple ID's store (failureType -128).
+_STORE_MISMATCH = ("account not in this store",)
 #: A bare 2040 counts only inside ipatool's purchase failure line.
 _BARE_2040 = re.compile(r"\b2040\b")
+
+
+def is_store_mismatch(message: str) -> bool:
+    """Apple's "Account Not In This Store" (failureType -128), case-insensitive."""
+
+    text = (message or "").casefold()
+    return any(hint in text for hint in _STORE_MISMATCH)
 
 
 def is_store_refusal(message: str) -> bool:
     """True when Apple explicitly refused the purchase (case-insensitive)."""
 
     text = (message or "").casefold()
-    if any(hint in text for hint in _STORE_REFUSAL):
+    if any(hint in text for hint in _STORE_REFUSAL) or is_store_mismatch(text):
         return True
     if _STORE_REFUSAL_FIELD.search(text):
         return True

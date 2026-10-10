@@ -19,11 +19,12 @@ from apprestore_core.error_signal import (  # noqa: F401 - re-exported
     _signal,
     is_license_missing,
 )
-from apprestore_core.license_gate import is_store_refusal
+from apprestore_core.license_gate import is_store_mismatch, is_store_refusal
 
 IPATOOL_FALLBACK_TEXT = "ipatool не смог выполнить запрос. Повторите позже."
 
 STORE_REFUSED_TEXT = "Apple сейчас не выдаёт это приложение для вашего аккаунта."
+STORE_MISMATCH_TEXT = "Приложение недоступно в магазине страны вашего Apple ID."
 
 NOT_OWNED_TEXT = (
     "Этого приложения нет на вашем Apple ID (нет лицензии). "
@@ -59,6 +60,8 @@ def explain_user_error(message: str) -> str:
         return "iPhone не ответил. Разблокируйте его и подключите кабелем ещё раз."
     if "purchasing paid apps is not supported" in low:
         return "Платное приложение без оплаты не ставится."
+    if is_store_mismatch(low):
+        return STORE_MISMATCH_TEXT
     if is_store_refusal(low):
         return STORE_REFUSED_TEXT
     if "valid apple id email" in low:
