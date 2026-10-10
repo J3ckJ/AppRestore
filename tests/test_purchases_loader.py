@@ -42,10 +42,12 @@ class Runner:
         self.entered: dict[int, threading.Event] = {}
         self.total = total
 
-    def __call__(self, argv, timeout):
+    def __call__(self, argv, timeout, env=None, stdin=None):
         argv = list(argv)
-        self.calls.append(argv)
         sub = argv[1]
+        if sub == "--help":  # newer ipatool_api probes --keychain-passphrase-stdin support
+            return api.RunResult(0, "Usage: ipatool [command]\n", "")
+        self.calls.append(argv)
         if sub == "list-purchases":
             if "--all" in argv:
                 answer = self.answers.get("all")

@@ -12,6 +12,8 @@
 #   signed-in account's raw storeFront and its ISO countryCode. Read-only.
 #   0002-ipatool-list-purchases-all.patch - `list-purchases --all` returns the
 #   whole purchase history in one call; without the flag nothing changes.
+#   0003-ipatool-keychain-passphrase-env-stdin.patch - keychain passphrase via
+#   --keychain-passphrase-stdin (AppRestore uses only this; never argv/env).
 #
 # The archive is reproducible: packaging/pack_ipatool.py writes it with a fixed
 # mtime (SOURCE_DATE_EPOCH, else the commit time of $commit), uid/gid 0 and a
@@ -87,6 +89,7 @@ sha256_of() {
 patches=(
   "0001-ipatool-auth-info-country.patch:05d87977a554102c9b036306ec2c125febaa62433d2a080d588527a8225b7fb8"
   "0002-ipatool-list-purchases-all.patch:025d9919871dba636a80559614a3ca402c37cf2be6965fb7a3203f4088e54445"
+  "0003-ipatool-keychain-passphrase-env-stdin.patch:bf4d5d065e699e7467a253e41076674f6b6a626fc445052b11a6738cbf62f392"
 )
 for entry in "${patches[@]}"; do
   patch_name="${entry%%:*}"
@@ -135,12 +138,14 @@ fi
 # contain them). The exported appstore.CountryCodeFromStoreFront symbol exists
 # only after the auth info country patch ("countryCode" alone is already in
 # v2.6.0, so it cannot serve as a marker; the build does not strip symbols).
-# The --all sentence exists only after the list-purchases --all patch.
+# The --all sentence exists only after the list-purchases --all patch;
+# keychain-passphrase-stdin only after the passphrase patch.
 for marker in \
   "too many authentication redirects" \
   "unsupported authentication redirect status" \
   "appstore.CountryCodeFromStoreFront" \
-  "--all cannot be combined with --page or --max-results"
+  "--all cannot be combined with --page or --max-results" \
+  "keychain-passphrase-stdin"
 do
   if ! grep -a -F -q -e "$marker" "$stage/bin/$name"; then
     echo "built ipatool is missing an expected fix: $marker" >&2

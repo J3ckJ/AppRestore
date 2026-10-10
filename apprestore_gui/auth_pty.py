@@ -20,7 +20,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from apprestore_core.command import CommandError, Runner, windows_creationflags
+from apprestore_core.command import CommandError, Runner, child_env, windows_creationflags
 from apprestore_core.models import CommandResult
 from apprestore_core.tools import AppRestoreTools
 
@@ -95,7 +95,7 @@ def _login_posix(
     import pty
 
     master, slave = pty.openpty()
-    env = os.environ.copy()
+    env = child_env()
     env.setdefault("TERM", "xterm-256color")
     proc = subprocess.Popen(
         cmd,
@@ -441,9 +441,7 @@ def run_pty_command(
     pty_process = _load_pty_process()
     if pty_process is None:
         return CommandResult(command, 127, "", "pywinpty is not installed")
-    process_env = os.environ.copy()
-    if env:
-        process_env.update(env)
+    process_env = child_env(env)
     process_env.setdefault("TERM", "xterm-256color")
     try:
         proc = pty_process.spawn(
@@ -604,8 +602,7 @@ def probe_keychain() -> str:
     ipatool = _which_ipatool()
     if not ipatool:
         return "out"
-    env = os.environ.copy()
-    env.update(AppRestoreTools()._ipatool_env())
+    env = child_env(AppRestoreTools()._ipatool_env())
     flags = windows_creationflags() if sys.platform == "win32" else 0
     try:
         proc = subprocess.run(
@@ -737,8 +734,7 @@ def _drive_windows_unlock(
             on_status(text)
 
     say("Открываем сохранённую сессию. Пароль Apple ID для этого не нужен.")
-    env = os.environ.copy()
-    env.update(AppRestoreTools()._ipatool_env())
+    env = child_env(AppRestoreTools()._ipatool_env())
     env.setdefault("TERM", "xterm-256color")
     try:
         proc = pty_process.spawn(
@@ -860,8 +856,7 @@ def _drive_windows_login(
             on_status(text)
 
     say("Проверяем, открывается ли сервер Apple…")
-    env = os.environ.copy()
-    env.update(AppRestoreTools()._ipatool_env())
+    env = child_env(AppRestoreTools()._ipatool_env())
     env.setdefault("TERM", "xterm-256color")
     if not _apple_login_host_reachable(env):
         return AuthResult(

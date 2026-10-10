@@ -177,6 +177,23 @@ def _parent_has_no_console() -> bool:
         return False
 
 
+#: Never handed to a child process: the keychain passphrase goes only through
+#: ``--keychain-passphrase-stdin`` (patched ipatool) or the hidden terminal.
+SECRET_ENV_NAMES = frozenset({"IPATOOL_KEYCHAIN_PASSPHRASE", "APPRESTORE_BENCH_KEYCHAIN_PASSPHRASE"})
+
+
+def child_env(extra: Mapping[str, str] | None = None) -> dict[str, str]:
+    """``os.environ`` + ``extra`` without secrets (see SECRET_ENV_NAMES)."""
+
+    env = os.environ.copy()
+    if extra:
+        env.update(extra)
+    for name in list(env):
+        if name.upper() in SECRET_ENV_NAMES:
+            del env[name]
+    return env
+
+
 def windows_creationflags(*, no_console: bool | None = None) -> int:
     """Process-creation flags for console children on Windows.
 
@@ -216,9 +233,7 @@ class Runner:
         env: Mapping[str, str] | None = None,
     ) -> CommandResult:
         command = tuple(str(arg) for arg in args)
-        process_env = os.environ.copy()
-        if env:
-            process_env.update(env)
+        process_env = child_env(env)
         if capture:
             process_env.setdefault("NO_COLOR", "1")
 

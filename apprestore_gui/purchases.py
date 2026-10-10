@@ -19,6 +19,7 @@ from __future__ import annotations
 import inspect
 import os
 import subprocess
+import sys
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -99,8 +100,11 @@ class SessionChecker:
         on_result: Callable[[SessionView], None],
         *,
         timeout: float = SESSION_TIMEOUT_S,
+        fallback_factory: ClientFactory | None = None,
     ) -> None:
         self._factory = client_factory
+        #: Client on the hidden terminal, for PASSPHRASE_NO_SECURE_METHOD.
+        self._fallback = fallback_factory
         self._on_result = on_result
         self._timeout = timeout
         self._lock = threading.Lock()
@@ -128,7 +132,13 @@ class SessionChecker:
 
     def _run(self) -> None:
         try:
-            view = session_view(self._factory().session_alive(timeout=self._timeout))
+            try:
+                check = self._factory().session_alive(timeout=self._timeout)
+            except Exception as exc:  # noqa: BLE001
+                if not (is_no_secure_method(exc) and self._fallback is not None):
+                    raise
+                check = self._fallback().session_alive(timeout=self._timeout)
+            view = session_view(check)
         except Exception as exc:  # noqa: BLE001 - shown as a state, never raised into Qt
             view = session_error_view(exc)
         with self._lock:
@@ -188,9 +198,11 @@ class PurchasesLoader:
         on_change: Callable[[PurchasesView], None],
         *,
         fetch_all: bool | None = None,
+        fallback_factory: ClientFactory | None = None,
     ) -> None:
         self._cache = cache
         self._factory = client_factory
+        self._fallback = fallback_factory
         self._on_change = on_change
         self.fetch_all = FETCH_ALL if fetch_all is None else fetch_all
         self._lock = threading.Lock()
@@ -326,6 +338,23 @@ class PurchasesLoader:
             kwargs[FETCH_ALL_KEYWORD] = bool(self.fetch_all)
         return client.iter_purchases(cancel, **kwargs)
 
+    def _pages_secure(self, client: Any, cancel: threading.Event):
+        """Pages; on PASSPHRASE_NO_SECURE_METHOD (old ipatool) retry on the
+        hidden-terminal client before anything was yielded."""
+
+        try:
+            pages = self._pages(client, cancel)
+            first = next(pages, None)
+        except Exception as exc:  # noqa: BLE001
+            if not (is_no_secure_method(exc) and self._fallback is not None):
+                raise
+            pages = self._pages(self._fallback(), cancel)
+            first = next(pages, None)
+        if first is None:
+            return
+        yield first
+        yield from pages
+
     def _load(self, run: _Run) -> None:
         snapshot = self._cache.load(run.account)
         cached = list(snapshot.items) if snapshot is not None else []
@@ -351,7 +380,7 @@ class PurchasesLoader:
         finished = False
         try:
             client = self._factory()
-            for page in self._pages(client, run.cancel):
+            for page in self._pages_secure(client, run.cancel):
                 for purchase in page.items:
                     item = CachedPurchase.from_purchase(purchase)
                     if item.track_id in seen:
@@ -445,47 +474,165 @@ class PurchasesLoader:
 # --------------------------------------------------------------------------
 
 
+#: ``ipatool_api`` error code (Макс's next version) meaning "this ipatool has
+#: no way to take the passphrase except argv/env". We then use the hidden
+#: terminal instead.
+NO_SECURE_METHOD = "passphrase_no_secure_method"
+STDIN_FLAG = "--keychain-passphrase-stdin"
+_STDIN_SUPPORT: dict[str, bool] = {}
+_STDIN_LOCK = threading.Lock()
+
+
+def _creationflags() -> int:
+    """Hide the console window on Windows; 0 elsewhere (POSIX rejects flags)."""
+
+    if sys.platform != "win32":
+        return 0
+    from apprestore_core.command import windows_creationflags
+
+    return windows_creationflags()
+
+
+def is_no_secure_method(error: BaseException) -> bool:
+    code = getattr(error, "code", None)
+    return str(getattr(code, "value", code) or "") == NO_SECURE_METHOD
+
+
+def supports_passphrase_stdin(binary: str, *, run: Callable[..., Any] | None = None) -> bool:
+    """Does this ipatool take ``--keychain-passphrase-stdin`` (patch 0003)?
+
+    Asked once per binary with ``ipatool --help`` (no secret involved).
+    """
+
+    with _STDIN_LOCK:
+        if binary in _STDIN_SUPPORT:
+            return _STDIN_SUPPORT[binary]
+    from apprestore_core.command import child_env
+
+    try:
+        completed = (run or subprocess.run)(  # noqa: S603
+            [binary, "--help"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            env=child_env(),
+            creationflags=_creationflags(),
+        )
+        text = f"{completed.stdout or ''}{completed.stderr or ''}"
+        supported = STDIN_FLAG in text
+    except (OSError, subprocess.SubprocessError):
+        supported = False
+    with _STDIN_LOCK:
+        _STDIN_SUPPORT[binary] = supported
+    return supported
+
+
+def strip_passphrase_args(argv: Sequence[str]) -> tuple[list[str], str]:
+    """Remove ``--keychain-passphrase X`` / ``--keychain-passphrase=X``.
+
+    Returns the clean argv and the removed value (used as the secret if the
+    GUI did not hold one). Our client is built without a passphrase, so this
+    is a guard: a passphrase never reaches a child's argv.
+    """
+
+    clean: list[str] = []
+    found = ""
+    skip = False
+    for arg in argv:
+        if skip:
+            found = found or str(arg)
+            skip = False
+            continue
+        text = str(arg)
+        if text == "--keychain-passphrase":
+            skip = True
+            continue
+        if text.startswith("--keychain-passphrase="):
+            found = found or text.split("=", 1)[1]
+            continue
+        clean.append(text)
+    return clean, found
+
+
 def gui_runner(
     passphrase_of: Callable[[], str],
     env_of: Callable[[], Mapping[str, str]],
-) -> Callable[[Sequence[str], float], RunResult]:
-    """``runner`` for ``IpatoolClient`` that keeps the GUI's rules.
+    *,
+    force_pty: bool = False,
+    stdin_supported: Callable[[str], bool] = supports_passphrase_stdin,
+) -> Callable[..., RunResult]:
+    """``runner`` for ``IpatoolClient`` that keeps the product's rules.
 
-    * The keychain passphrase never goes into argv: the client is built with
-      ``keychain_passphrase=""`` and, when the GUI holds a passphrase, the
-      call runs on the hidden ConPTY/pty that answers ipatool's prompt
-      (``--non-interactive`` is dropped for that call only, otherwise ipatool
-      would refuse to ask).
-    * The system proxy environment of ``AppRestoreTools`` is passed on.
+    Invariants (Лена/Облачко): the keychain passphrase is never in a child's
+    argv and never in its environment.
+
+    * env: built by ``command.child_env`` (os.environ + the system proxy env
+      of ``AppRestoreTools`` + whatever the client passed), with
+      IPATOOL_KEYCHAIN_PASSPHRASE / APPRESTORE_BENCH_KEYCHAIN_PASSPHRASE
+      removed even if the user has them set.
+    * argv: any ``--keychain-passphrase`` pair is stripped.
+    * secret, patched ipatool (``--keychain-passphrase-stdin`` in ``--help``):
+      the flag is added and the passphrase is written to stdin.
+    * secret, old ipatool (or ``force_pty``): the hidden ConPTY/pty answers
+      ipatool's prompt; ``--non-interactive`` is dropped for that call only.
+
+    Accepts Макс's runner signatures: ``(argv, timeout)``,
+    ``(argv, timeout, env)`` and ``(argv, timeout, env, stdin=None)``.
     """
 
-    def run(argv: Sequence[str], timeout: float) -> RunResult:
+    from apprestore_core.command import child_env
+
+    def run(
+        argv: Sequence[str],
+        timeout: float,
+        env: Mapping[str, str] | None = None,
+        stdin: str | None = None,
+    ) -> RunResult:
+        args, from_argv = strip_passphrase_args(argv)
         extra = dict(env_of() or {})
-        secret = passphrase_of()
+        if env:
+            # Only what the client added on top of os.environ.
+            extra.update({k: v for k, v in env.items() if os.environ.get(k) != v})
+        process_env = child_env(extra)
+        secret = (stdin or "") or passphrase_of() or from_argv
+        if secret and STDIN_FLAG not in args and not force_pty and stdin_supported(args[0]):
+            args = [*args, STDIN_FLAG]
+        if secret and STDIN_FLAG in args:
+            completed = subprocess.run(  # noqa: S603 - fixed argv from IpatoolClient
+                args,
+                input=secret + "\n",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                env=process_env,
+                creationflags=_creationflags(),
+            )
+            return RunResult(completed.returncode, completed.stdout, completed.stderr)
         if secret:
             from apprestore_gui.auth_pty import run_pty_command
 
-            args = [arg for arg in argv if arg != "--non-interactive"]
+            args = [arg for arg in args if arg != "--non-interactive"]
             result = run_pty_command(args, passphrase=secret, timeout=timeout, env=extra)
             if result.returncode == 124 and "timed out" in (result.stderr or ""):
                 raise subprocess.TimeoutExpired(args, timeout)
             if result.returncode == 127 and not result.stdout:
                 raise FileNotFoundError(args[0])
             return RunResult(result.returncode, result.stdout or "", result.stderr or "")
-        from apprestore_core.command import windows_creationflags
-
-        env = os.environ.copy()
-        env.update(extra)
         completed = subprocess.run(  # noqa: S603 - fixed argv from IpatoolClient
-            list(argv),
+            args,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            env=env,
-            creationflags=windows_creationflags(),
+            env=process_env,
+            creationflags=_creationflags(),
         )
         return RunResult(completed.returncode, completed.stdout, completed.stderr)
 

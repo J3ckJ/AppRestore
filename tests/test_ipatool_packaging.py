@@ -91,12 +91,17 @@ def test_patch_pins_match_files_and_order() -> None:
     assert [name for name, _ in entries] == [
         "0001-ipatool-auth-info-country.patch",
         "0002-ipatool-list-purchases-all.patch",
+        "0003-ipatool-keychain-passphrase-env-stdin.patch",
     ]
     patches = ROOT / "packaging" / "patches"
     for name, pinned in entries:
         assert hashlib.sha256((patches / name).read_bytes()).hexdigest() == pinned, name
     assert sorted(p.name for p in patches.glob("*.patch")) == [name for name, _ in entries]
-    for marker in ("appstore.CountryCodeFromStoreFront", "--all cannot be combined with --page or --max-results"):
+    for marker in (
+        "appstore.CountryCodeFromStoreFront",
+        "--all cannot be combined with --page or --max-results",
+        "keychain-passphrase-stdin",
+    ):
         assert f'"{marker}"' in script
 
 

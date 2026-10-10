@@ -56,10 +56,14 @@ class FakeRunner:
         self.answers = list(answers)
         self.calls: list[list[str]] = []
         self.timeouts: list[float] = []
+        self.envs: list[dict] = []
+        self.stdins: list = []
 
-    def __call__(self, argv, timeout):
+    def __call__(self, argv, timeout, env, stdin=None):
         self.calls.append(list(argv))
         self.timeouts.append(timeout)
+        self.envs.append(dict(env))
+        self.stdins.append(stdin)
         answer = self.answers.pop(0)
         if isinstance(answer, BaseException):
             raise answer
@@ -72,8 +76,8 @@ def ok(stdout: str) -> api.RunResult:
     return api.RunResult(0, stdout, "")
 
 
-def client(runner) -> api.IpatoolClient:
-    return api.IpatoolClient("/x/ipatool", keychain_passphrase=PASS, runner=runner)
+def client(runner, via: str = "env") -> api.IpatoolClient:
+    return api.IpatoolClient("/x/ipatool", keychain_passphrase=PASS, runner=runner, passphrase_via=via, base_env={"PATH": "/usr/bin"})
 
 
 # ---------------------------------------------------------------- session_alive
@@ -289,3 +293,211 @@ def test_account_info_old_binary_has_no_country():
 
 def test_every_code_has_russian_text():
     assert set(api.MESSAGES_RU) == set(api.ErrorCode)
+
+
+# ------------------------------------------------- passphrase via env (patch 0003)
+
+HELP_PATCHED = ok("Global Flags:\n      --keychain-passphrase string\n      --keychain-passphrase-stdin   read the keychain passphrase from the first line of stdin\n")
+HELP_OLD = ok("Global Flags:\n      --keychain-passphrase string   passphrase for unlocking keychain\n")
+
+
+def test_auto_patched_ipatool_uses_stdin_not_env_not_flag():
+    # Патченый бинарник: auto -> stdin. Пароль НЕ в argv и НЕ в env ребёнка.
+    runner = FakeRunner(HELP_PATCHED, ok(LIST_VERSIONS_OK), ok(LIST_VERSIONS_OK))
+    c = client(runner, via="auto")
+    assert c.passphrase_method() == "stdin"
+    assert c.session_alive().state is api.SessionState.ALIVE
+    assert c.session_alive().state is api.SessionState.ALIVE
+    assert runner.calls[0] == ["/x/ipatool", "--help"]
+    assert api.PASSPHRASE_ENV not in runner.envs[0], "help probe must not get the passphrase"
+    assert runner.stdins[0] is None, "help probe gets no stdin secret"
+    assert len([c for c in runner.calls if c[-1] == "--help"]) == 1, "capability is probed once"
+    for argv, env, stdin in zip(runner.calls[1:], runner.envs[1:], runner.stdins[1:]):
+        assert PASS not in argv
+        assert "--keychain-passphrase" not in argv       # не флаг
+        assert "--keychain-passphrase-stdin" in argv      # а stdin-флаг
+        assert api.PASSPHRASE_ENV not in env              # не env
+        assert env["PATH"] == "/usr/bin"
+        assert stdin == PASS                              # секрет идёт по stdin
+
+
+def test_auto_old_ipatool_has_no_secure_method():
+    # Старый бинарник: auto НЕ использует ни флаг, ни env -> типизированный сигнал.
+    runner = FakeRunner(HELP_OLD, ok(LIST_VERSIONS_OK))
+    c = client(runner, via="auto")
+    assert c.passphrase_method() == "none"
+    with pytest.raises(api.IpatoolError) as ei:
+        c.account_info()                      # _call пробрасывает ошибку наружу
+    assert ei.value.code is api.ErrorCode.PASSPHRASE_NO_SECURE_METHOD
+    # дошли только до --help probe, настоящую команду не звали
+    assert [call for call in runner.calls if call[-1] != "--help"] == []
+
+
+def test_auto_help_probe_failure_means_no_secure_method():
+    runner = FakeRunner(FileNotFoundError())
+    c = client(runner, via="auto")
+    assert c.passphrase_method() == "none"
+    assert c.passphrase_uses_env() is False
+
+
+def test_explicit_flag_uses_keychain_passphrase_flag():
+    # Явный flag (bench): используется --keychain-passphrase, env/stdin не трогаем.
+    runner = FakeRunner(ok(LIST_VERSIONS_OK))
+    c = client(runner, via="flag")
+    assert c.passphrase_method() == "flag"
+    assert c.session_alive().state is api.SessionState.ALIVE
+    argv, env, stdin = runner.calls[0], runner.envs[0], runner.stdins[0]
+    assert argv[argv.index("--keychain-passphrase") + 1] == PASS
+    assert api.PASSPHRASE_ENV not in env
+    assert stdin is None
+    # flag-режим не зовёт --help probe
+    assert all(call[-1] != "--help" for call in runner.calls)
+
+
+def test_explicit_env_puts_passphrase_in_env():
+    # Явный env (bench): пароль в env ребёнка, не в argv, не в stdin.
+    runner = FakeRunner(ok(LIST_VERSIONS_OK))
+    c = client(runner, via="env")
+    assert c.passphrase_method() == "env"
+    assert c.session_alive().state is api.SessionState.ALIVE
+    argv, env, stdin = runner.calls[0], runner.envs[0], runner.stdins[0]
+    assert PASS not in argv and "--keychain-passphrase" not in argv
+    assert env[api.PASSPHRASE_ENV] == PASS
+    assert stdin is None
+
+
+def test_stdin_mode_strips_inherited_env_passphrase():
+    # stdin-режим: даже если в окружении лежит другой пароль, ребёнку его не отдаём
+    # (stdin перебивает env; клиент не наследует IPATOOL_KEYCHAIN_PASSPHRASE).
+    runner = FakeRunner(HELP_PATCHED, ok(LIST_VERSIONS_OK))
+    c = api.IpatoolClient("/x/ipatool", keychain_passphrase=PASS, runner=runner,
+                          passphrase_via="auto",
+                          base_env={"PATH": "/usr/bin", api.PASSPHRASE_ENV: "stray-parent-value"})
+    assert c.passphrase_method() == "stdin"
+    assert c.session_alive().state is api.SessionState.ALIVE
+    argv, env, stdin = runner.calls[1], runner.envs[1], runner.stdins[1]
+    assert api.PASSPHRASE_ENV not in env            # stray env вычищен, не унаследован
+    assert "stray-parent-value" not in env.values()
+    assert stdin == PASS                            # берётся из stdin
+
+
+def test_inherited_env_passphrase_is_replaced_not_leaked():
+    runner = FakeRunner(ok(LIST_VERSIONS_OK))
+    c = api.IpatoolClient("/x/ipatool", keychain_passphrase="", runner=runner, passphrase_via="env",
+                          base_env={api.PASSPHRASE_ENV: "parent-value"})
+    c.session_alive()
+    assert api.PASSPHRASE_ENV not in runner.envs[0]
+
+
+def test_invalid_passphrase_via():
+    with pytest.raises(ValueError):
+        api.IpatoolClient("/x/ipatool", passphrase_via="argv")
+
+
+# -------------------------------------------------------------- отказ Apple по FailureType
+
+# REAL (attemptA, СберБанк 492224193): Apple явно отказала, FailureType 2040.
+# Важно: ipatool печатает ключ как "FailureType" (с заглавной), а колбэк раньше
+# искал "failureType" -> отказ не распознавался.
+PURCHASE_REFUSED_2040 = (
+    '{"level":"debug","error":"failed to purchase item with param \'STDQ\': '
+    'Purchase of this item is not currently available","metadata":{"StatusCode":200,'
+    '"Headers":{"Server":"Apple","X-Apple-Request-Store-Front":"143441-1,34"},'
+    '"Data":{"FailureType":"2040","CustomerMessage":"Purchase of this item is not '
+    'currently available","JingleDocType":"","Status":0}},"time":"2026-10-10T18:16:42+03:00"}\n'
+    '{"level":"error","error":"failed to purchase item with param \'STDQ\': '
+    'Purchase of this item is not currently available","success":false,'
+    '"time":"2026-10-10T18:16:42+03:00"}\n'
+)
+
+
+def test_apple_failure_type_case_insensitive():
+    # ключ FailureType с заглавной F распознаётся
+    assert api.apple_failure_type(PURCHASE_REFUSED_2040) == "2040"
+    assert api.purchase_refused(PURCHASE_REFUSED_2040) is True
+    # и при другом регистре/верхнем уровне
+    assert api.apple_failure_type('{"FAILURETYPE":"1015"}') == "1015"
+    assert api.apple_failure_type('{"metadata":{"data":{"failuretype":"2059"}}}') == "2059"
+
+
+def test_apple_failure_type_empty_on_success():
+    ok = line(success=True, output="/tmp/x.ipa")
+    assert api.apple_failure_type(ok) == ""
+    assert api.purchase_refused(ok) is False
+    # FailureType "0" (нет отказа) тоже не считается отказом
+    assert api.apple_failure_type('{"metadata":{"Data":{"FailureType":"0"}}}') == ""
+
+
+def test_failure_type_refusal_not_written_to_journal(tmp_path):
+    """FailureType 2040 (разный регистр) -> отказ -> в журнал НЕ попадает."""
+    import sys
+    sys.path.insert(0, "/workspace/apprestore/maks-share")
+    import license_guard as lg
+
+    journal = tmp_path / "licenses_acquired.jsonl"
+
+    def purchase():
+        # та же логика, что в боевом колбэке attemptA
+        if api.apple_failure_type(PURCHASE_REFUSED_2040):
+            return "failed"
+        return "purchase_uncertain"
+
+    res = lg.acquire_and_record("492224193", 0, purchase=purchase, journal_path=journal,
+                                storefront="us", mode="real")
+    assert res.allowed is True          # лимит/цена ок
+    assert res.recorded is False        # но Apple отказала -> не пишем
+    assert res.status is None
+    assert lg.read_counts(journal) == (0, 0)
+    assert not journal.exists() or journal.read_text(encoding="utf-8").strip() == ""
+
+
+# -------------------------------------------------------------- потоковый скраббер verbose
+
+
+def test_scrub_line_masks_cookie_and_wosid():
+    raw = ('{"Set-Cookie":"wosid-lite=ABCDEF0123456789; path=/; domain=.apple.com; secure",'
+           '"X-Apple-Session-Token":"TOPSECRETtokenvalue1234567890abcd","dsid":"9876543210"}')
+    out = api.scrub_line(raw)
+    assert "ABCDEF0123456789" not in out        # значение cookie wosid-lite скрыто
+    assert "wosid-lite=ABCDEF0123456789" not in out
+    assert "TOPSECRETtokenvalue1234567890abcd" not in out
+    assert "9876543210" not in out
+    assert "<redacted>" in out
+
+
+def test_scrub_line_masks_passphrase_secret():
+    out = api.scrub_line('loaded passphrase hunter2SECRET ok', secrets=("hunter2SECRET",))
+    assert "hunter2SECRET" not in out
+
+
+class _FakeProc:
+    def __init__(self, stdout_lines, stderr_lines, returncode=0):
+        self.stdout = iter(stdout_lines)
+        self.stderr = iter(stderr_lines)
+        self._rc = returncode
+
+    def wait(self, timeout=None):
+        return self._rc
+
+
+def test_run_verbose_scrubbed_streams_before_sink():
+    """Каждая строка дочернего процесса проходит скраббер ДО попадания в sink."""
+    stdout = ['{"Set-Cookie":"wosid-lite=LEAKYCOOKIE1234567890; path=/"}\n',
+              '{"level":"info","success":true}\n']
+    stderr = ['dsid=1122334455 passwordToken=SHOULDNOTLEAKtoken0987654321\n']
+    seen: list[str] = []
+
+    def fake_popen(argv, **kwargs):
+        return _FakeProc(stdout, stderr, returncode=0)
+
+    result = api.run_verbose_scrubbed(
+        ["ipatool", "--verbose", "purchase"], timeout=5,
+        sink=lambda tag, line: seen.append(line), popen=fake_popen,
+    )
+    joined = "\n".join(seen) + "\n" + result.stdout + "\n" + result.stderr
+    assert "LEAKYCOOKIE1234567890" not in joined
+    assert "SHOULDNOTLEAKtoken0987654321" not in joined
+    assert "1122334455" not in joined
+    assert result.returncode == 0
+    # sink всё же получил строки (в заскрабленном виде)
+    assert any("<redacted>" in s for s in seen)

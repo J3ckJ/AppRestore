@@ -10,11 +10,13 @@ stable :class:`ErrorCode` with Russian text.  Text output is never parsed.
 
 What this module never does: sign in, buy (``purchase`` / ``--purchase``),
 download packages, write to the keychain, or log the keychain passphrase,
-the Apple ID email, tokens or the command line.
+the Apple ID email, tokens or the command line.  With ipatool patch 0003 the
+passphrase is passed in the child's environment (IPATOOL_KEYCHAIN_PASSPHRASE),
+not in argv, so it does not show up in ``ps``.
 
 Public API (for Dima):
 
-    client = IpatoolClient("/path/to/ipatool")         # passphrase from env
+    client = IpatoolClient("/path/to/ipatool")         # passphrase from env; handed to ipatool via env (patch 0003) or flag (old)
     check = client.session_alive(timeout=8.0)          # -> SessionCheck
     check.state                                        # SessionState.ALIVE / EXPIRED / NO_NETWORK
     for page in client.iter_purchases(cancel_event):   # -> Iterator[PurchasesPage]
@@ -50,6 +52,10 @@ __all__ = [
     "SessionCheck",
     "SessionState",
     "classify_error",
+    "apple_failure_type",
+    "purchase_refused",
+    "scrub_line",
+    "run_verbose_scrubbed",
     "PASSPHRASE_ENV",
     "PROBE_APP_ID",
     "PAGE_SIZE_MAX",
@@ -86,6 +92,7 @@ class ErrorCode(str, enum.Enum):
     NOT_SIGNED_IN = "not_signed_in"
     KEYCHAIN_PASSPHRASE_REQUIRED = "keychain_passphrase_required"
     KEYCHAIN_PASSPHRASE_WRONG = "keychain_passphrase_wrong"
+    PASSPHRASE_NO_SECURE_METHOD = "passphrase_no_secure_method"
     # Store answers
     LICENSE_REQUIRED = "license_required"
     LICENSE_ALREADY_EXISTS = "license_already_exists"
@@ -122,6 +129,7 @@ MESSAGES_RU: Mapping[ErrorCode, str] = {
     ErrorCode.NOT_SIGNED_IN: "Вход в Apple ID не выполнен. Войдите в аккаунт.",
     ErrorCode.KEYCHAIN_PASSPHRASE_REQUIRED: "Нужен пароль связки ключей программы (это не пароль Apple ID).",
     ErrorCode.KEYCHAIN_PASSPHRASE_WRONG: "Пароль связки ключей программы не подошёл (это не пароль Apple ID).",
+    ErrorCode.PASSPHRASE_NO_SECURE_METHOD: "Нет безопасного способа передать пароль связки ключей: нужен ipatool с патчем --keychain-passphrase-stdin, иначе введите пароль вручную.",
     ErrorCode.LICENSE_REQUIRED: "На этом Apple ID нет лицензии. Бесплатное — кнопкой «Получить», платное без оплаты не ставится.",
     ErrorCode.LICENSE_ALREADY_EXISTS: "Лицензия на это приложение уже есть.",
     ErrorCode.TEMPORARILY_UNAVAILABLE: "Временно недоступно в этом магазине.",
@@ -203,6 +211,23 @@ _RULES: Sequence[tuple[ErrorCode, "re.Pattern[str]"]] = tuple(
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _GUID_RE = re.compile(r"(guid=)[0-9A-Fa-f]+")
+# key:value / key=value, где ключ — чувствительное имя (cookie, токен, dsid,
+# wosid-lite и т.п.). Значение (в кавычках или до разделителя ; , } пробел)
+# заменяется на <redacted>. Регистр ключа игнорируется.
+_SENSITIVE_KV_RE = re.compile(
+    r'("?(?:set-cookie|cookie|wosid[\w-]*|mz_at[\w-]*|dsid|x-dsid|'
+    r'x-apple-[\w-]*|passwordtoken|password|token|x-token|authorization|'
+    r'x-apple-session-token|x-apple-jingle-correlation-key)"?\s*[:=]\s*)'
+    r'("[^"]*"|[^\s,;}]+)',
+    re.IGNORECASE,
+)
+# отдельные cookie-пары вида wosid-lite=VALUE внутри строки Set-Cookie.
+_COOKIE_PAIR_RE = re.compile(
+    r'\b(wosid[\w-]*|mz_at[\w-]*|itspod|mzf_[\w-]*)=([^\s;,"}]+)',
+    re.IGNORECASE,
+)
+# длинный base64/hex токен, не привязанный к ключу.
+_LONG_TOKEN_RE = re.compile(r"(?<![\w/+])[A-Za-z0-9+/_-]{32,}={0,2}(?![\w/+])")
 
 
 def _redact(text: str, secrets: Sequence[str] = ()) -> str:
@@ -211,7 +236,21 @@ def _redact(text: str, secrets: Sequence[str] = ()) -> str:
         if secret:
             text = text.replace(secret, "<redacted>")
     text = _EMAIL_RE.sub("<email>", text)
+    text = _SENSITIVE_KV_RE.sub(r"\1<redacted>", text)
+    text = _COOKIE_PAIR_RE.sub(r"\1=<redacted>", text)
+    text = _LONG_TOKEN_RE.sub("<token>", text)
     return _GUID_RE.sub(r"\1<guid>", text)
+
+
+def scrub_line(line: str, secrets: Sequence[str] = ()) -> str:
+    """Один проход скраббера над строкой вывода ipatool (для --verbose).
+
+    Снимает ANSI, маскирует cookie (в т.ч. wosid-lite, Set-Cookie), X-Apple-*
+    токены, dsid, passwordToken, пароль связки (через ``secrets``), почту, guid и
+    длинные токены. Применяйте к КАЖДОЙ строке до print/записи в лог.
+    """
+
+    return _redact(line, secrets)
 
 
 def classify_error(message: str) -> ErrorCode:
@@ -221,6 +260,97 @@ def classify_error(message: str) -> ErrorCode:
         if pattern.search(message or ""):
             return code
     return ErrorCode.UNKNOWN
+
+
+def _ci_get(mapping: object, key: str) -> object:
+    """dict.get без учёта регистра ключа."""
+
+    if not isinstance(mapping, Mapping):
+        return None
+    target = key.casefold()
+    for name, value in mapping.items():
+        if str(name).casefold() == target:
+            return value
+    return None
+
+
+def apple_failure_type(stdout: str, stderr: str = "") -> str:
+    """Непустой Apple ``FailureType`` из verbose-JSON ipatool, РЕГИСТРОНЕЗАВИСИМО.
+
+    ipatool печатает ответ Apple как ``metadata.Data.FailureType`` (именно так, с
+    заглавной F), а также иногда как верхнеуровневый ``failureType``. Возвращает
+    строку failureType, если она непустая и не "0" (= Apple ЯВНО отказала), иначе
+    "". Правило вызывающего кода: непустой failureType → отказ → в журнал НЕ писать.
+    """
+
+    for row in _json_lines(stdout) + _json_lines(stderr):
+        candidates = []
+        meta = _ci_get(row, "metadata")
+        data = _ci_get(meta, "data") if meta is not None else None
+        candidates.append(_ci_get(data, "failureType") if data is not None else None)
+        candidates.append(_ci_get(row, "failureType"))
+        for value in candidates:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text and text != "0":
+                return text
+    return ""
+
+
+def purchase_refused(stdout: str, stderr: str = "") -> bool:
+    """True, если Apple явно отказала в purchase (непустой FailureType)."""
+
+    return bool(apple_failure_type(stdout, stderr))
+
+
+def run_verbose_scrubbed(
+    argv: Sequence[str],
+    *,
+    timeout: float = 120.0,
+    sink: Optional[Callable[[str, str], None]] = None,
+    secrets: Sequence[str] = (),
+    popen: Optional[Callable[..., object]] = None,
+) -> RunResult:
+    """Запустить ipatool и читать вывод ПОТОКОВО, скрабя КАЖДУЮ строку до вывода.
+
+    stdout и stderr читаются построчно; каждая строка проходит :func:`scrub_line`
+    ДО того как попадёт в ``sink`` (по умолчанию ничего не печатает — передайте,
+    например, ``lambda tag, line: print(line)``). Так сырые cookie (wosid-lite,
+    Set-Cookie), X-Apple-* токены, dsid и пароль не мелькают в терминале/логе.
+    Возвращает :class:`RunResult` с уже заскрабленными stdout/stderr.
+    """
+
+    import threading
+
+    spawn = popen or subprocess.Popen
+    proc = spawn(  # noqa: S603 - fixed argv, no shell
+        list(argv),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    out_lines: list[str] = []
+    err_lines: list[str] = []
+
+    def pump(stream, bucket: list[str], tag: str) -> None:
+        if stream is None:
+            return
+        for raw in stream:
+            safe = scrub_line(raw.rstrip("\n"), secrets)
+            bucket.append(safe)
+            if sink is not None:
+                sink(tag, safe)
+
+    err_thread = threading.Thread(target=pump, args=(proc.stderr, err_lines, "stderr"))
+    err_thread.start()
+    pump(proc.stdout, out_lines, "stdout")
+    err_thread.join()
+    returncode = proc.wait(timeout=timeout) if hasattr(proc, "wait") else 0
+    return RunResult(int(returncode or 0), "\n".join(out_lines), "\n".join(err_lines))
 
 
 class IpatoolError(Exception):
@@ -364,15 +494,40 @@ class CancelEvent(Protocol):
     def is_set(self) -> bool: ...
 
 
-#: ``runner(argv, timeout) -> RunResult``; raises subprocess.TimeoutExpired on
-#: timeout and FileNotFoundError if the binary is missing.
-Runner = Callable[[Sequence[str], float], RunResult]
+#: ``runner(argv, timeout, env, stdin=None) -> RunResult``; ``env`` is the
+#: complete child environment and ``stdin`` is text fed to the child's stdin
+#: (used only for ``--keychain-passphrase-stdin``; ``None`` means no stdin).
+#: Raises subprocess.TimeoutExpired on timeout and FileNotFoundError if the
+#: binary is missing.
+Runner = Callable[..., RunResult]
+
+#: How the keychain passphrase reaches ipatool:
+#:   "auto" — stdin on a patched binary (``--keychain-passphrase-stdin``);
+#:            on an old binary NO secure method -> PASSPHRASE_NO_SECURE_METHOD
+#:            (never the ``--keychain-passphrase`` flag, never env, both leak:
+#:            flag shows in ``ps``, env in ``/proc/<pid>/environ``). The caller
+#:            (GUI) then collects the passphrase interactively.
+#:   "flag" — ``--keychain-passphrase <pass>`` (bench only; visible in ps).
+#:   "env"  — IPATOOL_KEYCHAIN_PASSPHRASE env var (bench only; visible in
+#:            /proc/<pid>/environ). Only ever chosen when asked explicitly.
+PassphraseVia = str  # "auto" | "env" | "flag"
+
+#: The stdin passphrase flag; present in ``ipatool --help`` only with AppRestore's
+#: patch 0003.  Its presence is how "auto" detects a patched binary.
+PASSPHRASE_STDIN_FLAG = "--keychain-passphrase-stdin"
+#: Back-compat alias (patch 0003 named it this).
+PASSPHRASE_ENV_MARKER = PASSPHRASE_STDIN_FLAG
 
 
-def _subprocess_runner(argv: Sequence[str], timeout: float) -> RunResult:
+def _subprocess_runner(argv: Sequence[str], timeout: float, env: Mapping[str, str],
+                       stdin: Optional[str] = None) -> RunResult:
+    # When a passphrase is fed via stdin we pass it as the first line; otherwise
+    # stdin is /dev/null so ipatool never blocks waiting for input.
     completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
         list(argv),
-        stdin=subprocess.DEVNULL,
+        env=dict(env),
+        input=(stdin + "\n") if stdin is not None else None,
+        stdin=None if stdin is not None else subprocess.DEVNULL,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -413,7 +568,11 @@ class IpatoolClient:
         runner: Optional[Runner] = None,
         probe_app_id: int = PROBE_APP_ID,
         clock: Callable[[], float] = time.monotonic,
+        passphrase_via: PassphraseVia = "auto",
+        base_env: Optional[Mapping[str, str]] = None,
     ) -> None:
+        if passphrase_via not in ("auto", "env", "flag"):
+            raise ValueError("passphrase_via must be 'auto', 'env' or 'flag'")
         self.binary = binary
         self._passphrase = (
             keychain_passphrase if keychain_passphrase is not None else os.environ.get(PASSPHRASE_ENV, "")
@@ -421,22 +580,94 @@ class IpatoolClient:
         self._run = runner or _subprocess_runner
         self.probe_app_id = probe_app_id
         self._clock = clock
+        self._passphrase_via = passphrase_via
+        self._base_env = dict(os.environ if base_env is None else base_env)
+        self._stdin_supported: Optional[bool] = None
 
     # -- plumbing ---------------------------------------------------------
 
+    def _stdin_flag_supported(self) -> bool:
+        """True when this ipatool understands ``--keychain-passphrase-stdin``.
+
+        Probed once via ``ipatool --help`` (no keychain, network or account
+        access).  Result is cached.
+        """
+
+        if self._stdin_supported is None:
+            try:
+                result = self._run([self.binary, "--help"], 20.0,
+                                   self._env_without_passphrase(), None)
+                self._stdin_supported = PASSPHRASE_STDIN_FLAG in (result.stdout + result.stderr)
+            except (OSError, subprocess.SubprocessError):
+                self._stdin_supported = False
+        return self._stdin_supported
+
+    def passphrase_method(self) -> str:
+        """How the passphrase will be delivered: 'stdin' | 'flag' | 'env' | 'none'.
+
+        'none' means "auto" found no secure channel (old binary): the caller must
+        collect the passphrase interactively (GUI hidden terminal) instead. The
+        flag and env channels are chosen ONLY when asked for explicitly, because
+        both leak the secret (flag -> ps, env -> /proc/<pid>/environ).
+        """
+
+        if self._passphrase_via == "flag":
+            return "flag"
+        if self._passphrase_via == "env":
+            return "env"
+        # auto: stdin on a patched binary, otherwise no secure method at all.
+        return "stdin" if self._stdin_flag_supported() else "none"
+
+    def passphrase_uses_env(self) -> bool:
+        """Back-compat: True only when the passphrase is delivered via env."""
+
+        return self.passphrase_method() == "env"
+
+    def _env_without_passphrase(self) -> dict[str, str]:
+        # Never inherit a stray IPATOOL_KEYCHAIN_PASSPHRASE from the parent: a
+        # patched ipatool ignores env when fed via stdin, but we also refuse to
+        # pass it along so it can never leak via the child's /proc environ.
+        env = dict(self._base_env)
+        env.pop(PASSPHRASE_ENV, None)
+        return env
+
+    def _child_env(self) -> dict[str, str]:
+        env = self._env_without_passphrase()
+        if self._passphrase and self.passphrase_method() == "env":
+            env[PASSPHRASE_ENV] = self._passphrase
+        return env
+
+    def _passphrase_stdin(self) -> Optional[str]:
+        """Text to feed on stdin, or None when the passphrase goes another way."""
+
+        if self._passphrase and self.passphrase_method() == "stdin":
+            return self._passphrase
+        return None
+
     def _argv(self, *args: str) -> list[str]:
         argv = [self.binary, *args, "--format", "json", "--non-interactive"]
-        if self._passphrase:
-            # ipatool only accepts the passphrase as a flag.  The argv is never
-            # logged or put into errors by this module.
+        method = self.passphrase_method()
+        if self._passphrase and method == "stdin":
+            argv.append(PASSPHRASE_STDIN_FLAG)  # secret goes on stdin, not here
+        elif self._passphrase and method == "flag":
+            # Explicit opt-in only (bench). Visible in ps; argv is never logged
+            # or put into errors by this module.
             argv += ["--keychain-passphrase", self._passphrase]
         return argv
 
     def _call(self, args: Sequence[str], timeout: float) -> dict:
         """Run ipatool, return the success object or raise IpatoolError."""
 
+        if self._passphrase and self.passphrase_method() == "none":
+            raise IpatoolError(
+                ErrorCode.PASSPHRASE_NO_SECURE_METHOD,
+                "нет безопасного способа передать passphrase: этот ipatool без "
+                "патча --keychain-passphrase-stdin; введите пароль интерактивно "
+                "(скрытый терминал), флаг и env не используем — они светят пароль",
+            )
         try:
-            result = self._run(self._argv(*args), timeout)
+            result = self._run(self._argv(*args), timeout, self._child_env(),
+                               self._passphrase_stdin())
         except subprocess.TimeoutExpired:
             raise IpatoolError(ErrorCode.TIMEOUT, f"ipatool {args[0]} timed out after {timeout:g}s") from None
         except FileNotFoundError:

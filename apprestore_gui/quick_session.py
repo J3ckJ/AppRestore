@@ -185,22 +185,33 @@ class QuickSession(QObject):
         self._files_mode = False
         self._session_view: SessionView = SESSION_UNKNOWN
         self._purchases_view = PurchasesView()
-        self._session_checker = SessionChecker(self._ipatool_client, self._on_session_view)
-        self._purchases = PurchasesLoader(PurchasesCache(), self._ipatool_client, self._on_purchases_view)
+        self._session_checker = SessionChecker(
+            self._ipatool_client, self._on_session_view, fallback_factory=self._ipatool_client_pty
+        )
+        self._purchases = PurchasesLoader(
+            PurchasesCache(),
+            self._ipatool_client,
+            self._on_purchases_view,
+            fallback_factory=self._ipatool_client_pty,
+        )
 
     # -- session check and purchase list (logic in apprestore_gui.purchases) --
 
-    def _ipatool_client(self) -> IpatoolClient:
+    def _ipatool_client_pty(self) -> IpatoolClient:
+        return self._ipatool_client(force_pty=True)
+
+    def _ipatool_client(self, force_pty: bool = False) -> IpatoolClient:
         binary = resolve_tool("ipatool")
         if not binary:
             raise IpatoolError(ErrorCode.BINARY_MISSING, "ipatool binary not found")
         tools = self.service.core.tools
-        # keychain_passphrase="" keeps the passphrase out of argv; gui_runner
-        # answers ipatool's prompt on the hidden terminal instead.
+        # keychain_passphrase="" keeps the passphrase out of argv and env;
+        # gui_runner sends it via --keychain-passphrase-stdin (patched ipatool)
+        # or answers the prompt on the hidden terminal (old ipatool).
         return IpatoolClient(
             binary,
             keychain_passphrase="",
-            runner=gui_runner(self.service.keychain_passphrase, tools._ipatool_env),
+            runner=gui_runner(self.service.keychain_passphrase, tools._ipatool_env, force_pty=force_pty),
         )
 
     def _on_session_view(self, view: SessionView) -> None:
