@@ -28,10 +28,20 @@ from PySide6.QtCore import (
 from apprestore_gui.ui4b.catalog import GROUP_REGION, RestoreItem, build_items
 from apprestore_gui.ui4b.flow import RestoreFlow
 from apprestore_gui.ui4b.formatting import format_size
-from apprestore_gui.ui4b.licenses import CANCEL, CONTINUE, OWNED_ONLY, LicensePlan, consent_view, plan_licenses
+from apprestore_gui.ui4b.licenses import (
+    CANCEL,
+    CONTINUE,
+    OWNED_ONLY,
+    LicensePlan,
+    consent_view,
+    next_slot,
+    plan_licenses,
+    slot_text,
+)
 from apprestore_gui.ui4b.licenses import candidates as license_candidates
 from apprestore_gui.ui4b.home import STATE_DONE, STATE_STORE_MISMATCH, HomeInput, PhoneApp, home_view
 from apprestore_gui.ui4b.onboarding import Onboarding
+from apprestore_gui.ui4b.queue import LIMIT_ERROR
 from apprestore_gui.ui4b.scan import ScanCounter
 from apprestore_gui.ui4b.selection import CHECK_ON, OFFLINE_FOOTER, Selection
 from apprestore_gui.ui4b.space import UNKNOWN_SPACE, DeviceSpace, plan_space, query_device_space
@@ -45,6 +55,8 @@ ROLES: tuple[str, ...] = (
     "check",
     "action",
     "name",
+    "shortName",
+    "unverified",
     "nameHtml",
     "developer",
     "storeId",
@@ -148,6 +160,14 @@ class SourceBase(QObject):
 
     def recheck(self) -> None:
         """The network is back: read again (lookup, list-purchases), buy nothing."""
+
+    def limit_slot_text(self) -> str:
+        """For «не хватило лимита»: next_daily_slot + read_counts, local time."""
+
+        from apprestore_core.license_gate import journal_path
+
+        path = journal_path()
+        return slot_text(next_slot(path), self.license_counts()[1])
 
     def phone_apps(self) -> list[PhoneApp]:
         return []
@@ -370,6 +390,7 @@ class Restore4b(QObject):
         self._scan_started = False
         self._signin_open = False
         self._consent: dict[str, object] = {}
+        self._limit_note: tuple[object, str] = (None, "")
         self._consent_plan: LicensePlan | None = None
         self._consent_space: DeviceSpace = UNKNOWN_SPACE
         source.changed.connect(self._on_source)
@@ -422,6 +443,7 @@ class Restore4b(QObject):
                 relogin=bool(src.relogin or self.flow.needs_signin),
                 store_problem=self.flow.store_problem,
                 store_problem_app=self.flow.store_problem_app,
+                limit_note=self._limit_note_for_queue(queue),
             )
         )
         self.picker.set_rows(self.selection.rows())
@@ -600,6 +622,21 @@ class Restore4b(QObject):
     def setQuery(self, query: str) -> None:
         self.selection.set_query(query)
         self._refresh()
+
+    def _limit_note_for_queue(self, queue: object) -> str:
+        """Read once per finished queue that had limit refusals (journal, local time)."""
+
+        if queue is None or not getattr(queue, "finished", False):
+            return ""
+        if not any(e.error == LIMIT_ERROR for e in queue.entries):  # type: ignore[attr-defined]
+            return ""
+        if self._limit_note[0] is not queue:
+            try:
+                text = self.source.limit_slot_text()
+            except Exception:  # noqa: BLE001
+                text = ""
+            self._limit_note = (queue, text)
+        return self._limit_note[1]
 
     # -- restore -----------------------------------------------------------------
 

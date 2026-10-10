@@ -16,6 +16,7 @@ from apprestore_gui.ui4b.catalog import (
     GROUP_REGION,
     GROUP_REMOVED,
     RestoreItem,
+    short_name_of,
 )
 from apprestore_gui.ui4b.formatting import (
     format_size,
@@ -77,6 +78,8 @@ class HomeInput:
     #: -128: "" | "mismatch" | "unavailable" (again after signing in again)
     store_problem: str = ""
     store_problem_app: str = ""
+    #: «Лимит обновится завтра в 14:20» / «Общий лимит 15 исчерпан» / "".
+    limit_note: str = ""
 
 
 def _minutes(count: int) -> str:
@@ -263,10 +266,10 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             lead = (lead + " " if lead else "") + f"Не вернулись: <b>{names}</b> ({reason})."
         if limit:
             names = join_names([entry.item.label for entry in limit], limit=8)
-            lead = (lead + " " if lead else "") + (
-                f"Не хватило лимита: <b>{names}</b>. Бесплатных лицензий можно взять 5 в сутки "
-                "и 15 всего; программа сама их не поставит: нажмите «Вернуть», когда лимит восстановится."
-            )
+            lead = (lead + " " if lead else "") + f"На {names} не хватило лимита бесплатных лицензий."
+            if inp.limit_note:
+                lead += f" {inp.limit_note}."
+            lead += " Сами на завтра не ставим."
         for reason, label in (("no_license", "Без новой лицензии не возвращали"), ("paid", "Платные не возвращаем")):
             names_skipped = queue.skipped.get(reason) or []
             if names_skipped:
@@ -305,6 +308,8 @@ def home_view(inp: HomeInput) -> dict[str, object]:
         state = STATE_REGION
         names_ok = join_names([item.label for item in selectable])
         names_na = join_names([item.label for item in region])
+        # full names in the body and the link (Ника #7): «Альфа-Банк», not «Альфа»
+        full_na = join_names([f"«{short_name_of(item.name)}»" for item in region])
         where = inp.region_name or "вашего региона"
         verb = "недоступна" if len(region) == 1 else "недоступны"
         view.update(
@@ -313,10 +318,11 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             word=f"из {len(items)}",
             word2="можно вернуть",
             lead=(f"<b>{names_ok}</b> вернутся как обычно. " if names_ok else "")
-            + f"{names_na} нет в App Store региона вашего Apple ID ({where}), "
+            + f"{full_na} нет в App Store региона вашего Apple ID ({where}), "
             f"и Apple не отдаёт {'его' if len(region) == 1 else 'их'} этой учётной записи.",
             cta=f"Вернуть {len(selectable)}" if selectable else "",
-            links=["Есть файл IPA", "Войти с другим Apple ID", "Подробнее"],
+            # «Войти с другим Apple ID» — отложено (Лена)
+            links=[f"Есть файл IPA для {full_na}", "Подробнее"],
         )
     else:
         plan = plan_space(selectable, inp.space)

@@ -244,6 +244,8 @@ Item {
                 required property string sizeText
                 required property string note
                 required property bool hasIpaHint
+                required property string shortName
+                required property bool unverified
                 required property bool selected
                 required property bool selectable
                 readonly property var row: cell
@@ -415,7 +417,7 @@ Item {
                         visible: row.hasIpaHint
                         token: "rowNote"; font.weight: 550; color: Theme.ink2
                         font.underline: true
-                        text: "Есть файл IPA"
+                        text: "Есть файл IPA для «" + row.shortName + "»"
                     }
                 }
                 T {

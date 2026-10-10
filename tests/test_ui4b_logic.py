@@ -828,6 +828,31 @@ def test_limit_refusal_goes_to_not_enough_limit_and_others_continue() -> None:
     assert [c[1] for c in backend.calls] == [i.store_id for i in items]  # each through the gate
     view = home_view(HomeInput(connected=True, signed_in=True, items=items, queue=flow.queue))
     assert view["state"] == "done"
-    assert "Не хватило лимита: <b>Т-Банк и ВТБ</b>" in view["lead"]
+    assert "На Т-Банк и ВТБ не хватило лимита бесплатных лицензий." in view["lead"]
     assert "Платные не возвращаем: <b>Тинькофф Про</b>" in view["lead"]
-    assert "завтра" not in view["lead"]
+    assert "поставим завтра" not in view["lead"] and "Сами на завтра не ставим." in view["lead"]
+
+
+def test_limit_slot_text_all_cases(tmp_path) -> None:
+    import datetime as dt
+
+    from apprestore_core import license_guard as lg
+    from apprestore_gui.ui4b.licenses import next_slot, slot_text
+
+    now = dt.datetime.now().astimezone()
+    soon = (now + dt.timedelta(minutes=30)).astimezone(dt.timezone.utc)
+    later = (now.replace(hour=12, minute=0) + dt.timedelta(days=1)).astimezone(dt.timezone.utc)
+    assert slot_text(None, 3) == ""                       # a slot is free now
+    assert slot_text(lg.NEVER, 3) == ""                    # never shown as a date
+    text = slot_text(soon, 3, now_local=now)
+    local = soon.astimezone().strftime("%H:%M")
+    assert text in (f"Место освободится в {local}", f"Место освободится завтра в {local}")
+    assert slot_text(later, 3, now_local=now) == "Место освободится завтра в 12:00"
+    assert slot_text(soon, 15) == "Общий лимит 15 исчерпан"  # total used up: no time
+    # real journal: 5 today → a moment 24 h after the oldest, in UTC
+    journal = tmp_path / "j.jsonl"
+    assert next_slot(journal) is None
+    for i in range(5):
+        lg.record_acquire(f"1{i}", None, "us", journal_path=journal, price=0)
+    when = next_slot(journal)
+    assert when is not None and when.tzinfo is not None and when > dt.datetime.now(dt.timezone.utc)

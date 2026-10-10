@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from apprestore_core.license_guard import DEFAULT_DAILY_LIMIT, DEFAULT_TOTAL_LIMIT
 
@@ -146,3 +147,47 @@ def consent_view(
         "ownedEnabled": bool(plan.rest),
         "cancel": "Отмена",
     }
+
+
+def slot_text(
+    when: object,
+    used_total: int,
+    *,
+    total_limit: int = DEFAULT_TOTAL_LIMIT,
+    now_local: datetime | None = None,
+) -> str:
+    """«Место освободится в 14:20» for the limit summary, in local time.
+
+    ``when`` = ``license_guard.next_daily_slot()``: None (a slot is free now),
+    an aware UTC moment, or ``NEVER`` (never shown as a date). With the total
+    limit used up the daily slot means nothing: «Общий лимит 15 исчерпан».
+    """
+
+    from apprestore_core.license_guard import NEVER
+
+    if used_total >= total_limit:
+        return f"Общий лимит {total_limit} исчерпан"
+    if not isinstance(when, datetime) or when == NEVER or when.tzinfo is None:
+        return ""
+    local = when.astimezone()  # the user's zone (box/desktop local)
+    today = (now_local or datetime.now().astimezone()).date()
+    hhmm = local.strftime("%H:%M")
+    if local.date() == today:
+        return f"Место освободится в {hhmm}"
+    if local.date() == today + timedelta(days=1):
+        return f"Место освободится завтра в {hhmm}"
+    return f"Место освободится {local.strftime('%d.%m')} в {hhmm}"
+
+
+def next_slot(journal_path: object = None) -> object:
+    """``license_guard.next_daily_slot`` with a fallback for an older guard (None)."""
+
+    from apprestore_core import license_guard
+
+    func = getattr(license_guard, "next_daily_slot", None)
+    if func is None:
+        return None
+    try:
+        return func(journal_path=journal_path)
+    except Exception:  # noqa: BLE001 - no time rather than a wrong one
+        return None

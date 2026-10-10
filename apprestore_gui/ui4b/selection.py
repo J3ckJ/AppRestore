@@ -11,7 +11,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from apprestore_gui.ui4b.catalog import GROUP_ORDER, GROUP_REGION, GROUP_REMOVED, GROUP_TITLES, RestoreItem
+from apprestore_gui.ui4b.catalog import GROUP_ORDER, GROUP_REGION, GROUP_REMOVED, GROUP_TITLES, RestoreItem, short_name_of
 from apprestore_gui.ui4b.formatting import format_size
 from apprestore_gui.ui4b.space import UNKNOWN_SPACE, DeviceSpace, SpacePlan, plan_space
 
@@ -326,6 +326,7 @@ class Selection:
                         "key": item.key,
                         "group": group,
                         "name": item.name,
+                        "shortName": short_name_of(item.name),
                         "nameHtml": highlight_html(item.name, match, self.mark_color),
                         "developer": item.developer,
                         "storeId": item.store_id,
