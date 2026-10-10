@@ -112,6 +112,12 @@ class SourceBase(QObject):
     noun = "iPhone"
     signed_in = False
     region_name = ""
+    #: QuickSession.authPhase ("out" | "running" | "need_code" | "in" …).
+    auth_phase = ""
+    #: Apple wants the user again (QuickSession.sessionRelogin).
+    relogin = False
+    auth_status = ""
+    account_email = ""
 
     def items(self) -> list[RestoreItem]:
         return []
@@ -168,6 +174,8 @@ class SessionSource(SourceBase):
         self._space_udid = ""
         session.changed.connect(self._on_session)
         session.purchasesChanged.connect(self.changed)
+        if hasattr(session, "sessionChanged"):
+            session.sessionChanged.connect(self._on_session)
         session.installProgress.connect(self.progress)
         session.appRestored.connect(self.appRestored)
         session.restoreSettled.connect(self.restoreSettled)
@@ -185,6 +193,10 @@ class SessionSource(SourceBase):
         self.device_name = str(s.deviceName or "")
         self.noun = str(s.deviceNoun or "iPhone")
         self.signed_in = bool(s.signedIn)
+        self.auth_phase = str(getattr(s, "authPhase", "") or "")
+        self.relogin = bool(getattr(s, "sessionRelogin", False))
+        self.auth_status = str(getattr(s, "authStatus", "") or "")
+        self.account_email = str(getattr(s, "accountEmail", "") or getattr(s, "boundEmail", "") or "")
         udid = s.current_udid()
         if self.connected and udid and not self.loading and udid != self._missing_udid:
             self._missing_udid = udid
@@ -270,6 +282,8 @@ class Restore4b(QObject):
 
     changed = Signal()
     storeSearchRequested = Signal(str)
+    #: «Войти» / «Войти заново»: QML opens the sign-in sheet (2FA inside).
+    signInRequested = Signal()
     _spaceChecked = Signal(object)
 
     def __init__(self, source: SourceBase, *, onboarded: bool = True, mark_color: str = "#f6ebe4") -> None:
@@ -287,6 +301,7 @@ class Restore4b(QObject):
         self._step = 0
         self._revision = 0
         self._scan_started = False
+        self._signin_open = False
         source.changed.connect(self._on_source)
         source.progress.connect(self.flow.on_progress)
         source.appRestored.connect(self.flow.on_app_restored)
@@ -299,6 +314,10 @@ class Restore4b(QObject):
     # -- updates ---------------------------------------------------------------
 
     def _on_source(self) -> None:
+        src = self.source
+        self.flow.observe_account(src.signed_in, src.auth_phase, src.relogin)
+        if self._signin_open and src.signed_in and src.auth_phase == "in" and not src.relogin:
+            self._signin_open = False
         self.selection.set_items(self.source.items())
         self.selection.set_space(self.source.space())
         checked, total, done = self.source.scan()
@@ -329,6 +348,7 @@ class Restore4b(QObject):
                 done_dismissed=self._done_dismissed,
                 phone_apps=src.phone_apps(),
                 region_name=src.region_name,
+                relogin=bool(src.relogin or self.flow.needs_signin),
             )
         )
         self.picker.set_rows(self.selection.rows())
@@ -515,6 +535,8 @@ class Restore4b(QObject):
         state = str(self._home.get("state", ""))
         if state == STATE_DONE:
             self.dismissDone()
+        elif state == "signin":
+            self.openSignIn()
         elif state in ("many",):
             self.openPicker()
         elif state in ("missing", "region"):
@@ -572,6 +594,42 @@ class Restore4b(QObject):
     def onboardingLater(self) -> None:
         self.onboarding.apple_id_skipped = True
         self._refresh()
+
+    @Slot()
+    def openSignIn(self) -> None:
+        self._signin_open = True
+        self.signInRequested.emit()
+        self._refresh()
+
+    @Slot()
+    def closeSignIn(self) -> None:
+        self._signin_open = False
+        self._refresh()
+
+    @Property("QVariantMap", notify=changed)
+    def signIn(self) -> dict[str, object]:
+        """Sign-in sheet: phase "out" (email + password) or "need_code" (2FA).
+
+        After a successful sign-in the sheet closes and the home screen shows
+        «Вернуть» again; nothing restarts by itself.
+        """
+
+        src = self.source
+        phase = src.auth_phase or "out"
+        return {
+            "open": self._signin_open,
+            "phase": phase,
+            "busy": phase == "running",
+            "code": phase == "need_code",
+            "status": src.auth_status,
+            "email": src.account_email,
+            "title": "Код подтверждения" if phase == "need_code" else "Вход в Apple ID",
+            "sub": (
+                "Введите 6 цифр, которые пришли на ваши устройства Apple."
+                if phase == "need_code"
+                else "Пароль уходит только в Apple и не сохраняется программой."
+            ),
+        }
 
     @Slot(str, str)
     def login(self, email: str, password: str) -> None:

@@ -64,6 +64,7 @@ Window {
         y: Theme.heroTop
         step: ui.onboardingStep
         noun: win.noun
+        onSignInRequested: ui.openSignIn()
     }
 
     // -- phone ---------------------------------------------------------------------
@@ -71,7 +72,9 @@ Window {
         x: Theme.phoneX
         y: Theme.phoneY
         tiles: win.home.tiles || []
-        off: !win.home.pillOn
+        alert: win.onboarding && ui.onboardingStep === 2 ? "trust"
+               : win.onboarding && ui.onboardingStep === 3 ? "code" : ""
+        off: !win.home.pillOn && alert === ""
         pageDots: win.home.state === "many" ? 11 : 0
     }
 
@@ -80,5 +83,12 @@ Window {
         anchors.fill: parent
         active: ui.pickerOpen
         sourceComponent: PickerSheet {}
+    }
+
+    // -- sign-in with 2FA ------------------------------------------------------------
+    Loader {
+        anchors.fill: parent
+        active: !!ui.signIn.open
+        sourceComponent: SignInSheet {}
     }
 }

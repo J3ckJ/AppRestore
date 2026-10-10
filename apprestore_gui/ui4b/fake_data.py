@@ -141,8 +141,9 @@ class FakeSource(SourceBase):
         self.scenario = scenario
         self.connected = scenario != "disconnected"
         self.signed_in = scenario != "signin"
+        self.relogin = scenario == "relogin"
         phone = [PhoneApp(name, store_id=sid) for sid, name in PHONE]
-        if scenario in ("missing", "installing", "done", "disconnected", "signin"):
+        if scenario in ("missing", "installing", "done", "disconnected", "signin", "relogin"):
             self._items = removed_items()
             self._phone = phone
         elif scenario == "region":
@@ -179,6 +180,21 @@ class FakeSource(SourceBase):
 
     def scan(self) -> tuple[int, int | None, bool]:
         return self._scan
+
+    def login(self, email: str, password: str) -> None:
+        self.calls.append(("login", email))
+        self.account_email = email
+        self.auth_phase = "need_code"
+        self.auth_status = "Код отправлен на ваши устройства Apple."
+        self.changed.emit()
+
+    def submit_code(self, code: str) -> None:
+        self.calls.append(("submit_code", "******"))
+        self.auth_phase = "in"
+        self.auth_status = "Сессия открыта."
+        self.signed_in = True
+        self.relogin = False
+        self.changed.emit()
 
     def restore_offloaded(self, keys: list[str]) -> None:
         self.calls.append(("restore_offloaded", list(keys)))

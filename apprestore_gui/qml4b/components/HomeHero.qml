@@ -34,6 +34,7 @@ Column {
         text: root.view.title || ""
         lineHeightMode: Text.FixedHeight
         lineHeight: 84 * 0.96
+        height: lineCount * 84 * 0.96
         // CSS lets glyphs overflow a tight line box (negative half-leading);
         // Qt does not, so lift by that half-leading to match the concept.
         transform: Translate { y: (84 * 0.96 - 84 * 1.21) / 2 }

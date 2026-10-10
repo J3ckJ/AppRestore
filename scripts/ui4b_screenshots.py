@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 #: our screen name → (scenario, concept file, extra setup)
-SHOTS: tuple[tuple[str, str, str], ...] = (
+SHOTS: tuple[tuple[str, str, str | None], ...] = (
     ("home-missing", "missing", "variant-4b-missing.png"),
     ("home-many", "many", "variant-4b-picker-main500.png"),
     ("picker-default", "picker", "variant-4b-picker-default.png"),
@@ -29,6 +29,9 @@ SHOTS: tuple[tuple[str, str, str], ...] = (
     ("home-done", "done", "variant-4b-done.png"),
     ("home-disconnected", "disconnected", "variant-4b-disconnected.png"),
     ("home-signin", "signin", "variant-4b-error.png"),
+    ("home-relogin", "relogin", None),
+    ("signin-sheet", "relogin", None),
+    ("signin-code", "signin", None),
     ("home-region", "region", "variant-4b-region.png"),
     ("onboarding-1", "onboarding-1", "variant-4b-onboarding-1.png"),
     ("onboarding-2", "onboarding-2", "variant-4b-onboarding-2.png"),
@@ -37,8 +40,18 @@ SHOTS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def prepare(controller, source, scenario: str) -> None:
+def prepare(controller, source, scenario: str, name: str = "") -> None:
     """Bring the fake run to the concept's moment."""
+
+    if name == "signin-sheet":
+        source.account_email = "marina@example.com"
+        source.auth_status = "Сессия Apple ID истекла. Войдите заново."
+        controller.openSignIn()
+        return
+    if name == "signin-code":
+        controller.openSignIn()
+        source.login("marina@example.com", "not-a-real-password")
+        return
 
     from apprestore_gui.ui4b.space import DeviceSpace
 
@@ -119,7 +132,7 @@ def main() -> int:
             continue
         source = FakeSource(scenario)
         controller = Restore4b(source, onboarded=True)
-        prepare(controller, source, scenario)
+        prepare(controller, source, scenario, name)
         engine = QQmlApplicationEngine()
         warnings: list[str] = []
         engine.warnings.connect(lambda ws: warnings.extend(w.toString() for w in ws))
@@ -137,7 +150,7 @@ def main() -> int:
             app.processEvents()
         image: QImage = window.grabWindow()
         image.save(str(out / f"{name}.png"))
-        src = concepts / concept
+        src = concepts / concept if concept else concepts / "-"
         if src.is_file():
             # The concept is 1440×900 @2x with a grey margin; crop to the window.
             cimg = QImage(str(src))

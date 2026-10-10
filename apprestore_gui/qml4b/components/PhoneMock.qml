@@ -6,6 +6,8 @@ Item {
     id: root
     property var tiles: []
     property bool off: false
+    // Illustration on the phone during onboarding: "" | "trust" | "code".
+    property string alert: ""
     property int pageDots: 0
     readonly property real w: Theme.phoneWidth
     width: w
@@ -114,6 +116,88 @@ Item {
             Repeater {
                 model: root.pageDots
                 Rectangle { width: 7; height: 7; radius: 3.5; color: index === 0 ? Qt.rgba(0, 0, 0, 0.7) : Qt.rgba(0, 0, 0, 0.22) }
+            }
+        }
+            Rectangle {  // dim under a system alert
+            visible: root.alert !== ""
+            anchors.fill: parent
+            color: Qt.rgba(0, 0, 0, 0.3)
+            z: 2
+        }
+        Rectangle {
+            id: alertBox
+            visible: root.alert !== ""
+            z: 3
+            x: parent.width * 0.12
+            width: parent.width * 0.76
+            y: parent.height * 0.30 + 12
+            height: alertCol.height
+            radius: 18
+            color: "#f4f4f2"
+            clip: true
+            Column {
+                id: alertCol
+                width: parent.width
+                Item { width: 1; height: 18 }
+                Text {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    font.family: Theme.fontFamily
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                    color: "#111111"
+                    text: root.alert === "code" ? "Код проверки Apple ID" : "Доверять этому компьютеру?"
+                }
+                Item { width: 1; height: 4 }
+                Text {
+                    visible: root.alert === "code"
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    font.family: Theme.fontFamily
+                    font.pixelSize: 34
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: 34 * 0.06
+                    color: "#111111"
+                    topPadding: 6
+                    bottomPadding: 4
+                    text: "482 913"
+                }
+                Text {
+                    width: parent.width
+                    leftPadding: 18
+                    rightPadding: 18
+                    bottomPadding: 16
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                    font.family: Theme.fontFamily
+                    font.pixelSize: 13
+                    lineHeightMode: Text.FixedHeight
+                    lineHeight: 12.5 * 1.35
+                    color: "#333333"
+                    text: root.alert === "code"
+                          ? "Введите этот код на компьютере, чтобы завершить вход."
+                          : "Ваши настройки и данные будут доступны с этого компьютера при проводном или беспроводном подключении."
+                }
+                Rectangle { width: parent.width; height: 1; color: "#d3d3d0" }
+                Row {
+                    width: parent.width
+                    Repeater {
+                        model: root.alert === "code" ? ["OK"] : ["Доверять", "Не доверять"]
+                        Item {
+                            width: alertCol.width / (root.alert === "code" ? 1 : 2)
+                            height: 15 * 1.21 + 24
+                            Rectangle { visible: index > 0; width: 1; height: parent.height; color: "#d3d3d0" }
+                            Text {
+                                anchors.centerIn: parent
+                                font.family: Theme.fontFamily
+                                font.pixelSize: 15
+                                font.weight: index === 0 ? Font.DemiBold : Font.Normal
+                                color: "#0a6fe0"
+                                text: modelData
+                            }
+                        }
+                    }
+                }
             }
         }
     }

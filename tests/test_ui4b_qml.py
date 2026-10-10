@@ -21,7 +21,7 @@ from apprestore_gui.ui4b.window import load, qml_path
 
 SCENARIOS = (
     "missing", "many", "picker", "picker-search", "installing", "done", "disconnected",
-    "signin", "region", "empty", "onboarding-1", "onboarding-2", "onboarding-3", "onboarding-4",
+    "signin", "relogin", "region", "empty", "onboarding-1", "onboarding-2", "onboarding-3", "onboarding-4",
 )
 
 
@@ -142,7 +142,7 @@ class FakeSession:
     """Only what SessionSource touches; records the calls."""
 
     def __init__(self) -> None:
-        for name in ("changed", "purchasesChanged", "installProgress", "appRestored",
+        for name in ("changed", "sessionChanged", "purchasesChanged", "installProgress", "appRestored",
                      "restoreSettled", "installSettled", "copySettled"):
             setattr(self, name, FakeSignal())
         self.calls: list[tuple[str, object]] = []
@@ -151,6 +151,8 @@ class FakeSession:
         self.deviceName = ""
         self.deviceNoun = "iPhone"
         self.signedIn = True
+        self.authPhase = "in"
+        self.sessionRelogin = False
         self.purchases: list[dict] = []
         self.purchasesBusy = False
         self.purchasesProgress = ""
@@ -198,3 +200,61 @@ def test_old_quick_window_still_available() -> None:
 
     text = inspect.getsource(app_module.main)
     assert '"quick-legacy"' in text and "ui4b.window" in text
+
+
+def test_relogin_returns_home_without_resuming(qapp) -> None:
+    source = FakeSource("missing")
+    controller = Restore4b(source)
+    asked: list[int] = []
+    controller.signInRequested.connect(lambda: asked.append(1))
+    controller.primaryAction()
+    wait(qapp, lambda: bool(source.calls))
+    first = controller.flow.queue.entries[0].item.store_id
+    source.installSettled.emit(first, False, "Отказ -128")
+    assert controller.home["state"] == "signin"
+    assert controller.home["cta"] == "Войти заново"
+    controller.primaryAction()
+    assert asked == [1]
+    # Signed in again (QuickSession: authPhase running → in).
+    source.auth_phase = "running"
+    source.changed.emit()
+    source.auth_phase = "in"
+    source.changed.emit()
+    assert controller.home["state"] == "missing"
+    assert controller.home["cta"] == "Вернуть все 4"
+    assert [c[0] for c in source.calls] == ["install_store"]
+
+
+def test_session_source_reads_relogin_and_auth_phase(qapp) -> None:
+    session = FakeSession()
+    source = SessionSource(session)
+    session.sessionRelogin = True
+    session.authPhase = "out"
+    session.sessionChanged.emit()
+    assert source.relogin and source.auth_phase == "out"
+
+
+def test_signin_sheet_with_2fa_loads_and_closes_without_resuming(qapp) -> None:
+    source = FakeSource("relogin")
+    controller = Restore4b(source)
+    assert controller.home["state"] == "signin"
+    controller.primaryAction()
+    assert controller.signIn["open"] and not controller.signIn["code"]
+    engine, icons, warnings = open_window(qapp, controller)
+    window = engine.rootObjects()[0]
+    assert window.findChild(QQuickItem, "signInSheet") is not None
+    controller.login("marina@example.com", "secret")
+    qapp.processEvents()
+    assert controller.signIn["code"]
+    controller.submitCode("123456")
+    for _ in range(3):
+        qapp.processEvents()
+    assert not controller.signIn["open"]
+    assert controller.home["state"] == "missing"
+    assert [c[0] for c in source.calls] == ["login", "submit_code"]
+    assert "secret" not in repr(source.calls) and "123456" not in repr(source.calls)
+    window.close()
+    del window
+    del engine
+    qapp.processEvents()
+    assert warnings == []
