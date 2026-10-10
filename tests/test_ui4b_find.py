@@ -393,3 +393,21 @@ def test_real_module_builtin_level_a_rows_are_data_driven(qapp, monkeypatch) -> 
         text = (Path(F.__file__).parent / name).read_text(encoding="utf-8")
         for word in ("ВТБ", "Альфа", "Сириус", "Cириус", "Делим", "Drive Transit", "BUILTIN_STRICT"):
             assert word not in text, (name, word)
+
+
+def test_same_name_archive_hits_show_each_developer_order_by_score_no_badges(qapp) -> None:
+    """Лена: three «Cириус» in the archive — developer on each, order only by the
+    match score, no «настоящее/официальное» marks; region label unchanged."""
+
+    arch = [hit(1001, "Cириус", "B Dev", "wayback", 0.7, "20250101"),
+            hit(1002, "Cириус", "A Dev", "wayback", 0.8, "20250605"),
+            hit(1003, "Cириус", "C Dev", "wayback", 0.65, "20240101")]
+    c, src = controller(delisted=Delisted(archive=arch))
+    src.find_statuses = {"1001": RegionStatus.DELISTED, "1002": RegionStatus.DELISTED, "1003": RegionStatus.DELISTED}
+    c.finder.openWith("сириус")
+    got = rows(c)
+    assert [r["developer"] for r in got] == ["A Dev", "B Dev", "C Dev"]
+    assert {r["tag"] for r in got} == {"Удалено из App Store"}
+    text = repr(c.finder.view).casefold()
+    for word in ("официальн", "настоящ", "оригинал", "проверен"):
+        assert word not in text
