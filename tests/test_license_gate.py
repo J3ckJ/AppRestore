@@ -457,7 +457,10 @@ def test_account_not_in_this_store_exact_output_is_refused_and_not_journaled(tmp
 
     assert purchase_outcome(caught.value) == "refused"
     assert explain_user_error(str(caught.value)) == STORE_MISMATCH_TEXT
-    assert STORE_MISMATCH_TEXT == "Приложение недоступно в магазине страны вашего Apple ID."
+    assert STORE_MISMATCH_TEXT == (
+        "Магазин в текущем входе не совпадает со страной вашего Apple ID. Выйдите из аккаунта и войдите заново."
+    )
+    assert "vpn" not in STORE_MISMATCH_TEXT.casefold() and "регион" not in STORE_MISMATCH_TEXT
 
 
 @pytest.mark.parametrize(
@@ -492,3 +495,47 @@ def test_network_wrapped_or_unknown_purchase_errors_stay_uncertain(message: str)
 
     assert not is_store_refusal(message)
     assert purchase_outcome(ToolUnavailable(message)) == "uncertain"
+
+
+class _MismatchService:
+    def __init__(self, **_kwargs: object) -> None:
+        self.tools = type("T", (), {"ipatool_authenticated": lambda self: True})()
+
+    def download(self, *_args, **_kwargs):
+        raise ToolUnavailable(APPLE_128_ERROR)
+
+    download_by_store_id = download
+
+
+@pytest.mark.parametrize("argv", [["download", "com.example.alpha"], ["download", "--acquire-license", "389801252"]])
+def test_cli_store_mismatch_says_sign_out_and_in(argv, capsys) -> None:
+    from unittest.mock import patch
+
+    from apprestore_core import cli
+
+    with patch("apprestore_core.cli.AppRestoreService", _MismatchService):
+        assert cli.main(argv) == 1
+    err = capsys.readouterr().err
+    assert "Магазин в текущем входе не совпадает со страной вашего Apple ID." in err
+    assert "apprestore auth --revoke" in err and "apprestore auth --email" in err
+    assert "vpn" not in err.casefold()
+
+
+def test_cli_json_store_mismatch_has_message_and_hint(capsys) -> None:
+    from unittest.mock import patch
+
+    from apprestore_core import cli
+    from apprestore_core.license_gate import STORE_MISMATCH_TEXT
+
+    with patch("apprestore_core.cli.AppRestoreService", _MismatchService):
+        assert cli.main(["--json", "download", "com.example.alpha"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"] == APPLE_128_ERROR
+    assert payload["message"] == STORE_MISMATCH_TEXT
+    assert "auth --revoke" in payload["hint"]
+
+
+def test_cli_other_errors_unchanged() -> None:
+    from apprestore_core import cli
+
+    assert cli._error_text(ToolUnavailable("boom")) == "boom"

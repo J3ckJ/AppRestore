@@ -82,6 +82,17 @@ _STORE_MISMATCH = ("account not in this store",)
 _BARE_2040 = re.compile(r"\b2040\b")
 
 
+#: Shown for "Account Not In This Store": the sign-in's store differs from the
+#: Apple ID's country; signing out and in again fixes it (no VPN/region advice).
+STORE_MISMATCH_TEXT = (
+    "Магазин в текущем входе не совпадает со страной вашего Apple ID. "
+    "Выйдите из аккаунта и войдите заново."
+)
+STORE_MISMATCH_CLI_HINT = (
+    "Подсказка: apprestore auth --revoke, затем apprestore auth --email <ваш Apple ID>"
+)
+
+
 def is_store_mismatch(message: str) -> bool:
     """Apple's "Account Not In This Store" (failureType -128), case-insensitive."""
 

@@ -19,12 +19,11 @@ from apprestore_core.error_signal import (  # noqa: F401 - re-exported
     _signal,
     is_license_missing,
 )
-from apprestore_core.license_gate import is_store_mismatch, is_store_refusal
+from apprestore_core.license_gate import STORE_MISMATCH_TEXT, is_store_mismatch, is_store_refusal
 
 IPATOOL_FALLBACK_TEXT = "ipatool не смог выполнить запрос. Повторите позже."
 
 STORE_REFUSED_TEXT = "Apple сейчас не выдаёт это приложение для вашего аккаунта."
-STORE_MISMATCH_TEXT = "Приложение недоступно в магазине страны вашего Apple ID."
 
 NOT_OWNED_TEXT = (
     "Этого приложения нет на вашем Apple ID (нет лицензии). "
