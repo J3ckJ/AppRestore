@@ -9,6 +9,9 @@ Item {
     id: root
     property var tile: ({})
     property real k: 1.0                       // phoneW / 430
+    // one line, elided at the grid step (Ника): PhoneMock passes its column width,
+    // so neighbouring labels never run into each other
+    property real labelWidth: 86 * k
     readonly property string kind: tile.kind || "app"
     readonly property real icon: Theme.phoneIcon * k
     readonly property real r: Theme.tileRadius * k
@@ -136,7 +139,11 @@ Item {
             opacity: root.kind === "slot" && root.tile.pending ? 0 : 1
             color: root.kind === "slot" ? Theme.ink2 : (root.kind === "unavailable" ? Theme.ink3 : Theme.ink)
             elide: Text.ElideRight
-            width: Math.min(implicitWidth, 86 * root.k)
+            maximumLineCount: 1
+            wrapMode: Text.NoWrap
+            width: Math.min(implicitWidth, Math.max(0, root.labelWidth - 4 * root.k
+                   - (root.kind === "offloaded" ? 11 + 4 : 0)
+                   - (root.kind === "new" ? Theme.newDot + 4 : 0)))
         }
     }
 }

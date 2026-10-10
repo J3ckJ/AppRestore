@@ -14,6 +14,7 @@ from typing import Any
 
 from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 
+from .frequent import load as load_frequent
 from .find import (
     ARCHIVE_TIMEOUT_S, PLACEHOLDER, TITLE, FindState, banner as banner_view, Hit, hit_from, load_module, min_confidence, run_delisted,
 )
@@ -48,6 +49,7 @@ class Find4b(QObject):
         spawn: Callable[[Callable[[], None]], None] = _thread,
         module: Any | None = None,
         timeout_s: float = ARCHIVE_TIMEOUT_S,
+        frequent: Callable[[], list[dict[str, str]]] | None = None,
     ) -> None:
         super().__init__()
         self.source = source
@@ -65,6 +67,7 @@ class Find4b(QObject):
         self.set_delisted(delisted or (lambda q, net: run_delisted(q, net, self._module)))
         #: no delisted_search vendored → no built-in list and no archive
         self._has_delisted = delisted is not None or self._module is not None
+        self._frequent = frequent if frequent is not None else load_frequent
         self._spawn = spawn
         self._timeout_ms = int(timeout_s * 1000)
         self.state = FindState(min_confidence=min_confidence(self._module))
@@ -144,8 +147,25 @@ class Find4b(QObject):
         st.rejected = set(self._rejected())
         st.owned = self.source.owned_store_ids()
         if not query.strip():
+            # «Часто ищут»: the vetted list; the usual status button needs the owned
+            # set, region_probe and the public lookup — read in the background
+            st.frequent = self._frequent()
             st.store_done = True
             self.changed.emit()
+            ids = [r["storeId"] for r in st.frequent]
+            if ids and not st.offline:
+                source = self.source
+                owned_now = set(st.owned or ())
+
+                def lookups() -> None:
+                    statuses = source.store_statuses(ids)
+                    offers = source.store_offers([i for i in ids if i not in owned_now])
+                    record_prices({k: (v or {}).get("price") for k, v in dict(offers or {}).items()})
+                    self._storeDone.emit(gen, [], offers, statuses)
+
+                self._spawn(lookups)
+            else:
+                st.offers_done = True
             return
         st.builtin = [h for h in self._delisted(query, False)[0] if h.origin != "wayback"]  # instant
         self.changed.emit()

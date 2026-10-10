@@ -191,6 +191,29 @@ class SourceBase(QObject):
     def recheck(self) -> None:
         """The network is back: read again (lookup, list-purchases), buy nothing."""
 
+    def reload_device(self) -> None:
+        """A restore run ended: read the device again (offloaded, missing, installed, space)."""
+
+    # «Файлы IPA» (QuickSession library / saveCopies)
+    def library_files(self) -> list[dict[str, object]]:
+        return []
+
+    def load_library(self) -> None:
+        pass
+
+    def export_apps(self) -> list[dict[str, object]]:
+        return [{"bundleId": a.bundle_id, "storeId": a.store_id, "name": a.name, "detail": ""}
+                for a in self.phone_apps()]
+
+    def save_copies(self, bundle_ids: list[str]) -> None:
+        pass
+
+    def load_phone(self) -> None:
+        pass
+
+    def files_note(self) -> tuple[str, bool]:
+        return ("", False)
+
     def purchase_rows(self) -> list[dict[str, object]]:
         return []
 
@@ -282,6 +305,10 @@ class SessionSource(SourceBase):
         session.copySettled.connect(self.copySettled)
         if hasattr(session, "filesChanged"):
             session.filesChanged.connect(self.changed)  # phoneApps (installed apps, pymobiledevice3)
+        if hasattr(session, "filesNoteChanged"):
+            session.filesNoteChanged.connect(lambda *_a: self.changed.emit())  # «Файлы IPA» note/busy
+        if hasattr(session, "copySettled"):
+            session.copySettled.connect(lambda *_a: self.load_library())  # a saved copy → re-scan
         self._phone_udid = ""
         self._statuses: dict[str, object] = {}
         self._builtin_names: dict[str, str] | None = None
@@ -361,6 +388,38 @@ class SessionSource(SourceBase):
         if udid == self.session.current_udid():
             self._missing = list(apps or [])  # type: ignore[call-overload]
             self.changed.emit()
+
+    def library_files(self) -> list[dict[str, object]]:
+        return list(getattr(self.session, "libraryFiles", []) or [])
+
+    def load_library(self) -> None:
+        if hasattr(self.session, "loadLibrary"):
+            self.session.loadLibrary()
+
+    def export_apps(self) -> list[dict[str, object]]:
+        rows = list(getattr(self.session, "phoneApps", []) or [])
+        names = {(a.bundle_id or a.store_id): a.name for a in self.phone_apps()}
+        return [dict(r, name=names.get(str(r.get("bundleId") or r.get("storeId") or ""), r.get("name"))) for r in rows]
+
+    def load_phone(self) -> None:
+        if hasattr(self.session, "loadPhone"):
+            self.session.loadPhone()
+
+    def save_copies(self, bundle_ids: list[str]) -> None:
+        if hasattr(self.session, "saveCopies"):
+            self.session.saveCopies(list(bundle_ids))
+
+    def files_note(self) -> tuple[str, bool]:
+        return (str(getattr(self.session, "filesNote", "") or ""), bool(getattr(self.session, "filesBusy", False)))
+
+    def reload_device(self) -> None:
+        self._missing_udid = ""
+        self._phone_udid = ""
+        self._space_udid = ""
+        refresh = getattr(self.session, "refresh", None)
+        if callable(refresh):
+            refresh()  # QuickSession re-reads the offloaded list (its loop, _force)
+        self._on_session()
 
     def _set_online(self, online: bool) -> None:
         was_online = self.online
@@ -613,6 +672,10 @@ class Restore4b(QObject):
         self._updateChecked.connect(self._on_update_checked)
         self.selection = Selection(mark_color=mark_color)
         self.picker = PickerModel(self)
+        self._run_reread = False
+        self._files_open = False
+        self._files_mode = "list"
+        self._files_chosen: set[str] = set()
         self.flow = RestoreFlow(source, self._refresh)
         self.scan = ScanCounter()
         self.onboarding = Onboarding(started=onboarded, apple_id_skipped=onboarded, finished=onboarded)
@@ -676,6 +739,14 @@ class Restore4b(QObject):
         self._refresh()
 
     def _refresh(self) -> None:
+        finished = self.flow.queue.finished
+        if finished and not self._run_reread:
+            # a run just ended: read the phone again (offloaded, missing, installed
+            # apps, free space) so the home screen counts what is really left
+            self._run_reread = True
+            self.source.reload_device()
+        elif not finished:
+            self._run_reread = False
         if self.flow.apple_rejected != self._rejected_seen:
             self._rejected_seen = set(self.flow.apple_rejected)
             self._on_source()  # re-mark «Apple отказала в выдаче» (memory only)
@@ -1135,6 +1206,8 @@ class Restore4b(QObject):
             self.stop()
         elif action == "ipa":
             self.pickIpaRequested.emit()  # QML FileDialog: only a file already on this computer
+        elif action == "files":
+            self.openFiles()
         elif action == "signin":
             src = self.source
             if src.signed_in and src.auth_phase == "in" and not src.relogin:
@@ -1157,6 +1230,78 @@ class Restore4b(QObject):
         elif action == "details":
             self._component_details = not self._component_details
             self._refresh()
+
+    # -- «Файлы IPA» (0.3.2's library, 4b sheet) --------------------------------------
+
+    @Property("QVariantMap", notify=changed)
+    def files(self) -> dict[str, object]:
+        from apprestore_gui.ui4b.files import export_rows, files_view, library_rows
+
+        note, busy = self.source.files_note()
+        return files_view(
+            open_=self._files_open, mode=self._files_mode,
+            library=library_rows(self.source.library_files()),
+            export=export_rows(self.source.export_apps(), self._files_chosen) if self._files_mode == "export" else [],
+            note=note if self._files_open else "", busy=busy, connected=bool(self.source.connected),
+        )
+
+    @Slot()
+    def openFiles(self) -> None:
+        self._files_open, self._files_mode = True, "list"
+        self._files_chosen = set()
+        self.source.load_library()
+        self._refresh()
+
+    @Slot()
+    def closeFiles(self) -> None:
+        self._files_open = False
+        self._files_chosen = set()
+        self._refresh()
+
+    @Slot()
+    def filesExport(self) -> None:
+        """«Выгрузить с устройства»: the installed apps on the phone, pick, save copies."""
+
+        self._files_mode = "export"
+        self._files_chosen = set()
+        self.source.load_phone()
+        self._refresh()
+
+    @Slot()
+    def filesBack(self) -> None:
+        self._files_mode = "list"
+        self._files_chosen = set()
+        self._refresh()
+
+    @Slot(str)
+    def filesToggle(self, bundle_id: str) -> None:
+        if bundle_id in self._files_chosen:
+            self._files_chosen.discard(bundle_id)
+        elif bundle_id:
+            self._files_chosen.add(bundle_id)
+        self._refresh()
+
+    @Slot()
+    def filesSave(self) -> None:
+        if self._files_chosen:
+            self.source.save_copies(sorted(self._files_chosen))
+            self._files_chosen = set()
+            self._files_mode = "list"
+            self._refresh()
+
+    @Slot()
+    def filesPick(self) -> None:
+        """«Выбрать на ПК»: the file dialog; the chosen file goes the usual IPA path."""
+
+        self._files_open = False
+        self._refresh()
+        self.pickIpaRequested.emit()
+
+    @Slot(str)
+    def filesInstall(self, path: str) -> None:
+        self._files_open = False
+        self.installIpaFile(path)
+        self._refresh()
 
     @Slot(str)
     def installIpaFile(self, url_or_path: str) -> None:

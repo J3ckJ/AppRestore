@@ -481,7 +481,9 @@ def test_ipa_link_installs_only_a_local_file(qapp) -> None:
     controller = Restore4b(source)
     asked = []
     controller.pickIpaRequested.connect(lambda: asked.append(True))
-    controller.link("Файлы IPA")
+    controller.link("Файлы IPA")  # the sheet (Eugene 10.10); «Выбрать на ПК» = the file dialog
+    assert controller.files["open"] and asked == []
+    controller.filesPick()
     assert asked == [True]
     controller.installIpaFile("file:///tmp/Example.ipa")
     assert ("install_ipa", "/tmp/Example.ipa") in source.calls

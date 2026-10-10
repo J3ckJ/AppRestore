@@ -35,7 +35,7 @@ Window {
         Keys.onEnterPressed: win.enter()
     }
     function enter() {
-        if (!win.onboarding && !ui.pickerOpen && !ui.signIn.open && !ui.consent.open && !ui.account.open && !ui.find.open && !ui.settings.open && (win.home.cta || "") !== "")
+        if (!win.onboarding && !ui.pickerOpen && !ui.signIn.open && !ui.consent.open && !ui.account.open && !ui.find.open && !ui.settings.open && !ui.files.open && (win.home.cta || "") !== "")
             ui.primaryAction()
     }
 
@@ -116,6 +116,14 @@ Window {
         active: !!ui.account.open
         focus: active
         sourceComponent: AccountSheet {}
+    }
+
+    // -- «Файлы IPA» (as in 0.3.2): library, «Выгрузить с устройства», «Выбрать на ПК» --
+    Loader {
+        anchors.fill: parent
+        active: !!ui.files.open
+        focus: active
+        sourceComponent: FilesSheet {}
     }
 
     // -- «Найти» (02-picker §6b) ------------------------------------------------------

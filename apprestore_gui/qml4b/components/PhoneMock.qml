@@ -111,7 +111,7 @@ Item {
                 Item {
                     width: grid.width / 4
                     height: cell.height
-                    PhoneTile { id: cell; tile: modelData; k: root.k; anchors.horizontalCenter: parent.horizontalCenter }
+                    PhoneTile { id: cell; tile: modelData; k: root.k; labelWidth: grid.width / 4; anchors.horizontalCenter: parent.horizontalCenter }
                 }
             }
         }

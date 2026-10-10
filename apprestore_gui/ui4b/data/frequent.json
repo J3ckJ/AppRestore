@@ -1,0 +1,12 @@
+{
+  "_about": "«Часто ищут» in «Найти» while the field is empty (02-picker §6b line 232). Only originals whose App Store developer is the bank/company itself (LEGAL §1.13, Лена 10.10). To be replaced by Макс's §1.13 table after Лена's review: same fields. Never add bank-named clones (6749962031 «Сириус», 6755181069 Spotluma, 6473656113 «Апгрейд»).",
+  "apps": [
+    {"track_id": 492224193, "name": "Сбербанк Онлайн", "developer": "Сбербанк России", "source": "delisted_search BUILTIN (level A original)"},
+    {"track_id": 472951966, "name": "ВТБ Онлайн", "developer": "VTB Bank (PJSC)", "source": "delisted_search BUILTIN (level A)"},
+    {"track_id": 353127685, "name": "Альфа-Банк", "developer": "AO ALFA-BANK", "source": "delisted_search BUILTIN (level A)"},
+    {"track_id": 455652438, "name": "Тинькофф", "developer": "Tinkoff Bank", "source": "delisted_search BUILTIN (level A original)"},
+    {"track_id": 564177498, "name": "ВКонтакте", "developer": "V Kontakte OOO", "source": "apps.apple.com/ru/app/id564177498, Wayback 03.10.2023"},
+    {"track_id": 511310430, "name": "Почта Mail.ru", "developer": "V Kontakte OOO", "source": "apps.apple.com/ru/app/id511310430, Wayback 12.09.2023"},
+    {"track_id": 6739530834, "name": "MAX", "developer": "MAX LLC", "source": "apprestore_gui/popular_apps.py notes: «published by MAX LLC»"}
+  ]
+}

@@ -90,10 +90,15 @@ Column {
         rows: root.view.queue || []
     }
 
-    // big button
-    Item { width: 1; height: 34; visible: cta.visible }
+    // big button. BUG (Eugene, 1f34c49: no «Выбрать и вернуть»): the Row used to be
+    // `visible: cta.visible`, but a child's visible is false while its parent is
+    // hidden — after one state without a button (loading) it never came back.
+    // Bind to the data, never to a child's effective visibility.
+    readonly property bool hasCta: (root.view.cta || "") !== "" || (root.view.cta2 || "") !== ""
+    Item { width: 1; height: 34; visible: root.hasCta }
     Row {
-        visible: cta.visible
+        objectName: "heroCtaRow"
+        visible: root.hasCta
         spacing: 9
         Cta {
             id: cta

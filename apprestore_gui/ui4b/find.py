@@ -28,11 +28,13 @@ from apprestore_core.region_probe import RegionStatus
 from .component import HOWTO_LINK
 from .selection import parse_query
 from .settings import ARCHIVE_NOTE
+from .frequent import TITLE as FREQUENT_TITLE
 from .store_labels import caption
 
 GROUP_STORE = "store"
 GROUP_PURCHASES = "purchases"
 GROUP_DELISTED = "delisted"
+GROUP_FREQUENT = "frequent"
 
 TITLE = "Найти"
 STORE_TITLE = "В App Store"
@@ -208,6 +210,8 @@ class FindState:
     statuses: dict[str, RegionStatus] = field(default_factory=dict)
     #: Apple refused these in this program run (memory only) — no button
     rejected: set[str] = field(default_factory=set)
+    #: «Часто ищут» (ui4b.frequent): shown only while the field is empty
+    frequent: list[dict[str, str]] = field(default_factory=list)
 
     def reset(self, query: str) -> None:
         self.query = query
@@ -277,7 +281,13 @@ class FindState:
 
     def rows(self) -> list[dict[str, object]]:
         if not self.query.strip():
-            return []  # no suggestions or collections for an empty query
+            # 02-picker §6b line 232: the vetted «Часто ищут» list, rows like results
+            rows = [self._row(r["storeId"], r["name"], r["developer"], group=GROUP_FREQUENT)
+                    for r in self.frequent]
+            if not rows:
+                return []
+            return [{"kind": "header", "group": GROUP_FREQUENT, "title": FREQUENT_TITLE,
+                     "count": len(rows), "note": ""}, *rows]
         seen: set[str] = set()
         groups: dict[str, list[dict[str, object]]] = {GROUP_STORE: [], GROUP_PURCHASES: [], GROUP_DELISTED: []}
         for source, group in (("appstore", GROUP_STORE), ("purchases", GROUP_PURCHASES)):

@@ -215,12 +215,15 @@ def test_actions_owned_free_paid_unknown_component_and_offline(qapp) -> None:
     assert c.finder.banner["text"] == F.OFFLINE_BANNER and all(not r["enabled"] for r in rows(c))
 
 
-def test_empty_field_is_placeholder_only_no_suggestions(qapp) -> None:
+def test_empty_field_shows_only_the_vetted_frequent_list(qapp) -> None:
+    """Eugene 10.10 / Ника 02 §6b line 232: «Часто ищут» while the field is empty —
+    the vetted data file only; no delisted_search call, no archive."""
     d = Delisted([hit(SIRIUS, "Cириус", "Sergei Smirnov")])
     c, _ = controller(delisted=d)
     c.finder.openWith("")
     v = c.finder.view
-    assert v["rows"] == [] and v["empty"] == "" and d.calls == []
+    assert v["rows"][0]["title"] == "Часто ищут" and v["empty"] == "" and d.calls == []
+    assert SIRIUS not in {r.get("storeId") for r in v["rows"]}
 
 
 def test_install_goes_the_usual_path_and_closes_the_sheet(qapp) -> None:

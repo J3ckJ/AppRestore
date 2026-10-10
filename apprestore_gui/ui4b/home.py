@@ -171,8 +171,10 @@ def link_action(name: str) -> str:
 
     if name == "Остановить":
         return "stop"
-    if name in ("Файлы IPA", IPA_LINK):
-        return "ipa"  # a file already on this computer → install (installSaved)
+    if name == "Файлы IPA":
+        return "files"  # the «Файлы IPA» sheet (as in 0.3.2): library, export, pick a file
+    if name == IPA_LINK:
+        return "ipa"  # «Есть файл IPA для …»: a file already on this computer → install
     if name == "Apple ID":
         return "signin"
     if name == "Найти другое приложение":
@@ -190,12 +192,21 @@ def home_view(inp: HomeInput) -> dict[str, object]:
     noun = inp.noun or "iPhone"
     over = inp.device_name or noun
     items = list(inp.items)
+    queue = inp.queue
+    # BUG (Eugene, 1f34c49): after one install the screen said «Всё на месте» with
+    # 500+ offloaded left. What came back in a finished run is no longer missing,
+    # even before the device is read again; the rest stays counted.
+    returned = queue.done_keys() if queue is not None and queue.finished else set()
+    items = [item for item in items if item.key not in returned]
     removed = [item for item in items if item.group == GROUP_REMOVED]
     offloaded = [item for item in items if item.group == GROUP_OFFLOADED]
     region = [item for item in items if item.group == GROUP_REGION]
     # the home screen keeps region apps out of its count (they are chosen in «Что вернуть»)
     selectable = [item for item in items if item.selectable and item.group != GROUP_REGION]
-    queue = inp.queue
+    #: the run's summary is the final screen only when nothing is left, or when it
+    #: has something to say (failures, «не хватило лимита», skipped); otherwise the
+    #: home screen with the fresh count
+    run_notes = queue is not None and (bool(queue.failed) or any(queue.skipped.values()))
     view: dict[str, object] = {
         "over": over,
         "number": 0,
@@ -287,7 +298,7 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             "Это нормально: ошибки нет, просто подождите.",
             links=["Остановить", "Журнал"],
         )
-    elif queue is not None and queue.finished and not inp.done_dismissed:
+    elif queue is not None and queue.finished and not inp.done_dismissed and (not items or run_notes):
         state = STATE_DONE
         ok = [entry.item.label for entry in queue.entries if entry.state == DONE]
         bad = queue.failed
@@ -295,6 +306,8 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             title = "Ничего\nне вернули"
         elif bad and not ok:
             title = "Не получилось"
+        elif items:
+            title = "Вернули\nне всё"  # never «на месте» while something is still missing
         elif bad:
             title = "Почти всё\nна месте"
         else:
@@ -338,7 +351,8 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             queue=queue.rows(noun),
             links=["Найти другое приложение", "Файлы IPA", "Apple ID"],
         )
-    elif inp.loading:
+    elif inp.loading and not items:
+        # a re-read after a run keeps the last count on screen (no flash of «Смотрю…»)
         state = STATE_LOADING
         view.update(title="Смотрю,\nчего не хватает", hint="Телефоном можно пользоваться, только не отключайте кабель.")
     elif not items:

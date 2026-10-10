@@ -13,6 +13,7 @@ datas = [
     (str(root / "apprestore_gui" / "resources"), "apprestore_gui/resources"),
     (str(root / "apprestore_gui" / "qml"), "apprestore_gui/qml"),
     (str(root / "apprestore_gui" / "qml4b"), "apprestore_gui/qml4b"),
+    (str(root / "apprestore_gui" / "ui4b" / "data"), "apprestore_gui/ui4b/data"),
     (str(root / "LICENSE"), "."),
     (str(root / "THIRD_PARTY_NOTICES.md"), "."),
 ]

@@ -59,6 +59,9 @@ class RestoreQueue:
     def active(self) -> bool:
         return any(entry.state in (WAIT, CURRENT) for entry in self.entries) and not self.stopped
 
+    def done_keys(self) -> set[str]:
+        return {entry.item.key for entry in self.entries if entry.state == DONE}
+
     @property
     def finished(self) -> bool:
         return bool(self.entries) and not self.active
