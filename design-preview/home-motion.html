@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AppRestore — четыре хода главного экрана</title>
+  <style>
+    @font-face {
+      font-family: Onest;
+      src: url("../apprestore_gui/resources/fonts/Onest-Variable.ttf") format("truetype");
+      font-weight: 100 900;
+      font-display: swap;
+    }
+
+    :root {
+      --ink: #1c1c1e;
+      --muted: #6c6c70;
+      --line: #d8d8dc;
+      --paper: #e8e8ed;
+      --accent: #c45c2a;
+      --accent-hover: #a84c22;
+      --good: #1b7f3a;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      background: #f3f3f5;
+      color: var(--ink);
+      font-family: Onest, "Segoe UI", sans-serif;
+      font-weight: 500;
+    }
+
+    body {
+      min-height: 100vh;
+      padding: 18px 28px 24px;
+    }
+
+    header {
+      max-width: 1040px;
+      margin: 0 auto 18px;
+    }
+
+    .brand {
+      margin: 0;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 650;
+    }
+
+    h1 {
+      margin: 4px 0 6px;
+      font-size: 28px;
+      line-height: 1.1;
+      font-weight: 650;
+      letter-spacing: -0.03em;
+    }
+
+    header p {
+      margin: 0;
+      max-width: 640px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.45;
+    }
+
+    .tabs {
+      max-width: 1040px;
+      margin: 22px auto 14px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+
+    .tabs button {
+      appearance: none;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--ink);
+      text-align: left;
+      border-radius: 14px;
+      padding: 8px 12px 9px;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .tabs button strong {
+      display: block;
+      font-size: 15px;
+      font-weight: 650;
+    }
+
+    .tabs button span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .tabs button[aria-selected="true"] {
+      background: white;
+      border-color: var(--line);
+    }
+
+    .stage {
+      max-width: 1040px;
+      margin: 0 auto;
+    }
+
+    .scene {
+      display: none;
+      min-height: 560px;
+      background: var(--paper);
+      border-radius: 28px;
+      padding: 28px 48px 32px;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .scene.on { display: flex; }
+
+    .poster, .land {
+      width: min(880px, 100%);
+      display: grid;
+      align-items: center;
+    }
+
+    .poster { grid-template-columns: 1fr 280px; gap: 36px; }
+    .land { grid-template-columns: 380px 260px; gap: 80px; justify-content: center; }
+
+    .kicker {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+      font-weight: 650;
+      letter-spacing: 0.04em;
+    }
+
+    .ticker {
+      height: 120px;
+      overflow: hidden;
+      margin: 0 0 6px;
+    }
+
+    .figure {
+      display: block;
+      font-size: 120px;
+      line-height: 120px;
+      font-weight: 700;
+      letter-spacing: -0.06em;
+    }
+
+    .figure.word {
+      font-size: 112px;
+      letter-spacing: -0.045em;
+    }
+
+    .sub {
+      margin: 0;
+      max-width: 320px;
+      min-height: 44px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.4;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-top: 28px;
+    }
+
+    .pill {
+      position: relative;
+      height: 52px;
+      min-width: 168px;
+      padding: 0 26px;
+      border: 0;
+      border-radius: 26px;
+      background: var(--accent);
+      color: white;
+      font: 650 16px Onest, "Segoe UI", sans-serif;
+      cursor: pointer;
+    }
+
+    .pill::before {
+      content: "";
+      position: absolute;
+      left: 20px;
+      right: 20px;
+      top: 1px;
+      height: 1px;
+      background: rgba(255, 255, 255, 0.55);
+      border-radius: 1px;
+    }
+
+    .pill:hover { background: var(--accent-hover); }
+
+    .pill:disabled {
+      cursor: default;
+      background: white;
+      color: var(--ink);
+    }
+
+    .pill:disabled::before { display: none; }
+
+    .again {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font: 600 15px Onest, "Segoe UI", sans-serif;
+      cursor: pointer;
+      padding: 0;
+      visibility: hidden;
+    }
+
+    .scene[data-state="done"] .again { visibility: visible; }
+    .again:hover { color: var(--ink); }
+
+    .phone-wrap { position: relative; width: 228px; height: 428px; }
+    .phone-wrap.large { width: 248px; height: 456px; }
+
+    .halo {
+      position: absolute;
+      inset: -28px -36px;
+      z-index: 0;
+      pointer-events: none;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(196, 92, 42, 0.34) 0%, rgba(196, 92, 42, 0.1) 42%, transparent 70%);
+      opacity: 0;
+      transition: opacity 0.7s ease;
+    }
+
+    .phone-wrap.lit .halo { opacity: 1; }
+
+    .phone {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+      background: #141416;
+      border-radius: 40px;
+      padding: 9px;
+    }
+
+    .glass {
+      position: relative;
+      height: 100%;
+      border-radius: 32px;
+      overflow: hidden;
+      background: linear-gradient(180deg, #3a3a40 0%, #1c1c20 48%, #121214 100%);
+    }
+
+    .island {
+      position: absolute;
+      z-index: 3;
+      top: 12px;
+      left: 50%;
+      width: 84px;
+      height: 26px;
+      margin-left: -42px;
+      background: #0c0c0e;
+      border-radius: 14px;
+    }
+
+    .homebar {
+      position: absolute;
+      z-index: 3;
+      left: 50%;
+      bottom: 8px;
+      width: 104px;
+      height: 4px;
+      margin-left: -52px;
+      border-radius: 2px;
+      background: #6e6e74;
+    }
+
+    .grid {
+      position: absolute;
+      z-index: 1;
+      left: 22px;
+      right: 22px;
+      top: 86px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .icon, .well, .mark, .ghost {
+      display: grid;
+      place-items: center;
+      font-weight: 650;
+      color: white;
+    }
+
+    .icon, .well {
+      aspect-ratio: 1;
+      border-radius: 18px;
+      font-size: 24px;
+      background: #3c3c42;
+      color: #ececf0;
+    }
+
+    .icon {
+      transition: background 0.35s ease, color 0.35s ease, transform 0.45s cubic-bezier(0.16, 1.15, 0.32, 1);
+    }
+
+    .icon.on, .well.on {
+      background: var(--c);
+      color: white;
+    }
+
+    .icon.pop { animation: pop 0.48s cubic-bezier(0.16, 1.35, 0.32, 1); }
+
+    @keyframes pop {
+      0% { transform: scale(0.84); }
+      100% { transform: scale(1); }
+    }
+
+    .sheen {
+      position: absolute;
+      z-index: 2;
+      top: -30%;
+      left: 0;
+      width: 46%;
+      height: 160%;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.62), transparent);
+      transform: translateX(-160%) rotate(16deg);
+      pointer-events: none;
+    }
+
+    .column {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 26px;
+    }
+
+    .column .kicker { text-align: center; }
+    .column .sub { text-align: center; max-width: 360px; }
+
+    .rows { display: flex; flex-direction: column; gap: 8px; }
+
+    .row {
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 12px;
+      align-items: center;
+      background: white;
+      border-radius: 16px;
+      padding: 10px 14px 10px 10px;
+      transition: opacity 0.35s ease;
+    }
+
+    .row.landed { opacity: 0.55; }
+    .row.landed .detail { color: var(--good); }
+
+    .mark {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      font-size: 18px;
+      background: var(--c);
+    }
+
+    .name {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 650;
+    }
+
+    .detail {
+      margin: 1px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .well { position: relative; }
+    .well span { opacity: 0; transition: opacity 0.2s ease; }
+    .well.on span { opacity: 1; }
+
+    .cell { position: relative; aspect-ratio: 1; }
+    .cell .slot,
+    .cell .icon {
+      position: absolute;
+      inset: 0;
+    }
+
+    .slot {
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.28);
+    }
+
+    .gather .icon { opacity: 0; }
+
+    .note {
+      max-width: 1040px;
+      margin: 14px auto 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 860px) {
+      body { padding: 18px 14px 32px; }
+      .tabs { grid-template-columns: 1fr 1fr; }
+      .scene { padding: 28px 18px; min-height: 0; }
+      .poster, .land { grid-template-columns: 1fr; gap: 28px; justify-items: center; }
+      .copy { text-align: center; }
+      .sub { margin-left: auto; margin-right: auto; }
+      .actions { justify-content: center; }
+      h1 { font-size: 26px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .icon, .row, .halo i, .well span { transition: none; }
+      .icon.pop { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="brand">AppRestore · набросок</p>
+    <h1>Главный экран. Четыре хода.</h1>
+    <p>Свет, карточки и оранжевая кнопка те же, что в окне. Меняется то, как четыре приложения возвращаются на телефон. В программу это пока не перенесено.</p>
+  </header>
+
+  <nav class="tabs" aria-label="Варианты">
+    <button type="button" data-pick="count" aria-selected="true">
+      <strong>Счёт</strong>
+      <span>Число и значки. Как сейчас.</span>
+    </button>
+    <button type="button" data-pick="light">
+      <strong>Свет</strong>
+      <span>Полоса по стеклу.</span>
+    </button>
+    <button type="button" data-pick="land">
+      <strong>Посадка</strong>
+      <span>Со списка на экран.</span>
+    </button>
+    <button type="button" data-pick="gather">
+      <strong>Сбор</strong>
+      <span>Из одной точки.</span>
+    </button>
+  </nav>
+
+  <main class="stage">
+    <section class="scene on" data-variant="count" data-state="idle">
+      <div class="poster">
+        <div class="copy">
+          <p class="kicker" data-kicker>не хватает</p>
+          <div class="ticker"><span class="figure" data-figure>4</span></div>
+          <p class="sub" data-sub>Серые значки — их нет на iPhone</p>
+          <div class="actions">
+            <button type="button" class="pill" data-play>Вернуть</button>
+            <button type="button" class="again" data-reset>Ещё раз</button>
+          </div>
+        </div>
+        <div class="phone-wrap" data-glow>
+          <div class="halo" aria-hidden="true"></div>
+          <div class="phone">
+            <div class="glass">
+              <div class="island"></div>
+              <div class="grid" data-icons>
+                <div class="icon" style="--c:#21A038">С</div>
+                <div class="icon" style="--c:#0077FF">В</div>
+                <div class="icon" style="--c:#3B4BFF">М</div>
+                <div class="icon" style="--c:#005FF9">П</div>
+              </div>
+              <div class="homebar"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="scene" data-variant="light" data-state="idle">
+      <div class="column">
+        <div>
+          <p class="kicker">четыре приложения</p>
+          <p class="sub">Сбер, VK, MAX и Почта</p>
+        </div>
+        <div class="phone-wrap large">
+          <div class="phone">
+            <div class="glass">
+              <div class="island"></div>
+              <div class="sheen" data-sheen></div>
+              <div class="grid" data-icons>
+                <div class="icon" style="--c:#21A038">С</div>
+                <div class="icon" style="--c:#0077FF">В</div>
+                <div class="icon" style="--c:#3B4BFF">М</div>
+                <div class="icon" style="--c:#005FF9">П</div>
+              </div>
+              <div class="homebar"></div>
+            </div>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button" class="pill" data-play>Вернуть</button>
+          <button type="button" class="again" data-reset>Ещё раз</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="scene" data-variant="land" data-state="idle">
+      <div class="land">
+        <div>
+          <p class="kicker">вернём эти</p>
+          <div class="rows" data-rows style="margin-top:16px">
+            <article class="row">
+              <div class="mark" style="--c:#21A038">С</div>
+              <div>
+                <p class="name">Сбер</p>
+                <p class="detail" data-detail>Онлайн 17.6.1</p>
+              </div>
+            </article>
+            <article class="row">
+              <div class="mark" style="--c:#0077FF">В</div>
+              <div>
+                <p class="name">VK</p>
+                <p class="detail" data-detail>соцсеть</p>
+              </div>
+            </article>
+            <article class="row">
+              <div class="mark" style="--c:#3B4BFF">М</div>
+              <div>
+                <p class="name">MAX</p>
+                <p class="detail" data-detail>мессенджер</p>
+              </div>
+            </article>
+            <article class="row">
+              <div class="mark" style="--c:#005FF9">П</div>
+              <div>
+                <p class="name">Почта</p>
+                <p class="detail" data-detail>Mail.ru</p>
+              </div>
+            </article>
+          </div>
+          <div class="actions">
+            <button type="button" class="pill" data-play>Вернуть 4</button>
+            <button type="button" class="again" data-reset>Ещё раз</button>
+          </div>
+        </div>
+        <div class="phone-wrap">
+          <div class="phone">
+            <div class="glass">
+              <div class="island"></div>
+              <div class="grid" data-wells>
+                <div class="well" style="--c:#21A038"><span>С</span></div>
+                <div class="well" style="--c:#0077FF"><span>В</span></div>
+                <div class="well" style="--c:#3B4BFF"><span>М</span></div>
+                <div class="well" style="--c:#005FF9"><span>П</span></div>
+              </div>
+              <div class="homebar"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="scene gather" data-variant="gather" data-state="idle">
+      <div class="column">
+        <div>
+          <p class="kicker" data-kicker>их нет на экране</p>
+          <p class="sub" data-sub>Сбер, VK, MAX, Почта</p>
+        </div>
+        <div class="phone-wrap large">
+          <div class="phone">
+            <div class="glass">
+              <div class="island"></div>
+              <div class="grid" data-icons>
+                <div class="cell"><div class="slot"></div><div class="icon" style="--c:#21A038">С</div></div>
+                <div class="cell"><div class="slot"></div><div class="icon" style="--c:#0077FF">В</div></div>
+                <div class="cell"><div class="slot"></div><div class="icon" style="--c:#3B4BFF">М</div></div>
+                <div class="cell"><div class="slot"></div><div class="icon" style="--c:#005FF9">П</div></div>
+              </div>
+              <div class="homebar"></div>
+            </div>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button" class="pill" data-play>Вернуть</button>
+          <button type="button" class="again" data-reset>Ещё раз</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <p class="note" id="note">Счёт. Большое число — это интерфейс. Каждый вернувшийся значок уменьшает его на один, пока не останется «всё».</p>
+
+  <script>
+    const notes = {
+      count: "Счёт. Большое число — это интерфейс. Каждый вернувшийся значок уменьшает его на один, пока не останется «всё».",
+      light: "Свет. Числа нет. Телефон занимает кадр, а цвет приходит вместе с полосой, которая проходит по стеклу.",
+      land: "Посадка. Слева то, что выбрали. Значок уходит со строки и оказывается на экране, строка остаётся тихой: «на iPhone».",
+      gather: "Сбор. До нажатия на стекле только пустые места. Все четыре значка выходят из центра одним жестом."
+    };
+
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const note = document.getElementById("note");
+    const scenes = new Map([...document.querySelectorAll(".scene")].map((node) => [node.dataset.variant, node]));
+    const tokens = new Map();
+
+    function wait(ms, token, scene) {
+      return new Promise((resolve) => {
+        window.setTimeout(() => resolve(tokens.get(scene) === token), ms);
+      });
+    }
+
+    function bump(scene) {
+      const next = (tokens.get(scene) || 0) + 1;
+      tokens.set(scene, next);
+      return next;
+    }
+
+    function clearGhosts() {
+      document.querySelectorAll(".ghost").forEach((node) => node.remove());
+    }
+
+    function setPill(scene, text, enabled) {
+      const pill = scene.querySelector("[data-play]");
+      pill.textContent = text;
+      pill.disabled = !enabled;
+    }
+
+    function resetCount(scene) {
+      const figure = scene.querySelector("[data-figure]");
+      figure.textContent = "4";
+      figure.classList.remove("word");
+      scene.querySelector("[data-kicker]").textContent = "не хватает";
+      scene.querySelector("[data-sub]").textContent = "Серые значки — их нет на iPhone";
+      scene.querySelector("[data-glow]").classList.remove("lit");
+      scene.querySelectorAll(".icon").forEach((icon) => icon.classList.remove("on", "pop"));
+      setPill(scene, "Вернуть", true);
+    }
+
+    function resetLight(scene) {
+      const sheen = scene.querySelector("[data-sheen]");
+      sheen.getAnimations().forEach((clip) => clip.cancel());
+      sheen.style.transform = "translateX(-160%) rotate(16deg)";
+      scene.querySelectorAll(".icon").forEach((icon) => icon.classList.remove("on", "pop"));
+      setPill(scene, "Вернуть", true);
+    }
+
+    function resetLand(scene) {
+      clearGhosts();
+      scene.querySelectorAll(".row").forEach((row) => row.classList.remove("landed"));
+      scene.querySelectorAll("[data-detail]").forEach((node, index) => {
+        node.textContent = ["Онлайн 17.6.1", "соцсеть", "мессенджер", "Mail.ru"][index];
+      });
+      scene.querySelectorAll(".well").forEach((well) => well.classList.remove("on"));
+      setPill(scene, "Вернуть 4", true);
+    }
+
+    function parkGather(scene) {
+      const glass = scene.querySelector(".glass");
+      const bounds = glass.getBoundingClientRect();
+      if (bounds.width < 10) return;
+      const cx = bounds.left + bounds.width / 2;
+      const cy = bounds.top + bounds.height * 0.46;
+      const icons = [...scene.querySelectorAll(".icon")];
+      icons.forEach((icon) => {
+        icon.classList.remove("on");
+        icon.style.opacity = "0";
+        icon.style.transition = "none";
+        icon.style.transform = "none";
+      });
+      scene.getBoundingClientRect();
+      icons.forEach((icon) => {
+        const rect = icon.getBoundingClientRect();
+        const dx = cx - (rect.left + rect.width / 2);
+        const dy = cy - (rect.top + rect.height / 2);
+        icon.style.transform = "translate(" + dx + "px, " + dy + "px) scale(0.42)";
+      });
+    }
+
+    function resetGather(scene) {
+      scene.querySelector("[data-kicker]").textContent = "их нет на экране";
+      scene.querySelector("[data-sub]").textContent = "Сбер, VK, MAX, Почта";
+      parkGather(scene);
+      setPill(scene, "Вернуть", true);
+    }
+
+    const resets = { count: resetCount, light: resetLight, land: resetLand, gather: resetGather };
+
+    function reset(scene) {
+      bump(scene);
+      scene.dataset.state = "idle";
+      resets[scene.dataset.variant](scene);
+    }
+
+    async function playCount(scene, token) {
+      const figure = scene.querySelector("[data-figure]");
+      const icons = [...scene.querySelectorAll(".icon")];
+      const steps = ["3", "2", "1", "всё"];
+      scene.querySelector("[data-glow]").classList.add("lit");
+      scene.querySelector("[data-sub]").textContent = "iPhone докачивает сам";
+      for (let index = 0; index < steps.length; index += 1) {
+        if (reduce) break;
+        const alive = await wait(index === 0 ? 80 : 420, token, scene);
+        if (!alive) return;
+        const next = steps[index];
+        figure.animate(
+          [{ transform: "translateY(0)", opacity: 1 }, { transform: "translateY(-28%)", opacity: 0 }],
+          { duration: 160, easing: "cubic-bezier(.4,0,1,1)", fill: "forwards" }
+        );
+        const swapped = await wait(150, token, scene);
+        if (!swapped) return;
+        figure.textContent = next;
+        figure.classList.toggle("word", next === "всё");
+        figure.animate(
+          [{ transform: "translateY(22%)", opacity: 0 }, { transform: "translateY(0)", opacity: 1 }],
+          { duration: 280, easing: "cubic-bezier(.16,1,.3,1)", fill: "forwards" }
+        );
+        icons[index].classList.add("on", "pop");
+      }
+      if (reduce) {
+        figure.textContent = "всё";
+        figure.classList.add("word");
+        icons.forEach((icon) => icon.classList.add("on"));
+      } else {
+        const alive = await wait(420, token, scene);
+        if (!alive) return;
+      }
+      scene.querySelector("[data-kicker]").textContent = "на iPhone";
+      scene.querySelector("[data-sub]").textContent = "Можно отключать кабель";
+      scene.dataset.state = "done";
+      setPill(scene, "Готово", false);
+    }
+
+    async function playLight(scene, token) {
+      const sheen = scene.querySelector("[data-sheen]");
+      const icons = [...scene.querySelectorAll(".icon")];
+      if (!reduce) {
+        sheen.animate(
+          [
+            { transform: "translateX(-160%) rotate(16deg)" },
+            { transform: "translateX(320%) rotate(16deg)" }
+          ],
+          { duration: 1500, easing: "cubic-bezier(.45,0,.2,1)", fill: "forwards" }
+        );
+        for (let index = 0; index < icons.length; index += 1) {
+          const alive = await wait(260 + index * 280, token, scene);
+          if (!alive) return;
+          icons[index].classList.add("on", "pop");
+        }
+        const alive = await wait(280, token, scene);
+        if (!alive) return;
+      } else {
+        icons.forEach((icon) => icon.classList.add("on"));
+      }
+      scene.dataset.state = "done";
+      setPill(scene, "Готово", false);
+    }
+
+    async function playLand(scene, token) {
+      const rows = [...scene.querySelectorAll(".row")];
+      const wells = [...scene.querySelectorAll(".well")];
+      for (let index = 0; index < rows.length; index += 1) {
+        if (!reduce) {
+          const alive = await wait(index === 0 ? 40 : 200, token, scene);
+          if (!alive) return;
+          const mark = rows[index].querySelector(".mark");
+          const from = mark.getBoundingClientRect();
+          const to = wells[index].getBoundingClientRect();
+          const ghost = mark.cloneNode(true);
+          ghost.classList.add("ghost");
+          ghost.style.position = "fixed";
+          ghost.style.left = from.left + "px";
+          ghost.style.top = from.top + "px";
+          ghost.style.width = from.width + "px";
+          ghost.style.height = from.height + "px";
+          ghost.style.margin = "0";
+          ghost.style.zIndex = "30";
+          ghost.style.borderRadius = "14px";
+          document.body.appendChild(ghost);
+          const dx = (to.left + to.width / 2) - (from.left + from.width / 2);
+          const dy = (to.top + to.height / 2) - (from.top + from.height / 2);
+          const flight = ghost.animate(
+            [
+              { transform: "translate(0,0) scale(1)" },
+              { transform: "translate(" + (dx * 0.5) + "px, " + (dy * 0.42 - 28) + "px) scale(1.06)", offset: 0.46 },
+              { transform: "translate(" + dx + "px, " + dy + "px) scale(1.15)" }
+            ],
+            { duration: 620, easing: "cubic-bezier(.22,.8,.2,1)", fill: "forwards" }
+          );
+          flight.finished.then(() => {
+            if (tokens.get(scene) !== token) {
+              ghost.remove();
+              return;
+            }
+            wells[index].classList.add("on");
+            rows[index].classList.add("landed");
+            rows[index].querySelector("[data-detail]").textContent = "на iPhone";
+            ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, fill: "forwards" }).finished.then(() => ghost.remove());
+          });
+        }
+      }
+      if (reduce) {
+        wells.forEach((well) => well.classList.add("on"));
+        rows.forEach((row) => {
+          row.classList.add("landed");
+          row.querySelector("[data-detail]").textContent = "на iPhone";
+        });
+      } else {
+        const alive = await wait(760, token, scene);
+        if (!alive) return;
+      }
+      scene.dataset.state = "done";
+      setPill(scene, "Готово", false);
+    }
+
+    async function playGather(scene, token) {
+      const icons = [...scene.querySelectorAll(".icon")];
+      if (reduce) {
+        icons.forEach((icon) => {
+          icon.style.transition = "none";
+          icon.style.transform = "none";
+          icon.style.opacity = "1";
+          icon.classList.add("on");
+        });
+      } else {
+        icons.forEach((icon, index) => {
+          icon.classList.add("on");
+          icon.style.transition = "transform 720ms cubic-bezier(.16,1.28,.32,1) " + (index * 70) + "ms, opacity 220ms ease " + (index * 70) + "ms";
+          icon.style.transform = "translate(0,0) scale(1)";
+          icon.style.opacity = "1";
+        });
+        const alive = await wait(980, token, scene);
+        if (!alive) return;
+      }
+      scene.querySelector("[data-kicker]").textContent = "на iPhone";
+      scene.querySelector("[data-sub]").textContent = "Можно отключать кабель";
+      scene.dataset.state = "done";
+      setPill(scene, "Готово", false);
+    }
+
+    const plays = { count: playCount, light: playLight, land: playLand, gather: playGather };
+
+    function play(scene) {
+      if (scene.dataset.state === "run") return;
+      if (scene.dataset.state === "done") return;
+      scene.dataset.state = "run";
+      setPill(scene, "Возвращаем", false);
+      const token = bump(scene);
+      plays[scene.dataset.variant](scene, token);
+    }
+
+    function show(id) {
+      scenes.forEach((scene, key) => {
+        const active = key === id;
+        scene.classList.toggle("on", active);
+        if (!active && scene.dataset.state !== "idle") reset(scene);
+      });
+      document.querySelectorAll(".tabs button").forEach((button) => {
+        button.setAttribute("aria-selected", button.dataset.pick === id ? "true" : "false");
+      });
+      note.textContent = notes[id];
+      if (id === "gather") {
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => parkGather(scenes.get("gather")));
+        });
+      }
+    }
+
+    document.querySelector(".tabs").addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (button) show(button.dataset.pick);
+    });
+
+    document.querySelector(".stage").addEventListener("click", (event) => {
+      const scene = event.target.closest(".scene");
+      if (!scene) return;
+      if (event.target.closest("[data-play]")) play(scene);
+      if (event.target.closest("[data-reset]")) reset(scene);
+    });
+
+    document.addEventListener("keydown", (event) => {
+      const index = ["1", "2", "3", "4"].indexOf(event.key);
+      if (index >= 0) show(["count", "light", "land", "gather"][index]);
+    });
+
+    window.addEventListener("resize", () => {
+      const gather = scenes.get("gather");
+      if (gather.dataset.state === "idle") parkGather(gather);
+    });
+
+    parkGather(scenes.get("gather"));
+  </script>
+</body>
+</html>

@@ -177,6 +177,23 @@ def _parent_has_no_console() -> bool:
         return False
 
 
+#: Never handed to a child process: the keychain passphrase goes only through
+#: ``--keychain-passphrase-stdin`` (patched ipatool) or the hidden terminal.
+SECRET_ENV_NAMES = frozenset({"IPATOOL_KEYCHAIN_PASSPHRASE", "APPRESTORE_BENCH_KEYCHAIN_PASSPHRASE"})
+
+
+def child_env(extra: Mapping[str, str] | None = None) -> dict[str, str]:
+    """``os.environ`` + ``extra`` without secrets (see SECRET_ENV_NAMES)."""
+
+    env = os.environ.copy()
+    if extra:
+        env.update(extra)
+    for name in list(env):
+        if name.upper() in SECRET_ENV_NAMES:
+            del env[name]
+    return env
+
+
 def windows_creationflags(*, no_console: bool | None = None) -> int:
     """Process-creation flags for console children on Windows.
 
@@ -216,9 +233,7 @@ class Runner:
         env: Mapping[str, str] | None = None,
     ) -> CommandResult:
         command = tuple(str(arg) for arg in args)
-        process_env = os.environ.copy()
-        if env:
-            process_env.update(env)
+        process_env = child_env(env)
         if capture:
             process_env.setdefault("NO_COLOR", "1")
 
@@ -228,6 +243,16 @@ class Runner:
             not math.isfinite(timeout) or timeout <= 0
         ):
             raise ValueError("timeout must be a positive finite number")
+
+        # A windowed GUI has no console. Leaving stdin inherited makes ipatool
+        # wait on a passphrase prompt nobody can answer, and its error text
+        # never reaches the window. Close stdin and keep the output.
+        windowed = _parent_has_no_console()
+        if windowed and output_to_stderr:
+            output_to_stderr = False
+            capture = True
+        elif windowed and not capture:
+            capture = True
 
         stdout_target: Any
         stderr_target: Any
@@ -247,6 +272,7 @@ class Runner:
         try:
             process = subprocess.Popen(
                 command,
+                stdin=subprocess.DEVNULL if windowed else None,
                 stdout=stdout_target,
                 stderr=stderr_target,
                 env=process_env,

@@ -11,6 +11,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Callable, TypeVar
 
 from .catalog import (
     installed_bundle_ids,
@@ -44,6 +45,9 @@ from .paths import (
 from .tools import AppRestoreTools, InstallRequestState, ToolUnavailable
 
 
+_T = TypeVar("_T")
+
+
 class AppRestoreError(RuntimeError):
     pass
 
@@ -56,6 +60,9 @@ class AppRestoreService:
     REDOWNLOAD_START_TIMEOUT = 15.0
     REDOWNLOAD_COMPLETE_TIMEOUT = 300.0
     INSTALL_VERIFY_TIMEOUT = 90.0
+    # Journal "mode" for licenses taken through this service: None (null) for
+    # the CLI; GuiService sets "gui" for both windows.
+    license_mode: str | None = None
 
     def __init__(
         self,
@@ -296,6 +303,36 @@ class AppRestoreService:
         if not normalized or "@" not in normalized:
             raise AppRestoreError("a valid Apple ID email is required")
         self.tools.ipatool_login(normalized)
+        self.note_account(normalized)
+
+    # -- account lifecycle: the one place every front end goes through --------
+
+    def sign_out(self) -> None:
+        """``ipatool auth revoke`` and delete local personal data of the account.
+
+        The cached purchase list is deleted even if revoke fails: the user
+        asked to sign out, and the list must not outlive that.
+        """
+
+        from .purchases_cache import forget_purchases_cache
+
+        try:
+            self.tools.ipatool_revoke()
+        finally:
+            forget_purchases_cache()
+
+    def note_account(self, email: str) -> None:
+        """``email`` is now the open Apple ID (login or switch).
+
+        A purchase list cached for any other account is deleted.
+        """
+
+        from .purchases_cache import PurchasesCache
+
+        try:
+            PurchasesCache().claim(email)
+        except OSError:
+            pass
 
     def _build_download_attempts(
         self,
@@ -303,9 +340,12 @@ class AppRestoreService:
         store_id: str | None,
         *,
         lookup_store_id: bool = True,
-        acquire_license: bool = False,
     ) -> list[tuple[str, str, bool]]:
-        """Return (kind, value, purchase) attempts in priority order."""
+        """Return read-only (kind, value, False) attempts in priority order.
+
+        A license is never an attempt here: ``acquire_license`` goes through
+        ``apprestore_core.license_gate`` (price, limit, journal) instead.
+        """
         resolved = store_id
         if not resolved and lookup_store_id:
             print(f"  looking up App Store ID for {bundle_id}…")
@@ -324,12 +364,6 @@ class AppRestoreService:
         if resolved:
             attempts.append(("store", resolved, False))
         attempts.append(("bundle", bundle_id, False))
-        # `--purchase` changes the Apple account's license history, so it must
-        # never be an implicit retry.
-        if acquire_license:
-            if resolved:
-                attempts.append(("store", resolved, True))
-            attempts.append(("bundle", bundle_id, True))
         return attempts
 
     def _verified_download(
@@ -339,7 +373,6 @@ class AppRestoreService:
         store_id: str | None,
         temp_dir: Path,
         lookup_store_id: bool = True,
-        acquire_license: bool = False,
     ) -> tuple[Path, VerifiedIpa, str | None]:
         expected = validate_bundle_id(bundle_id)
         if not self.tools.ipatool_authenticated():
@@ -349,7 +382,6 @@ class AppRestoreService:
             expected,
             store_id,
             lookup_store_id=lookup_store_id,
-            acquire_license=acquire_license,
         )
         errors: list[str] = []
         identity_mismatches: set[tuple[str, str]] = set()
@@ -374,7 +406,6 @@ class AppRestoreService:
                     output,
                     store_id=value if kind == "store" else None,
                     bundle_id=value if kind == "bundle" else None,
-                    purchase=purchase,
                 )
             except (ToolUnavailable, ValueError) as exc:
                 errors.append(f"{label}: {exc}")
@@ -413,6 +444,7 @@ class AppRestoreService:
             return candidate, verified, verified_store_id
 
         detail = "; ".join(errors) if errors else "ipatool did not produce an IPA"
+        print(f"  download failed: {detail}")
         raise AppRestoreError(
             f"could not download {expected} ({detail}). "
             "Typical causes: a network failure reaching Apple (a TLS handshake "
@@ -906,6 +938,57 @@ class AppRestoreService:
             time.sleep(delay)
             delay = min(delay * 1.6, 4.0)
 
+    def _license_gated(
+        self,
+        store_id: str | None,
+        attempt: Callable[[], _T],
+        *,
+        acquire_license: bool,
+    ) -> _T:
+        """``attempt()`` read-only; with ``acquire_license`` via the license gate."""
+
+        if not acquire_license:
+            return attempt()
+        from .license_gate import run_with_free_license
+
+        return run_with_free_license(
+            store_id or "",
+            attempt,
+            tools=self.tools,
+            acquire=True,
+            notify=lambda text: print(f"  {text}"),
+            mode=self.license_mode,
+        )
+
+    def _store_id_for_license(self, bundle_id: str) -> str:
+        """Numeric App Store ID for a bundle id, so nobody has to look it up by hand.
+
+        Public iTunes lookup, first in the Apple ID's country (``auth info``),
+        then in the usual fallback list. No ipatool purchase here.
+        """
+
+        print(f"  looking up App Store ID for {bundle_id}…")
+        country = ""
+        try:
+            country = str(self.tools.account_country() or "").strip().lower()
+        except Exception:  # noqa: BLE001 - unknown country: fallback list only
+            country = ""
+        found: str | None = None
+        if country:
+            found = lookup_itunes_store_id(bundle_id, countries=(country,))
+        if not found:
+            found = lookup_itunes_store_id(bundle_id)
+        if not found:
+            raise AppRestoreError(
+                f"Не нашли {bundle_id} в App Store"
+                + (f" ({country.upper()} и запасные страны)" if country else "")
+                + ", поэтому лицензию не берём. Если знаете числовой App Store ID, "
+                "укажите его: --store-id <число> (он есть в ссылке "
+                "apps.apple.com/…/id<число>)."
+            )
+        print(f"  found App Store ID {found}")
+        return found
+
     def download(
         self,
         bundle_id: str,
@@ -914,6 +997,22 @@ class AppRestoreService:
         lookup_store_id: bool = True,
         acquire_license: bool = False,
     ) -> Path:
+        if acquire_license:
+            expected = validate_bundle_id(bundle_id)
+            resolved = parse_app_store_id(str(store_id)) if store_id is not None else None
+            if store_id is not None and not resolved:
+                raise AppRestoreError("store_id must be an 8-12 digit positive integer")
+            if not resolved:
+                resolved = self._store_id_for_license(expected)
+            return self._license_gated(
+                resolved,
+                lambda: self.download(
+                    expected,
+                    resolved,
+                    lookup_store_id=lookup_store_id and not resolved,
+                ),
+                acquire_license=True,
+            )
         expected = validate_bundle_id(bundle_id)
         if store_id is not None:
             parsed_store_id = parse_app_store_id(str(store_id))
@@ -931,7 +1030,6 @@ class AppRestoreService:
                 store_id=store_id,
                 temp_dir=Path(temporary_dir),
                 lookup_store_id=lookup_store_id,
-                acquire_license=acquire_license,
             )
 
             target, committed = self._commit_downloaded_ipa(
@@ -960,6 +1058,12 @@ class AppRestoreService:
         resolved = parse_app_store_id(str(store_id))
         if not resolved:
             raise AppRestoreError("store_id must be an 8-12 digit positive integer")
+        if acquire_license:
+            return self._license_gated(
+                resolved,
+                lambda: self.download_by_store_id(resolved),
+                acquire_license=True,
+            )
         if not self.tools.ipatool_authenticated():
             raise AppRestoreError("ipatool is not authenticated; run `apprestore auth`")
 
@@ -971,7 +1075,7 @@ class AppRestoreService:
             errors: list[str] = []
             temporary: Path | None = None
             downloaded: VerifiedIpa | None = None
-            purchase_modes = (False, True) if acquire_license else (False,)
+            purchase_modes = (False,)  # a license is the gate's job, never a retry here
             for attempt_number, purchase in enumerate(purchase_modes, 1):
                 label = (
                     f"store={resolved}"
@@ -985,7 +1089,6 @@ class AppRestoreService:
                     ok = self.tools.download_ipa(
                         output,
                         store_id=resolved,
-                        purchase=purchase,
                     )
                 except (ToolUnavailable, ValueError) as exc:
                     errors.append(f"{label}: {exc}")
@@ -1006,6 +1109,7 @@ class AppRestoreService:
 
             if temporary is None or downloaded is None:
                 detail = "; ".join(errors) if errors else "ipatool did not produce an IPA"
+                print(f"  download failed: {detail}")
                 raise AppRestoreError(
                     f"could not download App Store ID {resolved} ({detail}). "
                     "Typical causes: a network failure reaching Apple (a TLS "

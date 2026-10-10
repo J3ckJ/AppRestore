@@ -35,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # A frozen bundle is also the "interpreter" for pymobiledevice3 child
     # processes.  Handle that before argparse or Qt so no window appears.
-    from apprestore_core.frozen import ensure_std_streams, maybe_dispatch
+    from apprestore_core.frozen import ensure_std_streams, is_frozen, maybe_dispatch
 
     # Windowed builds have no console: sys.stdout/stderr may be None.
     ensure_std_streams()
@@ -56,6 +56,17 @@ def main(argv: list[str] | None = None) -> int:
         "--demo",
         action="store_true",
         help="run with demo device/apps and prefetch real App Store icons",
+    )
+    parser.add_argument(
+        "--ui",
+        choices=("widgets", "quick", "quick-legacy"),
+        # The packaged exe opens the new window. From source, widgets stays
+        # the default so the old shell is still one flag away.
+        default="quick" if is_frozen() else "widgets",
+        help=(
+            "widgets is the current window; quick is the Qt Quick window in "
+            "design 4b; quick-legacy is the previous Qt Quick window"
+        ),
     )
     parser.add_argument(
         "--screenshot-dir",
@@ -82,6 +93,18 @@ def main(argv: list[str] | None = None) -> int:
         from apprestore_gui.selftest import run_self_test
 
         return run_self_test(Path(args.output) if args.output else None)
+
+    if args.ui == "quick":
+        _release_windows_console()
+        from apprestore_gui.ui4b.window import main as quick_4b_main
+
+        return quick_4b_main()
+
+    if args.ui == "quick-legacy":
+        _release_windows_console()
+        from apprestore_gui.quick_window import main as quick_main
+
+        return quick_main()
 
     if not args.screenshot_dir:
         _release_windows_console()

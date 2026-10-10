@@ -1,0 +1,309 @@
+"""The one license gate for every front end (Qt Quick, Widgets, CLI).
+
+``ipatool purchase`` is an App Store transaction that cannot be undone.
+AppRestore sends it only from here, and only like this:
+
+1. A read-only ``attempt()`` first. If the app is already on the Apple ID,
+   nothing else happens.
+2. Only when Apple answers "license is required": the account's country from
+   ``auth info`` (``countryCode``, else ``storeFront``). Unknown country:
+   refusal, no guessing. Then public iTunes lookup of the price in exactly
+   that country. Unknown or non-zero price: refusal.
+3. Shared limit, 5 in 24 h and 15 total, over ``licenses_acquired.jsonl``
+   (Макс's ``license_guard`` via ``license_journal``). The limit check, the
+   purchase and its journal line run under one cross-process file lock
+   (``license_journal.acquire_and_record`` → Макс's ``acquire_and_record``,
+   ``<journal>.lock``); the download runs after it is released.
+4. ``notify(LICENSE_NOTICE)`` — «Приложение будет добавлено на ваш Apple ID, если Apple его выдаст.»
+5. A separate ``ipatool purchase`` with a one-shot ``PurchaseGrant`` (R2:
+   ``download`` never carries ``--purchase``).
+   * success → journal ``acquired`` right away;
+   * network error / timeout / unknown answer → journal ``purchase_uncertain``
+     (counts toward the limit: the transaction may have gone through);
+   * explicit refusal from Apple (paid, unavailable, not signed in, …) →
+     no journal line, the error goes up.
+6. The read-only ``attempt()`` again; if it fails the journal line becomes
+   ``acquired_download_failed``.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any, Callable, TypeVar
+
+from .command import CommandError
+from .error_signal import _AUTH, _LICENSE, _NETWORK, _REGION, is_license_missing
+from .ipatool_api import MESSAGES_RU, ErrorCode, classify_error
+from .license_guard import DEFAULT_DAILY_LIMIT, DEFAULT_TOTAL_LIMIT, default_journal_path
+from .license_journal import (
+    ACQUIRED_DOWNLOAD_FAILED,
+    PreflightBlocked,
+    PurchaseRefused,
+    Verdict,
+    acquire_and_record,
+    update_status,
+)
+from .purchase_grant import _mint
+from .service import AppRestoreError
+
+T = TypeVar("T")
+
+#: Ника 01 §… / 02 §5.3 (Лена): one notice for every license; no «бесплатно» on the license path.
+LICENSE_NOTICE = "Приложение будет добавлено на ваш Apple ID, если Apple его выдаст."
+REGION_NOTICE = LICENSE_NOTICE  # §1.14 path: the same text
+_NOT_OWNED = "Этого приложения нет на вашем Apple ID (нет лицензии)"
+UNKNOWN_COUNTRY_TEXT = (
+    f"{_NOT_OWNED}. Не удалось определить страну аккаунта Apple ID, поэтому "
+    "цену проверить нельзя и лицензию не берём. Обновите ipatool "
+    "(или AppRestore): нужна сборка, где «auth info» показывает страну."
+)
+
+# Apple (or ipatool before sending anything) said no: no transaction happened.
+_EXPLICIT_REFUSAL = _AUTH + _REGION + _LICENSE + (
+    "failed to purchase",
+    "purchasing paid apps",
+    "paid app",
+    "app not found",
+    "failed to find",
+    "is not installed",
+    "command not found",
+    "subscription",
+)
+
+
+#: Apple answered and said no (casefolded substrings / regex).
+_STORE_REFUSAL = (
+    "purchase of this item is not currently available",
+    "not currently available",
+)
+#: failureType / FailureType with a numeric code, or a customerMessage field:
+#: only Apple's own answer carries these.
+_STORE_REFUSAL_FIELD = re.compile(r"failuretype\W{0,4}-?\d+|customermessage")
+#: The app is not sold in the Apple ID's store (failureType -128).
+_STORE_MISMATCH = ("account not in this store",)
+#: A bare 2040 counts only inside ipatool's purchase failure line.
+_BARE_2040 = re.compile(r"\b2040\b")
+
+
+#: Short text (Макс's MESSAGES_RU); the 4b screen shows it as its lead.
+STORE_MISMATCH_SHORT = MESSAGES_RU[ErrorCode.STORE_MISMATCH]
+#: Shown for "Account Not In This Store" in the CLI and the old window: the
+#: sign-in's store differs from the Apple ID's country (no VPN/region advice).
+STORE_MISMATCH_TEXT = f"{STORE_MISMATCH_SHORT} Выйдите из аккаунта и войдите заново."
+STORE_MISMATCH_CLI_HINT = (
+    "Подсказка: apprestore auth --revoke, затем apprestore auth --email <ваш Apple ID>"
+)
+#: The gate's preflight refusal on an ipatool without AppRestore's patches.
+NEEDS_PATCHED_IPATOOL_TEXT = MESSAGES_RU[ErrorCode.NEEDS_PATCHED_BUILD]
+
+
+def is_needs_patched(message: str) -> bool:
+    """NEEDS_PATCHED_BUILD / PREFLIGHT_BLOCKED text (the GUI → needs-component)."""
+
+    return NEEDS_PATCHED_IPATOOL_TEXT.casefold() in (message or "").casefold()
+#: Start of refusal_text() for the limit: front ends match it to list the app
+#: under «не хватило лимита».
+LIMIT_REFUSAL_TEXT = "Лимит лицензий исчерпан"
+_OLD_LIMIT_REFUSAL_TEXT = "Лимит бесплатных лицензий исчерпан"  # still recognised
+
+
+def is_limit_refusal(message: str) -> bool:
+    """The gate refused because the 5/24 h or 15 total limit is used up."""
+
+    folded = (message or "").casefold()
+    return LIMIT_REFUSAL_TEXT.casefold() in folded or _OLD_LIMIT_REFUSAL_TEXT.casefold() in folded
+
+
+def is_store_mismatch(message: str) -> bool:
+    """Apple's -128 «Account Not In This Store» (Макс: ErrorCode.STORE_MISMATCH).
+
+    Not a session problem and not a transport one: the storefront of the saved
+    sign-in differs from the Apple ID's country. A refusal: no journal line.
+    """
+
+    text = (message or "").casefold()
+    if STORE_MISMATCH_SHORT.casefold() in text or any(hint in text for hint in _STORE_MISMATCH):
+        return True
+    return classify_error(message or "") is ErrorCode.STORE_MISMATCH
+
+
+def is_store_refusal(message: str) -> bool:
+    """True when Apple explicitly refused the purchase (case-insensitive)."""
+
+    text = (message or "").casefold()
+    if any(hint in text for hint in _STORE_REFUSAL) or is_store_mismatch(message):
+        return True
+    if _STORE_REFUSAL_FIELD.search(text):
+        return True
+    return "failed to purchase" in text and bool(_BARE_2040.search(text))
+
+
+class LicenseDenied(AppRestoreError):
+    """The gate refused before anything was sent to Apple."""
+
+    def __init__(self, message: str, verdict: Verdict | None = None) -> None:
+        super().__init__(message)
+        self.verdict = verdict
+
+
+def journal_path() -> Path:
+    """Shared with bench: ``license_guard.default_journal_path()``."""
+
+    return default_journal_path()
+
+
+def lookup_offer(store_id: str, countries: tuple[str, ...]) -> dict[str, object] | None:
+    """Price lookup in the given countries only: no fallback list for prices."""
+
+    from .catalog import lookup_itunes_offer
+
+    if not countries:
+        return None
+    return lookup_itunes_offer(store_id, countries=tuple(countries))
+
+
+def refusal_text(verdict: Verdict) -> str:
+    reason = verdict.reason.casefold()
+    if "платное" in reason:
+        return f"{_NOT_OWNED}. Это платное приложение: на платные AppRestore лицензию не берёт."
+    if "цена" in reason:
+        return (
+            f"{_NOT_OWNED}. Apple не показывает его цену "
+            "(возможно, оно снято), поэтому лицензию не берём."
+        )
+    if "лимит" in reason:
+        return (
+            f"{LIMIT_REFUSAL_TEXT}: "
+            f"за сутки {verdict.used_today}/{DEFAULT_DAILY_LIMIT}, "
+            f"всего {verdict.used_total}/{DEFAULT_TOTAL_LIMIT}. "
+            "Это приложение пока не добавляем."
+        )
+    return f"{_NOT_OWNED}. Лицензию не берём: {verdict.reason}."
+
+
+def purchase_outcome(exc: BaseException) -> str:
+    """``refused`` (Apple clearly said no) or ``uncertain`` (may have gone through)."""
+
+    if isinstance(exc, (ValueError, LicenseDenied)):
+        return "refused"
+    text = str(exc).casefold()
+    if isinstance(exc, CommandError) and "command not found" in text:
+        return "refused"
+    if isinstance(exc, CommandError):
+        return "uncertain"  # timeout or a broken run: the answer was lost
+    # Apple's own "no" (HTTP 200 with failureType/customerMessage, e.g. 2040
+    # "Purchase of this item is not currently available"). ipatool spells the
+    # field FailureType in some places, so everything is matched casefolded.
+    if is_store_refusal(text):
+        return "refused"
+    # ipatool wraps every purchase error, network ones included, in
+    # "failed to purchase item ...": a transport failure means the answer was
+    # lost, so it is uncertain even with that prefix.
+    if any(hint in text for hint in _NETWORK):
+        return "uncertain"
+    if any(hint in text for hint in _EXPLICIT_REFUSAL):
+        return "refused"
+    return "uncertain"
+
+
+def run_with_free_license(
+    store_id: str,
+    attempt: Callable[[], T],
+    *,
+    tools: Any,
+    acquire: bool = True,
+    lookup: Callable[[str, tuple[str, ...] | None], dict[str, object] | None] | None = None,
+    journal: Path | None = None,
+    notify: Callable[[str], None] | None = None,
+    mode: str | None = "gui",
+) -> T:
+    """See the module docstring. ``attempt`` must never take a license itself."""
+
+    try:
+        return attempt()
+    except Exception as exc:
+        if not acquire or not is_license_missing(str(exc)):
+            raise
+        missing = exc
+
+    store_id = str(store_id or "").strip()
+    # Макс's capability preflight (client.license_preflight): passed to
+    # acquire_and_record, which runs it before the journal lock — an ipatool
+    # without AppRestore's patches never reaches purchase, nothing is journaled.
+    preflight = getattr(tools, "license_preflight", None)
+    preflight = preflight if callable(preflight) else None
+    country = ""
+    try:
+        country = str(tools.account_country() or "").strip().lower()
+    except Exception:  # noqa: BLE001 - unknown country
+        country = ""
+    if not country:
+        # No guessing: a wrong storefront means a wrong price (Евгений's
+        # account is US, the old fallback said RU). On an unpatched ipatool
+        # the reason is the build, say so (same preflight, nothing else runs).
+        reason = preflight() if preflight is not None else None
+        if reason:
+            raise LicenseDenied(NEEDS_PATCHED_IPATOOL_TEXT) from missing
+        raise LicenseDenied(UNKNOWN_COUNTRY_TEXT) from missing
+    offer: dict[str, object] | None = None
+    if store_id.isdigit():
+        try:
+            offer = (lookup or lookup_offer)(store_id, (country,))
+        except Exception:  # noqa: BLE001 - no price means no license
+            offer = None
+    price = offer.get("price") if offer else None
+    from .delisted_attempt import max_known_price
+
+    if price is None or isinstance(price, (int, float)):
+        # Макс §1.14 п.2: MAX of the account lookup and region_probe's reference
+        # prices; any > 0 makes the guard refuse «платное» (also with the flag).
+        best = max_known_price(store_id, price)
+        price = best if best is not None else price
+    path = journal or journal_path()
+    fields = {
+        "bundle_id": str((offer or {}).get("bundleId") or ""),
+        "storefront": str((offer or {}).get("country") or country),
+        "mode": mode,
+        "journal_path": path,
+        "preflight": preflight,
+    }
+    # «удалённое не на аккаунте»: price unknown + region_probe flag → Макс's
+    # explicit license_guard path (pending; {} until his API is vendored).
+    from .delisted_attempt import guard_kwargs
+
+    region_extra = guard_kwargs(store_id, price)
+    fields.update(region_extra)
+    # Limit check, purchase and its journal line in one atomic step (Макс's
+    # acquire_and_record holds <journal>.lock across all three once it lands).
+    def purchase() -> None:
+        if notify is not None:
+            notify(REGION_NOTICE if region_extra else LICENSE_NOTICE)
+        try:
+            tools.purchase_license(store_id, grant=_mint(store_id))
+        except Exception as exc:
+            if purchase_outcome(exc) == "refused":
+                raise PurchaseRefused(str(exc)) from exc
+            raise  # timeout / network / unknown → purchase_uncertain
+
+    try:
+        verdict, entry = acquire_and_record(store_id, price, purchase, **fields)
+    except PurchaseRefused as refused:
+        raise refused.__cause__ or refused  # the original error, unjournaled
+    except PreflightBlocked:
+        raise LicenseDenied(NEEDS_PATCHED_IPATOOL_TEXT) from missing
+    if entry is None:
+        raise LicenseDenied(refusal_text(verdict), verdict) from missing
+    # The download runs outside the lock; the status update takes it again.
+    try:
+        return attempt()
+    except BaseException:
+        # Append-only: an `amends` line pointing at the purchase line's id.
+        update_status(
+            str(entry.get("id") or ""),
+            ACQUIRED_DOWNLOAD_FAILED,
+            track_id=str(entry.get("track_id") or store_id),
+            reason="download failed after purchase",
+            journal_path=path,
+        )
+        raise

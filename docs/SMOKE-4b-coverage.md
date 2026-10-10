@@ -1,0 +1,27 @@
+# SMOKE-4b: что закрыто тестами
+
+Пункты из `docs/SMOKE-4b.md` (Лена). «Тест» — автоматический прогон на моках
+(без телефона, Apple ID и сети): `QT_QPA_PLATFORM=offscreen python -m pytest tests`.
+«Вживую» — проверить можно только на iPhone и аккаунте. Все ⛔ закрыты тестами,
+на живом смоуке их всё равно проходят ещё раз.
+
+| # | Пункт | Статус | Чем закрыт |
+|---|---|---|---|
+| 1 | `read_counts` до старта | вживую | процедура смоука; те же числа читают тесты #12/#13/#17 |
+| 2 | Свободное место на iPhone | вживую | разбор ответа lockdown — `test_parse_disk_usage_lockdown_and_afc`, `test_query_device_space_*` |
+| 3 | Запуск, онбординг, ссылки шага 3 | тест + вживую | `test_main_qml_loads_without_warnings[onboarding-1…4]`, self-test `ui4b qml (default UI)` в сборке, `scripts/ui4b_live_shot.py` (настоящие источники, без телефона и входа). Windows `0xc0000142` — только вживую |
+| 4 | 2FA: 6 ячеек, неверный код, «Отмена» | тест + вживую | `test_signin_view_states`, `test_wrong_2fa_code_goes_back_to_password_form`, `test_cancel_login_stops_running_signin`, `test_signin_sheet_relogin_email_is_read_only`. Код от Apple — вживую |
+| 5 ⛔ | Нет пароля, кода, пароля связки ключей, cookie, токена | тест ✅ | `test_smoke5_no_password_or_code_in_ui_state`, `test_smoke5_no_secrets_in_logs_or_terminal`, `tests/test_ui4b_passphrase.py` (argv/env при входе и вызовах ipatool, в т. ч. на старом ipatool через скрытый терминал), `test_passphrase_invariants.py`, `test_ipatool_api.py::test_scrub_line_*`, `test_license_guard.py::test_record_has_no_secrets`. **Вопрос:** почта в листе входа показывается целиком (так в 04-auth); если «только в замаскированном виде» относится и к окну — нужно решение Ники/Лены |
+| 6 | Сетевая ошибка входа без «VPN» | тест + вживую | `test_no_vpn_in_user_texts`, `test_gui_adapter.py::test_apple_redirect_login_is_explained_in_russian` |
+| 7 | Телефон и список, иконки или серая заглушка | тест + вживую | `test_session_source_phone_apps_from_pymobiledevice3_rows`, `test_qml4b_uses_no_letter_placeholders`, `test_tiles_have_no_letters_or_colours` |
+| 8 | «Нет в App Store вашей страны» скрыта без данных | тест ✅ | `test_region_adapter_accepts_only_known_statuses`, `test_region_probe_called_only_online_with_country`, `test_needs_component_hides_region_and_skips_region_probe` |
+| 9 ⛔ | Сгруженное: этапы, счётчик лицензий не меняется | тест ✅ (+ этапы вживую) | `test_smoke9_offloaded_only_never_touches_the_license_journal`, `test_queue_rows_and_stop`, `test_phone_tiles_follow_queue_kinds` |
+| 10 | Нет места: не стартует, нехватка вверх | тест ✅ | `test_restore_checks_space_first_and_blocks_when_over`, `test_flow_blocks_when_space_is_over`, `test_shortfall_rounds_up_to_a_tenth_of_a_gb` |
+| 11 | Без сети: сгруженные можно, шлюз неактивен | тест ✅ | `test_picker_offline_folds_groups_and_allows_only_offloaded`, `test_session_source_rechecks_read_only_when_network_returns` |
+| 12 ⛔ | «Поставить» бесплатное: уведомление, +1, `acquired` | тест ✅ | `test_smoke12_17_continue_notice_then_plus_k_in_read_counts`, `test_smoke12_notice_visible_in_queue`; старый ipatool: `test_unpatched_ipatool_refused_before_lock_purchase_and_journal`, `test_preflight_goes_through_license_guard_before_the_lock` (PREFLIGHT_BLOCKED до блокировки), `test_needs_patched_mid_run_switches_home_to_needs_component`, `test_unpatched_ipatool_no_consent_owned_go_marked_listed`, `test_unpatched_gate_refuses_even_if_called_directly` (purchase не вызывается, журнал пуст, `read_counts` тот же) |
+| 13 ⛔ | Согласие: «Отмена» / «Только уже купленные» | тест ✅ | `test_smoke13_cancel_takes_nothing`, `test_smoke13_owned_only_takes_no_new_license`, `test_consent_numbers_are_read_counts_every_time`, `test_consent_continue_and_owned_only` |
+| 14 ⛔ | Платные не в K и не покупаются | тест ✅ | `test_smoke14_paid_never_enters_k_or_purchase`, `test_plan_licenses_counts_only_free_and_not_owned` |
+| 15 | Лимит: список, время, на завтра само не встаёт | тест ✅ | `test_limit_refusal_goes_to_not_enough_limit_and_others_continue`, `test_limit_slot_text_all_cases`, `test_limit_total_summary_has_no_time_and_explains` |
+| 16 | Отказ Apple (2040, −128): экран, журнал, без повтора | тест ✅ | `test_license_gate.py::test_apple_2040_refusal_exact_output_is_refused_and_not_journaled`, `test_store_mismatch_is_refused_and_not_journaled`, `test_store_mismatch_first_time_offers_home_and_relogin`, `test_store_mismatch_again_after_relogin_same_account_says_unavailable`, `test_relogin_returns_home_without_resuming`, `test_session_source_minus128_is_not_a_relogin_in_4b` |
+| 17 ⛔ | `read_counts` = до + K, журнал только дописывается | тест ✅ | `test_smoke12_17_continue_notice_then_plus_k_in_read_counts` (ровно +K, только строки `acquired`), `test_license_journal.py::test_update_appends_amends_line_and_keeps_earlier_bytes`, `test_update_holds_the_journal_lock` |
+| 18 ⛔ | «Выйти»: сессия и `purchases-cache.json` стёрты, журнал и `read_counts` те же | тест ✅ | `test_ui4b_signout.py::test_sign_out_deletes_session_and_purchases_cache_keeps_journal_and_icons` (три пути: обычный, «сессия отозвана», ошибка; журнал байт в байт, `read_counts` тот же, кэш иконок цел), `test_apple_id_link_opens_account_sheet_and_signs_out_after_confirm` (подтверждение, сброс признака −128), `test_sign_out_inactive_during_installation`, `test_account_sheet_and_confirmation_load_without_warnings`; ядро: `test_sign_out_cache.py`. Вживую: повторный запуск просит вход |

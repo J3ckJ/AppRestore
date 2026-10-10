@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from apprestore_core.frozen import is_frozen
+from apprestore_gui.errors import explain_update_error
 from apprestore_gui import updater
 
 
@@ -181,7 +182,9 @@ class UpdateDialog(QDialog):
         self.progress.setVisible(False)
         self.later_button.setEnabled(True)
         self.update_button.setEnabled(True)
-        self.status.setText(f"Не получилось обновить: {message}. Текущая версия не тронута.")
+        self.status.setText(
+            explain_update_error(message) + " Текущая версия не тронута."
+        )
 
     def _on_ready(self, staged: updater.StagedUpdate) -> None:
         self.progress.setRange(0, 1)

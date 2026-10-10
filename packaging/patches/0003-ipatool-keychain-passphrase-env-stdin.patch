@@ -1,0 +1,381 @@
+From 399cfdb31a39e26dcb420f6102e10b35e536be6c Mon Sep 17 00:00:00 2001
+From: AppRestore <apprestore@localhost>
+Date: Sat, 10 Oct 2026 18:18:17 +0300
+Subject: [PATCH] feat(keychain): read the keychain passphrase from the
+ environment or stdin
+
+--keychain-passphrase puts the passphrase on the command line, where
+other local users can read it with ps. The passphrase can now also come
+from IPATOOL_KEYCHAIN_PASSPHRASE or, with --keychain-passphrase-stdin,
+from the first line of stdin (read once, only when the keyring needs
+it, without consuming later input). Priority: flag, then stdin when
+--keychain-passphrase-stdin is set (the environment is then ignored),
+then the environment. Without any of them the behaviour is unchanged.
+---
+ cmd/common.go                   |  28 ++-----
+ cmd/keychain_passphrase.go      | 133 ++++++++++++++++++++++++++++++
+ cmd/keychain_passphrase_test.go | 141 ++++++++++++++++++++++++++++++++
+ cmd/root.go                     |   3 +-
+ 4 files changed, 284 insertions(+), 21 deletions(-)
+ create mode 100644 cmd/keychain_passphrase.go
+ create mode 100644 cmd/keychain_passphrase_test.go
+
+diff --git a/cmd/common.go b/cmd/common.go
+index b419e7a..add8415 100644
+--- a/cmd/common.go
++++ b/cmd/common.go
+@@ -1,12 +1,9 @@
+ package cmd
+ 
+ import (
+-	"errors"
+-	"fmt"
+ 	"io"
+ 	"os"
+ 	"path/filepath"
+-	"strings"
+ 
+ 	"github.com/byteness/keyring"
+ 	cookiejar "github.com/juju/persistent-cookiejar"
+@@ -60,6 +57,13 @@ func newCookieJar(stateDirectory string) http.CookieJar {
+ 
+ // newKeychain returns a new keychain instance.
+ func newKeychain(stateDirectory string, interactive bool) keychain.Keychain {
++	passphraseSource := &keychainPassphraseSource{
++		flag:     keychainPassphrase,
++		getenv:   os.Getenv,
++		stdin:    os.Stdin,
++		useStdin: keychainPassphraseStdin,
++	}
++
+ 	ring := util.Must(openKeyring(keyring.Config{
+ 		AllowedBackends: []keyring.BackendType{
+ 			keyring.KeychainBackend,
+@@ -69,23 +73,7 @@ func newKeychain(stateDirectory string, interactive bool) keychain.Keychain {
+ 		ServiceName:              KeychainServiceName,
+ 		KeychainTrustApplication: true,
+ 		FileDir:                  stateDirectory,
+-		FilePasswordFunc: func(s string) (string, error) {
+-			if keychainPassphrase == "" && !interactive {
+-				return "", errors.New("keychain passphrase is required when not running in interactive mode; use the \"--keychain-passphrase\" flag")
+-			}
+-
+-			if keychainPassphrase != "" {
+-				return keychainPassphrase, nil
+-			}
+-
+-			path := strings.Split(s, " unlock ")[1]
+-			password, err := readPrompt(fmt.Sprintf("enter passphrase to unlock %s (this is separate from your Apple ID password): ", path), true)
+-			if err != nil {
+-				return "", fmt.Errorf("failed to read password: %w", err)
+-			}
+-
+-			return password, nil
+-		},
++		FilePasswordFunc:         keychainFilePasswordFunc(passphraseSource, interactive),
+ 	}))
+ 
+ 	return keychain.New(keychain.Args{
+diff --git a/cmd/keychain_passphrase.go b/cmd/keychain_passphrase.go
+new file mode 100644
+index 0000000..174e4d9
+--- /dev/null
++++ b/cmd/keychain_passphrase.go
+@@ -0,0 +1,133 @@
++package cmd
++
++import (
++	"errors"
++	"fmt"
++	"io"
++	"strings"
++	"sync"
++)
++
++// KeychainPassphraseEnv lets callers pass the file-keyring passphrase without
++// putting it on the command line, where other local users can read it (ps).
++const KeychainPassphraseEnv = "IPATOOL_KEYCHAIN_PASSPHRASE"
++
++var errKeychainPassphraseRequired = errors.New("keychain passphrase is required when not running in interactive mode; " +
++	"use the \"--keychain-passphrase\" flag, the " + KeychainPassphraseEnv + " environment variable or \"--keychain-passphrase-stdin\"")
++
++var keychainPassphraseStdin bool
++
++// keychainPassphraseSource resolves the passphrase in priority order:
++// explicit --keychain-passphrase flag, then the first line of stdin when
++// --keychain-passphrase-stdin is set (the environment is then ignored), then
++// the environment variable. Stdin is read at most once and only when the
++// keyring actually needs the passphrase.
++type keychainPassphraseSource struct {
++	flag     string
++	getenv   func(string) string
++	stdin    io.Reader
++	useStdin bool
++
++	once     sync.Once
++	fromPipe string
++	pipeErr  error
++}
++
++// resolve returns the passphrase, or "" when no non-interactive source is set
++// (the caller then keeps the old behaviour: prompt or fail).
++func (s *keychainPassphraseSource) resolve() (string, error) {
++	if s.flag != "" {
++		return s.flag, nil
++	}
++
++	// --keychain-passphrase-stdin overrides the environment: an explicit stdin
++	// matters more than a stray IPATOOL_KEYCHAIN_PASSPHRASE, which would
++	// otherwise silently take over. So stdin is checked before env.
++	if s.useStdin {
++		s.once.Do(func() {
++			s.fromPipe, s.pipeErr = readPassphraseLine(s.stdin)
++		})
++
++		if s.pipeErr != nil {
++			return "", s.pipeErr
++		}
++
++		if s.fromPipe == "" {
++			return "", errors.New("--keychain-passphrase-stdin was set but stdin did not contain a passphrase")
++		}
++
++		return s.fromPipe, nil
++	}
++
++	if s.getenv != nil {
++		if value := s.getenv(KeychainPassphraseEnv); value != "" {
++			return value, nil
++		}
++	}
++
++	return "", nil
++}
++
++// readPassphraseLine reads one line byte by byte so nothing after the newline
++// is consumed (later prompts may still read stdin).
++func readPassphraseLine(reader io.Reader) (string, error) {
++	if reader == nil {
++		return "", errors.New("stdin is not available")
++	}
++
++	var builder strings.Builder
++
++	buffer := make([]byte, 1)
++
++	for {
++		n, err := reader.Read(buffer)
++		if n == 1 {
++			if buffer[0] == '\n' {
++				break
++			}
++
++			builder.WriteByte(buffer[0])
++		}
++
++		if errors.Is(err, io.EOF) {
++			break
++		}
++
++		if err != nil {
++			return "", fmt.Errorf("failed to read keychain passphrase from stdin: %w", err)
++		}
++	}
++
++	return strings.TrimSuffix(builder.String(), "\r"), nil
++}
++
++// keychainFilePasswordFunc is the file-keyring password callback: a
++// non-interactive source first, then the old prompt or error.
++func keychainFilePasswordFunc(source *keychainPassphraseSource, interactive bool) func(string) (string, error) {
++	return func(message string) (string, error) {
++		passphrase, err := source.resolve()
++		if err != nil {
++			return "", err
++		}
++
++		if passphrase != "" {
++			return passphrase, nil
++		}
++
++		if !interactive {
++			return "", errKeychainPassphraseRequired
++		}
++
++		path := message
++		if _, after, found := strings.Cut(message, " unlock "); found {
++			path = after
++		}
++
++		password, err := readPrompt(fmt.Sprintf("enter passphrase to unlock %s (this is separate from your Apple ID password): ", path), true)
++		if err != nil {
++			return "", fmt.Errorf("failed to read password: %w", err)
++		}
++
++		return password, nil
++	}
++}
+diff --git a/cmd/keychain_passphrase_test.go b/cmd/keychain_passphrase_test.go
+new file mode 100644
+index 0000000..cfc68fa
+--- /dev/null
++++ b/cmd/keychain_passphrase_test.go
+@@ -0,0 +1,141 @@
++package cmd
++
++import (
++	"io"
++	"strings"
++
++	"github.com/byteness/keyring"
++	. "github.com/onsi/ginkgo/v2"
++	. "github.com/onsi/gomega"
++)
++
++type countingReader struct {
++	reader io.Reader
++	reads  int
++}
++
++func (r *countingReader) Read(p []byte) (int, error) {
++	r.reads++
++
++	return r.reader.Read(p)
++}
++
++func envWith(values map[string]string) func(string) string {
++	return func(key string) string { return values[key] }
++}
++
++var _ = Describe("Keychain passphrase source", func() {
++	DescribeTable("resolves flag > stdin(when requested) > environment",
++		func(flag, env, stdin string, useStdin bool, expected string) {
++			source := &keychainPassphraseSource{
++				flag:     flag,
++				getenv:   envWith(map[string]string{KeychainPassphraseEnv: env}),
++				stdin:    strings.NewReader(stdin),
++				useStdin: useStdin,
++			}
++
++			Expect(source.resolve()).To(Equal(expected))
++		},
++		Entry("flag wins over everything", "from-flag", "from-env", "from-stdin\n", true, "from-flag"),
++		Entry("stdin overrides environment when requested", "", "from-env", "from-stdin\n", true, "from-stdin"),
++		Entry("environment when stdin is not requested", "", "from-env", "from-stdin\n", false, "from-env"),
++		Entry("stdin when requested", "", "", "from-stdin\n", true, "from-stdin"),
++		Entry("stdin without trailing newline", "", "", "from-stdin", true, "from-stdin"),
++		Entry("stdin with CRLF", "", "", "from-stdin\r\n", true, "from-stdin"),
++		Entry("stdin is ignored unless requested", "", "", "from-stdin\n", false, ""),
++		Entry("nothing set keeps the old behaviour", "", "", "", false, ""),
++	)
++
++	It("ignores the environment when stdin is requested", func() {
++		reader := &countingReader{reader: strings.NewReader("from-stdin\n")}
++		source := &keychainPassphraseSource{
++			getenv:   envWith(map[string]string{KeychainPassphraseEnv: "from-env"}),
++			stdin:    reader,
++			useStdin: true,
++		}
++
++		Expect(source.resolve()).To(Equal("from-stdin"))
++		Expect(reader.reads).To(BeNumerically(">", 0))
++	})
++
++	It("reads stdin once and leaves the rest of the input unread", func() {
++		input := strings.NewReader("secret\nuser@example.test\n")
++		source := &keychainPassphraseSource{getenv: envWith(nil), stdin: input, useStdin: true}
++
++		Expect(source.resolve()).To(Equal("secret"))
++		Expect(source.resolve()).To(Equal("secret"))
++
++		rest, err := io.ReadAll(input)
++		Expect(err).NotTo(HaveOccurred())
++		Expect(string(rest)).To(Equal("user@example.test\n"))
++	})
++
++	It("fails clearly on empty stdin", func() {
++		source := &keychainPassphraseSource{getenv: envWith(nil), stdin: strings.NewReader("\n"), useStdin: true}
++
++		_, err := source.resolve()
++		Expect(err).To(MatchError(ContainSubstring("stdin did not contain a passphrase")))
++	})
++
++	It("keeps the non-interactive error and names the new sources", func() {
++		callback := keychainFilePasswordFunc(&keychainPassphraseSource{getenv: envWith(nil)}, false)
++
++		_, err := callback("Enter passphrase to unlock /tmp/state")
++		Expect(err).To(MatchError(ContainSubstring("keychain passphrase is required when not running in interactive mode")))
++		Expect(err).To(MatchError(ContainSubstring(KeychainPassphraseEnv)))
++		Expect(err).To(MatchError(ContainSubstring("--keychain-passphrase-stdin")))
++	})
++
++	Describe("file keyring round trip", func() {
++		var dir string
++
++		BeforeEach(func() {
++			dir = GinkgoT().TempDir()
++			ring, err := keyring.Open(keyring.Config{
++				AllowedBackends:  []keyring.BackendType{keyring.FileBackend},
++				ServiceName:      "ipatool-passphrase-test",
++				FileDir:          dir,
++				FilePasswordFunc: keyring.FixedStringPrompt("correct horse"),
++			})
++			Expect(err).NotTo(HaveOccurred())
++			Expect(ring.Set(keyring.Item{Key: "account", Data: []byte("payload")})).To(Succeed())
++		})
++
++		open := func(source *keychainPassphraseSource) ([]byte, error) {
++			ring, err := keyring.Open(keyring.Config{
++				AllowedBackends:  []keyring.BackendType{keyring.FileBackend},
++				ServiceName:      "ipatool-passphrase-test",
++				FileDir:          dir,
++				FilePasswordFunc: keychainFilePasswordFunc(source, false),
++			})
++			Expect(err).NotTo(HaveOccurred())
++
++			item, err := ring.Get("account")
++
++			return item.Data, err
++		}
++
++		It("unlocks with the passphrase from the environment", func() {
++			data, err := open(&keychainPassphraseSource{getenv: envWith(map[string]string{KeychainPassphraseEnv: "correct horse"})})
++			Expect(err).NotTo(HaveOccurred())
++			Expect(string(data)).To(Equal("payload"))
++		})
++
++		It("unlocks with the passphrase from stdin", func() {
++			data, err := open(&keychainPassphraseSource{getenv: envWith(nil), stdin: strings.NewReader("correct horse\n"), useStdin: true})
++			Expect(err).NotTo(HaveOccurred())
++			Expect(string(data)).To(Equal("payload"))
++		})
++
++		It("rejects a wrong environment passphrase", func() {
++			_, err := open(&keychainPassphraseSource{getenv: envWith(map[string]string{KeychainPassphraseEnv: "wrong"})})
++			Expect(err).To(HaveOccurred())
++		})
++
++		It("prefers the flag over a wrong environment value", func() {
++			data, err := open(&keychainPassphraseSource{flag: "correct horse", getenv: envWith(map[string]string{KeychainPassphraseEnv: "wrong"})})
++			Expect(err).NotTo(HaveOccurred())
++			Expect(string(data)).To(Equal("payload"))
++		})
++	})
++})
+diff --git a/cmd/root.go b/cmd/root.go
+index b2aa044..20e1794 100644
+--- a/cmd/root.go
++++ b/cmd/root.go
+@@ -43,7 +43,8 @@ func rootCmd() *cobra.Command {
+ 		}, enumflag.EnumCaseSensitive), "format", "", "sets output format for command; can be 'text', 'json'")
+ 	cmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "enables verbose logs")
+ 	cmd.PersistentFlags().BoolVarP(&nonInteractive, "non-interactive", "", false, "run in non-interactive session")
+-	cmd.PersistentFlags().StringVar(&keychainPassphrase, "keychain-passphrase", "", "passphrase for unlocking keychain")
++	cmd.PersistentFlags().StringVar(&keychainPassphrase, "keychain-passphrase", "", "passphrase for unlocking keychain (visible to other processes; prefer "+KeychainPassphraseEnv+" or --keychain-passphrase-stdin)")
++	cmd.PersistentFlags().BoolVar(&keychainPassphraseStdin, "keychain-passphrase-stdin", false, "read the keychain passphrase from the first line of stdin")
+ 
+ 	cmd.AddCommand(authCmd())
+ 	cmd.AddCommand(downloadCmd())
+-- 
+2.47.3
+

@@ -30,4 +30,4 @@ gui = [
 ]
 
 [tool.setuptools.package-data]
-apprestore_gui = ["resources/**/*"]
+apprestore_gui = ["resources/**/*", "ui4b/data/*.json"]

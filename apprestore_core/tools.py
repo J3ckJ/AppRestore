@@ -32,8 +32,31 @@ from .paths import (
 )
 
 
+
+PURCHASE_TIMEOUT_SECONDS = 90.0
+
 class ToolUnavailable(RuntimeError):
     pass
+
+
+def _public_tool_failure(*chunks: str) -> str:
+    """One short line from a failed tool, without an email address.
+
+    ipatool prints progress first and the ``error="..."`` line last. Keeping
+    the start of a long log drops that line, and the window then has nothing
+    it can explain.
+    """
+
+    text = " ".join(" ".join(chunks).split())
+    if not text:
+        return ""
+    text = re.sub(r"[\w.+\-]+@[\w.\-]+", "[email]", text)
+    errors = re.findall(r'error="([^"]*)"', text, flags=re.IGNORECASE)
+    if errors:
+        text = "; ".join(error.strip() for error in errors if error.strip())
+    elif len(text) > 500:
+        text = text[-500:]
+    return text[:500]
 
 
 def _path_is_inside(child: Path, parent: Path) -> bool:
@@ -727,6 +750,16 @@ class AppRestoreTools:
                 fallback="?",
                 max_length=64,
             ),
+            product_type=self._terminal_text(
+                payload.get("ProductType"),
+                fallback="",
+                max_length=32,
+            ),
+            device_class=self._terminal_text(
+                payload.get("DeviceClass"),
+                fallback="",
+                max_length=32,
+            ),
         )
 
     def list_apps(self, udid: str) -> Any:
@@ -1150,8 +1183,12 @@ class AppRestoreTools:
         *,
         bundle_id: str | None = None,
         store_id: str | None = None,
-        purchase: bool = False,
     ) -> bool:
+        """``ipatool download``. Never carries ``--purchase`` (LEGAL.md R2).
+
+        A license is a separate ``purchase_license`` step that the caller
+        takes first.
+        """
         if bool(bundle_id) == bool(store_id):
             raise ValueError("provide exactly one of bundle_id or store_id")
         args = self._ipatool_cmd("download")
@@ -1161,9 +1198,9 @@ class AppRestoreTools:
             args.extend(["--app-id", store_id])
         else:
             args.extend(["--bundle-identifier", str(bundle_id)])
-        if purchase:
-            args.append("--purchase")
         args.extend(["--output", str(output)])
+        if "--purchase" in args:  # pragma: no cover - R2 tripwire
+            raise ValueError("download must never carry --purchase")
         result = self.runner.run(
             args,
             capture=False,
@@ -1171,7 +1208,108 @@ class AppRestoreTools:
             timeout=1800,
             env=self._ipatool_env(),
         )
-        return result.returncode == 0
+        if result.returncode != 0:
+            detail = _public_tool_failure(result.stderr, result.stdout)
+            if detail:
+                raise ToolUnavailable(detail)
+            return False
+        return True
+
+    def purchase_license(self, store_id: str, *, grant: object) -> dict[str, Any]:
+        """``ipatool --format json purchase --app-id N``: take a free license.
+
+        This is an App Store transaction that cannot be undone. It runs only
+        with a one-shot ``PurchaseGrant`` for this exact ID, which only
+        ``apprestore_core.license_gate`` issues after the price==0 check in
+        the account's country and the shared 5/day + 15 total limit. Returns
+        ipatool's JSON line; raises ``ToolUnavailable`` with ipatool's error.
+        """
+
+        from .purchase_grant import require_grant
+
+        store_id = str(store_id or "").strip()
+        if not store_id.isdigit() or int(store_id) <= 0:
+            raise ValueError("store_id must be a positive integer")
+        require_grant(grant, store_id)
+        args = self._ipatool_cmd("--format", "json", "purchase", "--app-id", store_id)
+        result = self.runner.run(
+            args,
+            capture=True,
+            # Hard cap: the runner kills ipatool's process tree on expiry, so a
+            # hung purchase cannot hold the journal lock (→ purchase_uncertain).
+            timeout=PURCHASE_TIMEOUT_SECONDS,
+            env=self._ipatool_env(),
+        )
+        payload: dict[str, Any] = {}
+        for line in reversed((result.stdout or "").splitlines()):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                payload = parsed
+                break
+        if result.returncode != 0 or payload.get("success") is not True:
+            error = payload.get("error")
+            detail = (
+                _public_tool_failure(f'error="{error}"')
+                if isinstance(error, str) and error
+                else _public_tool_failure(result.stderr, result.stdout)
+            )
+            raise ToolUnavailable(detail or "ipatool purchase failed")
+        return payload
+
+    #: Макс's IpatoolClient per binary path: its capability probes are cached on it.
+    _caps_clients: dict[str, Any] = {}
+
+    def ipatool_client(self):
+        """Макс's ``IpatoolClient`` for offline capability probes (no passphrase)."""
+
+        from .ipatool_api import IpatoolClient
+
+        binary = resolve_tool("ipatool")
+        if not binary:
+            return None
+        client = AppRestoreTools._caps_clients.get(binary)
+        if client is None:
+            client = IpatoolClient(binary, keychain_passphrase="")
+            AppRestoreTools._caps_clients[binary] = client
+        return client
+
+    def license_preflight(self) -> str | None:
+        """``client.license_preflight()``: None = a new license may be taken, else
+        the Russian reason (NEEDS_PATCHED_BUILD). No binary = not allowed."""
+
+        from .ipatool_api import MESSAGES_RU, ErrorCode
+
+        client = self.ipatool_client()
+        if client is None:
+            return MESSAGES_RU[ErrorCode.NEEDS_PATCHED_BUILD]
+        return client.license_preflight()
+
+    def ipatool_capabilities(self):
+        """``client.capabilities()`` (cached) or None without a binary."""
+
+        client = self.ipatool_client()
+        return None if client is None else client.capabilities()
+
+    def account_country(self) -> str:
+        """Country of the signed-in Apple ID from ``auth info``; ``""`` = unknown.
+
+        ``countryCode`` first, else the raw ``storeFront`` via ``storefronts``.
+        No session, an old ipatool without either field, or any error: ``""``.
+        Purchase paths refuse on ``""``; only read-only paths may fall back.
+        """
+
+        from .storefronts import account_country
+
+        try:
+            return account_country(self.ipatool_auth_info())
+        except Exception:  # noqa: BLE001 - unknown country
+            return ""
 
     def search_apps(self, term: str, *, limit: int = 10) -> list[dict[str, str]]:
         """Search App Store via ipatool; may prompt for keychain passphrase."""

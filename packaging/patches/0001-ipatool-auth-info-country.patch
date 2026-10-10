@@ -1,0 +1,177 @@
+From fc9cb6d53b08bc1afe3601eb94d29c892190cb7c Mon Sep 17 00:00:00 2001
+From: AppRestore <apprestore@localhost>
+Date: Sat, 10 Oct 2026 17:42:29 +0300
+Subject: [PATCH 1/2] feat(auth): show the account's storefront and country in
+ auth info
+
+auth info now reports the raw storeFront of the signed-in account (the
+X-Set-Apple-Store-Front value saved at login, e.g. "143469-16,29") and,
+when the storefront is known, its ISO country code. Callers can then
+price and search in the account's own store. Read-only: the storefront
+is never changed.
+---
+ cmd/auth.go                     | 19 +++++++---
+ cmd/auth_info_test.go           | 61 +++++++++++++++++++++++++++++++++
+ pkg/appstore/storefront.go      | 15 ++++++++
+ pkg/appstore/storefront_test.go | 27 +++++++++++++++
+ 4 files changed, 118 insertions(+), 4 deletions(-)
+ create mode 100644 cmd/auth_info_test.go
+ create mode 100644 pkg/appstore/storefront_test.go
+
+diff --git a/cmd/auth.go b/cmd/auth.go
+index 7099ab0..3ee7972 100644
+--- a/cmd/auth.go
++++ b/cmd/auth.go
+@@ -129,11 +129,22 @@ func infoCmd() *cobra.Command {
+ 				return err
+ 			}
+ 
+-			dependencies.Logger.Log().
++			event := dependencies.Logger.Log().
+ 				Str("name", output.Account.Name).
+-				Str("email", output.Account.Email).
+-				Bool("success", true).
+-				Send()
++				Str("email", output.Account.Email)
++
++			// Storefront of the signed-in account itself, as returned by Apple at
++			// login (X-Set-Apple-Store-Front). Read-only; nothing is changed.
++			// The raw value (for example "143469-16,29") is passed through as is.
++			if storeFront := output.Account.StoreFront; storeFront != "" {
++				event = event.Str("storeFront", storeFront)
++
++				if countryCode, err := appstore.CountryCodeFromStoreFront(output.Account.StoreFront); err == nil {
++					event = event.Str("countryCode", countryCode)
++				}
++			}
++
++			event.Bool("success", true).Send()
+ 
+ 			return nil
+ 		},
+diff --git a/cmd/auth_info_test.go b/cmd/auth_info_test.go
+new file mode 100644
+index 0000000..5dc3570
+--- /dev/null
++++ b/cmd/auth_info_test.go
+@@ -0,0 +1,61 @@
++package cmd
++
++import (
++	"bytes"
++	"encoding/json"
++
++	"github.com/majd/ipatool/v2/pkg/appstore"
++	"github.com/majd/ipatool/v2/pkg/log"
++	. "github.com/onsi/ginkgo/v2"
++	. "github.com/onsi/gomega"
++)
++
++type fakeInfoAppStore struct {
++	appstore.AppStore
++	account appstore.Account
++}
++
++func (f *fakeInfoAppStore) AccountInfo() (appstore.AccountInfoOutput, error) {
++	return appstore.AccountInfoOutput{Account: f.account}, nil
++}
++
++var _ = Describe("Auth info command", func() {
++	run := func(account appstore.Account) map[string]any {
++		previousDependencies := dependencies
++		DeferCleanup(func() { dependencies = previousDependencies })
++
++		var out bytes.Buffer
++		dependencies.AppStore = &fakeInfoAppStore{account: account}
++		dependencies.Logger = log.NewLogger(log.Args{Writer: &out})
++
++		Expect(infoCmd().Execute()).To(Succeed())
++
++		var payload map[string]any
++		Expect(json.Unmarshal(bytes.TrimSpace(out.Bytes()), &payload)).To(Succeed())
++
++		return payload
++	}
++
++	It("reports the account's own storefront and country", func() {
++		payload := run(appstore.Account{Name: "A", Email: "a@example.test", StoreFront: "143469-16,29"})
++
++		Expect(payload).To(HaveKeyWithValue("storeFront", "143469-16,29"))
++		Expect(payload).To(HaveKeyWithValue("countryCode", "RU"))
++		Expect(payload).To(HaveKeyWithValue("success", true))
++	})
++
++	It("omits the country when the storefront is unknown", func() {
++		payload := run(appstore.Account{StoreFront: "999999-1,29"})
++
++		Expect(payload).To(HaveKeyWithValue("storeFront", "999999-1,29"))
++		Expect(payload).NotTo(HaveKey("countryCode"))
++		Expect(payload).To(HaveKeyWithValue("success", true))
++	})
++
++	It("omits both fields for an account saved without a storefront", func() {
++		payload := run(appstore.Account{Name: "A"})
++
++		Expect(payload).NotTo(HaveKey("storeFront"))
++		Expect(payload).NotTo(HaveKey("countryCode"))
++	})
++})
+diff --git a/pkg/appstore/storefront.go b/pkg/appstore/storefront.go
+index 8f0f7a9..2ad546e 100644
+--- a/pkg/appstore/storefront.go
++++ b/pkg/appstore/storefront.go
+@@ -153,3 +153,18 @@ var storeFronts = map[string]string{
+ 	"YE": "143571",
+ 	"ZA": "143472",
+ }
++
++// StoreFrontID returns the numeric storefront identifier (for example "143469")
++// from a stored X-Set-Apple-Store-Front value such as "143469-16,29".
++func StoreFrontID(storeFront string) string {
++	id, _, _ := strings.Cut(strings.TrimSpace(storeFront), ",")
++	id, _, _ = strings.Cut(id, "-")
++
++	return id
++}
++
++// CountryCodeFromStoreFront maps a stored storefront value to its ISO 3166-1
++// alpha-2 country code (for example "RU"). It only reads the value.
++func CountryCodeFromStoreFront(storeFront string) (string, error) {
++	return countryCodeFromStoreFront(StoreFrontID(storeFront))
++}
+diff --git a/pkg/appstore/storefront_test.go b/pkg/appstore/storefront_test.go
+new file mode 100644
+index 0000000..06a153d
+--- /dev/null
++++ b/pkg/appstore/storefront_test.go
+@@ -0,0 +1,27 @@
++package appstore
++
++import (
++	. "github.com/onsi/ginkgo/v2"
++	. "github.com/onsi/gomega"
++)
++
++var _ = Describe("Storefront helpers", func() {
++	DescribeTable("extracts the numeric storefront and its country", func(raw, id, country string) {
++		Expect(StoreFrontID(raw)).To(Equal(id))
++
++		code, err := CountryCodeFromStoreFront(raw)
++		if country == "" {
++			Expect(err).To(HaveOccurred())
++		} else {
++			Expect(err).NotTo(HaveOccurred())
++			Expect(code).To(Equal(country))
++		}
++	},
++		Entry("login header with language and platform", "143469-16,29", "143469", "RU"),
++		Entry("header with platform only", "143441,32", "143441", "US"),
++		Entry("bare identifier", "143443", "143443", "DE"),
++		Entry("surrounding whitespace", " 143469-16,29 ", "143469", "RU"),
++		Entry("unknown identifier", "999999-1,29", "999999", ""),
++		Entry("empty value", "", "", ""),
++	)
++})
+-- 
+2.47.3
+

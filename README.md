@@ -90,28 +90,32 @@ App Store кнопки «Загрузить» уже нет: приложени�
 2. Распакуйте архив в свою папку, например `C:\Users\<вы>\AppRestore`.
    Не кладите программу в `Program Files`: оттуда не работает обновление в
    один клик, у программы нет прав заменить свои файлы.
-3. Запустите `AppRestore.exe`.
-4. Если появится синее окно Windows SmartScreen «Система Windows защитила ваш
-   компьютер», нажмите **Подробнее**, затем **Выполнить в любом случае**.
-   Это предупреждение появляется потому, что у программы нет платной подписи
-   издателя.
+3. Проверьте, что архив не подменён. Сборка не подписана для Windows,
+   поэтому система её не знает и проверить её можете только вы. В PowerShell
+   выполните `Get-FileHash -Algorithm SHA256 .\AppRestore-GUI-Windows.zip` и
+   сравните результат со строкой этого файла в
+   [SHA256SUMS.txt](https://github.com/J3ckJ/AppRestore/releases/latest/download/SHA256SUMS.txt).
+   Если не совпадает, не запускайте программу.
+4. Запустите `AppRestore.exe`. Если появится синее окно Windows SmartScreen
+   «Система Windows защитила ваш компьютер», нажмите **Подробнее**, затем
+   **Выполнить в любом случае**. Окно появляется потому, что у программы нет
+   подписи издателя.
 
 ### macOS
 
-1. Скачайте [AppRestore-GUI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip)
-   и откройте его. Появится `AppRestore.app`.
-2. Перенесите `AppRestore.app` в папку «Программы».
-3. Сборка не подписана в Apple, поэтому при первом запуске macOS её не
-   откроет двойным щелчком. Сделайте так: щёлкните по программе правой кнопкой
-   мыши, выберите **Открыть**, затем ещё раз **Открыть**.
-4. Если кнопки «Открыть» нет (так бывает в новых версиях macOS), откройте
-   «Системные настройки», раздел «Конфиденциальность и безопасность»,
-   прокрутите вниз и нажмите **Всё равно открыть**. Или выполните в
-   «Терминале» одну команду:
-
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/AppRestore.app
-   ```
+1. Скачайте [AppRestore-GUI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip).
+2. Проверьте, что архив не подменён. Сборка не подписана и не нотаризована
+   Apple, поэтому macOS её не знает и проверить её можете только вы. В
+   «Терминале» выполните `shasum -a 256 ~/Downloads/AppRestore-GUI-macOS.zip`
+   и сравните результат со строкой этого файла в
+   [SHA256SUMS.txt](https://github.com/J3ckJ/AppRestore/releases/latest/download/SHA256SUMS.txt).
+   Если не совпадает, не открывайте программу.
+3. Откройте архив и перенесите `AppRestore.app` в папку «Программы».
+4. При первом запуске macOS скажет, что не может проверить программу, и не
+   откроет её. Откройте «Системные настройки», раздел «Конфиденциальность и
+   безопасность», прокрутите вниз и нажмите **Всё равно открыть** рядом с
+   AppRestore. В старых версиях macOS можно вместо этого щёлкнуть по программе
+   правой кнопкой мыши и выбрать **Открыть**.
 
 ### Как пользоваться
 
@@ -244,7 +248,11 @@ Windows нужен драйвер Apple для USB: поставьте прил�
 (Apple Devices) или iTunes, либо выполните `apprestore setup`.
 
 **Apple просит код.** Это обычная двухфакторная защита. В графической версии
-поле для кода появится в окне, в терминальной код вводится там же, где пароль.
+после пароля появится поле для кода из 6 цифр, в терминальной код вводится там
+же, где пароль. Вводите самый свежий код: код от прошлой попытки Apple не
+примет и завершит вход. Если код не пришёл, не входите заново несколько раз
+подряд, Apple может перестать присылать коды. Возьмите код на iPhone:
+«Настройки» → ваше имя → «Вход и безопасность» → «Получить код проверки».
 AppRestore не записывает пароль и код в журнал.
 
 **Спрашивают «пароль связки ключей».** Это не пароль Apple ID. Его спрашивает
@@ -259,9 +267,15 @@ ipatool на Windows, чтобы зашифровать сохранённый �
 помогает поиск по номеру приложения или по ссылке на его страницу. Иначе
 нужен свой сохранённый файл IPA.
 
-**Ошибка сети при входе.** Сервер Apple может не отвечать из вашей сети.
-Попробуйте VPN или системный прокси. Явные `HTTP_PROXY` и `HTTPS_PROXY` всегда
-важнее.
+**Поиск удалённых приложений по названию.** Если App Store, ваши покупки и
+встроенный список ничего не нашли, AppRestore ищет приложение в публичном
+архиве. Поиск удалённых приложений идёт через публичный архив Internet Archive
+(web.archive.org). Туда отправляется только текст запроса, ваш Apple ID — нет.
+Выключить это можно в «Настройках», переключатель «Искать в архиве».
+
+**Ошибка сети при входе.** Проверьте подключение к интернету и попробуйте ещё
+раз. Если вы выходите в сеть через прокси, AppRestore использует системные
+настройки; явные `HTTP_PROXY` и `HTTPS_PROXY` всегда важнее.
 
 ## Безопасность и приватность
 
@@ -329,9 +343,11 @@ Download from
 - **Desktop app (no command line):**
   [Windows](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-Windows.zip),
   [macOS, Apple Silicon](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip).
-  Both builds are unsigned: on Windows click **More info** → **Run anyway**; on
-  macOS right-click → **Open** or run
-  `xattr -dr com.apple.quarantine /Applications/AppRestore.app`.
+  Both builds are unsigned (and not notarized by Apple), so first compare the
+  archive's SHA-256 (`Get-FileHash` on Windows, `shasum -a 256` on macOS) with
+  [SHA256SUMS.txt](https://github.com/J3ckJ/AppRestore/releases/latest/download/SHA256SUMS.txt).
+  Then on Windows click **More info**, then **Run anyway**; on macOS open
+  System Settings, Privacy & Security, and click **Open Anyway**.
 - **Terminal version:**
 
 ```powershell

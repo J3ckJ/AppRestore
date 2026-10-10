@@ -16,6 +16,7 @@ from .command import CommandError
 from .ipa import IpaError
 from .ipa import validate_bundle_id
 from .known_apps import parse_app_store_id, remember_known_app
+from .license_gate import STORE_MISMATCH_CLI_HINT, STORE_MISMATCH_TEXT, is_store_mismatch
 from .models import Device, MissingApp, OffloadedApp
 from .service import AppRestoreError, AppRestoreService
 from .tools import ToolUnavailable
@@ -427,13 +428,13 @@ def _command_restore(
                     ToolUnavailable,
                     CommandError,
                 ) as retry_exc:
-                    print(f"  failed: {retry_exc}", file=sys.stderr)
+                    print(f"  failed: {_error_text(retry_exc)}", file=sys.stderr)
                     failed += 1
                     continue
             if not noninteractive and "refusing a competing ipa install" in str(
                 exc
             ).lower():
-                print(f"  failed: {exc}", file=sys.stderr)
+                print(f"  failed: {_error_text(exc)}", file=sys.stderr)
                 confirmed = (
                     input(
                         "  iPhone точно не докачивает это приложение сейчас? "
@@ -460,15 +461,15 @@ def _command_restore(
                         ToolUnavailable,
                         CommandError,
                     ) as retry_exc:
-                        print(f"  failed: {retry_exc}", file=sys.stderr)
+                        print(f"  failed: {_error_text(retry_exc)}", file=sys.stderr)
                         failed += 1
                         continue
                 failed += 1
                 continue
-            print(f"  failed: {exc}", file=sys.stderr)
+            print(f"  failed: {_error_text(exc)}", file=sys.stderr)
             failed += 1
         except (IpaError, ToolUnavailable, CommandError) as exc:
-            print(f"  failed: {exc}", file=sys.stderr)
+            print(f"  failed: {_error_text(exc)}", file=sys.stderr)
             failed += 1
     print(f"\nSuccessful: {ok}; failed: {failed}")
     return 0 if failed == 0 else 2
@@ -746,13 +747,13 @@ def _command_restore_missing(
                     ToolUnavailable,
                     CommandError,
                 ) as retry_exc:
-                    print(f"  failed: {retry_exc}", file=sys.stderr)
+                    print(f"  failed: {_error_text(retry_exc)}", file=sys.stderr)
                     failed += 1
                     continue
-            print(f"  failed: {exc}", file=sys.stderr)
+            print(f"  failed: {_error_text(exc)}", file=sys.stderr)
             failed += 1
         except (IpaError, ToolUnavailable, CommandError) as exc:
-            print(f"  failed: {exc}", file=sys.stderr)
+            print(f"  failed: {_error_text(exc)}", file=sys.stderr)
             failed += 1
     print(f"\nSuccessful: {ok}; failed: {failed}")
     return 0 if failed == 0 else 2
@@ -920,7 +921,7 @@ def _run_menu(service: AppRestoreService) -> int:
             ValueError,
             OSError,
         ) as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"Error: {_error_text(exc)}", file=sys.stderr)
 
         if choice != "0":
             _pause_menu()
@@ -966,7 +967,7 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument(
         "--acquire-license",
         action="store_true",
-        help="explicitly allow ipatool --purchase after read-only attempts fail",
+        help="explicitly allow a separate `ipatool purchase` (free license) after read-only downloads fail",
     )
 
     install = subparsers.add_parser("install", help="verify and install a local IPA")
@@ -1012,6 +1013,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _error_text(exc: BaseException) -> str:
+    """CLI error line; Apple's "Account Not In This Store" gets the fix."""
+
+    if is_store_mismatch(str(exc)):
+        return f"{STORE_MISMATCH_TEXT}\n  {STORE_MISMATCH_CLI_HINT}"
+    return str(exc)
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
@@ -1049,7 +1058,7 @@ def main(argv: list[str] | None = None) -> int:
             return _command_missing(service, args.udid, args.json)
         if args.command == "auth":
             if args.revoke:
-                service.tools.ipatool_revoke()
+                service.sign_out()
                 if args.json:
                     _json_dump({"revoked": True})
                 return 0
@@ -1184,9 +1193,13 @@ def main(argv: list[str] | None = None) -> int:
         OSError,
     ) as exc:
         if args.json:
-            _json_dump({"error": str(exc)})
+            payload: dict[str, str] = {"error": str(exc)}
+            if is_store_mismatch(str(exc)):
+                payload["message"] = STORE_MISMATCH_TEXT
+                payload["hint"] = "apprestore auth --revoke; apprestore auth --email <Apple ID>"
+            _json_dump(payload)
         else:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"Error: {_error_text(exc)}", file=sys.stderr)
         return 1
 
     parser.error("unknown command")

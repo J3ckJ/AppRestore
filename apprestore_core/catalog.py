@@ -277,6 +277,23 @@ def find_store_id(value: object, *, depth: int = 0) -> str | None:
     return None
 
 
+def device_display_name(enriched: Mapping[str, Any]) -> str:
+    """installation_proxy name: CFBundleDisplayName → CFBundleName → the store name
+    in iTunesMetadata (itemName / bundleDisplayName; offloaded placeholders keep it)."""
+
+    meta = enriched.get("iTunesMetadata")
+    meta = meta if isinstance(meta, Mapping) else {}
+    for value in (
+        enriched.get("CFBundleDisplayName"),
+        enriched.get("CFBundleName"),
+        meta.get("itemName"),
+        meta.get("bundleDisplayName"),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
 def enrich_app_record(info: Mapping[str, Any]) -> dict[str, Any]:
     """Return a shallow copy with binary iTunesMetadata decoded when possible."""
     enriched = dict(info)
@@ -825,6 +842,65 @@ def lookup_itunes_app_by_store_id(
     return None
 
 
+def lookup_itunes_offer(
+    store_id: str,
+    *,
+    countries: tuple[str, ...] = _ITUNES_SEARCH_COUNTRIES,
+) -> dict[str, object] | None:
+    """Public iTunes lookup with the price, for the license gate.
+
+    Returns ``storeId``, ``bundleId``, ``name``, ``artist``, ``price``
+    (float or ``None`` when Apple gave none), ``currency`` and ``country`` —
+    the first storefront in ``countries`` that knows the app. No ipatool,
+    no Apple ID. ``None`` when no storefront lists it (delisted apps).
+    """
+
+    import urllib.parse
+
+    resolved = _store_id_from_value(store_id)
+    if not resolved:
+        return None
+    deadline = time.monotonic() + _LOOKUP_DEADLINE_SECONDS
+    for country in countries:
+        remaining = _remaining(deadline, cap=8.0)
+        if remaining <= 0:
+            break
+        params: dict[str, str] = {"id": resolved}
+        if country:
+            params["country"] = country
+        payload = _http_json(
+            "https://itunes.apple.com/lookup?" + urllib.parse.urlencode(params),
+            timeout=max(0.1, remaining),
+        )
+        if not isinstance(payload, Mapping):
+            continue
+        results = payload.get("results")
+        if not isinstance(results, list):
+            continue
+        for row in results:
+            if not isinstance(row, Mapping):
+                continue
+            if _store_id_from_value(row.get("trackId")) != resolved:
+                continue
+            raw_price = row.get("price")
+            price: float | None
+            if isinstance(raw_price, (int, float)) and not isinstance(raw_price, bool):
+                price = float(raw_price)
+            else:
+                price = None
+            bundle_id = row.get("bundleId")
+            return {
+                "storeId": resolved,
+                "bundleId": bundle_id if isinstance(bundle_id, str) else "",
+                "name": _clean_text(row.get("trackName"), resolved),
+                "artist": _clean_text(row.get("artistName") or row.get("sellerName"), ""),
+                "price": price,
+                "currency": str(row.get("currency") or ""),
+                "country": country,
+            }
+    return None
+
+
 # Renames / sanctions aliases: query → extra search terms.
 _SEARCH_ALIASES: dict[str, tuple[str, ...]] = {
     "домклик": ("дклик", "domclick"),
@@ -1248,10 +1324,7 @@ def parse_offloaded_apps(
         apps.append(
             OffloadedApp(
                 bundle_id=bundle_id,
-                name=_clean_text(
-                    enriched.get("CFBundleDisplayName") or enriched.get("CFBundleName"),
-                    bundle_id,
-                ),
+                name=_clean_text(device_display_name(enriched), bundle_id),
                 version=_clean_text(
                     enriched.get("CFBundleShortVersionString")
                     or enriched.get("CFBundleVersion"),
@@ -1302,10 +1375,7 @@ def parse_installed_apps(
         apps.append(
             InstalledApp(
                 bundle_id=bundle_id,
-                name=_clean_text(
-                    enriched.get("CFBundleDisplayName") or enriched.get("CFBundleName"),
-                    bundle_id,
-                ),
+                name=_clean_text(device_display_name(enriched), bundle_id),
                 version=_clean_text(
                     enriched.get("CFBundleShortVersionString")
                     or enriched.get("CFBundleVersion"),

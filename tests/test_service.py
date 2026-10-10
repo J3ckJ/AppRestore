@@ -11,15 +11,16 @@ from unittest.mock import patch
 from apprestore_core.ipa import IpaError
 from apprestore_core.models import DeviceAppState
 from apprestore_core.service import AppRestoreError, AppRestoreService
-from apprestore_core.tools import InstallRequestState
+from apprestore_core.tools import InstallRequestState, ToolUnavailable
 
 from tests.helpers import make_ipa
 
 
 class FakeTools:
-    def __init__(self, effects: list[Path | None] | None = None) -> None:
+    def __init__(self, effects: list[Path | str | None] | None = None) -> None:
         self.effects = list(effects or [])
         self.download_calls: list[dict[str, object]] = []
+        self.purchase_calls: list[dict[str, object]] = []
         self.install_calls: list[tuple[str, Path]] = []
 
     def ipatool_authenticated(self) -> bool:
@@ -31,22 +32,35 @@ class FakeTools:
         *,
         bundle_id: str | None = None,
         store_id: str | None = None,
-        purchase: bool = False,
     ) -> bool:
+        # download_ipa has no purchase parameter any more (R2); the key stays
+        # so the older assertions keep reading naturally.
         self.download_calls.append(
             {
                 "output": output,
                 "bundle_id": bundle_id,
                 "store_id": store_id,
-                "purchase": purchase,
+                "purchase": False,
             }
         )
         effect = self.effects.pop(0) if self.effects else None
         if effect is None:
             return False
+        if effect == "LICENSE":
+            raise ToolUnavailable("license is required")
         output.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(effect, output)
         return True
+
+    def purchase_license(self, store_id: str, *, grant: object) -> dict[str, object]:
+        from apprestore_core.purchase_grant import require_grant
+
+        require_grant(grant, store_id)
+        self.purchase_calls.append({"store_id": store_id})
+        return {"success": True}
+
+    def account_country(self) -> str:
+        return "ru"
 
     def install_ipa(self, udid: str, ipa: Path) -> InstallRequestState:
         self.install_calls.append((udid, ipa))
@@ -91,8 +105,22 @@ class ServiceTests(unittest.TestCase):
             "apprestore_core.service.remember_known_app",
         )
         self.remember = self._remember_patch.start()
+        self.journal = self.root / "licenses_acquired.jsonl"
+        self._env_patch = patch.dict(os.environ, {"APPRESTORE_LICENSE_JOURNAL": str(self.journal)})
+        self._env_patch.start()
+        self.price: object = 0.0
+        self._offer_patch = patch(
+            "apprestore_core.license_gate.lookup_offer",
+            side_effect=lambda store_id, countries=None: {
+                "storeId": store_id, "bundleId": "com.example.alpha",
+                "price": self.price, "country": (countries or ("ru",))[0],
+            },
+        )
+        self._offer_patch.start()
 
     def tearDown(self) -> None:
+        self._offer_patch.stop()
+        self._env_patch.stop()
         self._remember_patch.stop()
         self._lookup_patch.stop()
         self.temporary.cleanup()
@@ -130,12 +158,13 @@ class ServiceTests(unittest.TestCase):
 
     def test_purchase_is_skipped_after_definitive_identity_mismatch(self) -> None:
         tools = FakeTools([self.wrong, self.wrong])
-        with self.assertRaisesRegex(AppRestoreError, "proved this identity"):
+        with self.assertRaisesRegex(AppRestoreError, "another app|different|mismatch|bundle"):
             self.service(tools).download(
                 "com.example.alpha",
                 "12345678",
                 acquire_license=True,
             )
+        self.assertEqual(tools.purchase_calls, [])
 
         self.assertEqual(len(tools.download_calls), 2)
         self.assertTrue(
@@ -192,11 +221,37 @@ class ServiceTests(unittest.TestCase):
         self.assertNotEqual(installed_path, self.good.resolve())
         self.assertEqual(installed_path.name, "verified.ipa")
 
+    def test_acquire_license_goes_through_the_gate(self) -> None:
+        tools = FakeTools(["LICENSE", self.good])
+        target = self.service(tools).download_by_store_id("12345678", acquire_license=True)
+        self.assertTrue(target.is_file())
+        self.assertEqual(tools.purchase_calls, [{"store_id": "12345678"}])
+        self.assertEqual(len(tools.download_calls), 2)
+        self.assertIn('"status": "acquired"', self.journal.read_text(encoding="utf-8"))
+        self.assertIn('"mode": null', self.journal.read_text(encoding="utf-8"))
+
+    def test_acquire_license_by_bundle_purchases_by_track_id_once(self) -> None:
+        tools = FakeTools(["LICENSE", "LICENSE", self.good])
+        target = self.service(tools).download(
+            "com.example.alpha", "12345678", acquire_license=True
+        )
+        self.assertTrue(target.is_file())
+        self.assertEqual(tools.purchase_calls, [{"store_id": "12345678"}])
+
+    def test_acquire_license_refuses_paid_app(self) -> None:
+        self.price = 1.99
+        tools = FakeTools(["LICENSE"])
+        with self.assertRaisesRegex(AppRestoreError, "платное"):
+            self.service(tools).download_by_store_id("12345678", acquire_license=True)
+        self.assertEqual(tools.purchase_calls, [])
+        self.assertFalse(self.journal.exists())
+
     def test_purchase_attempts_require_explicit_opt_in(self) -> None:
         tools = FakeTools([self.wrong, self.wrong])
         with self.assertRaises(AppRestoreError):
             self.service(tools).download("com.example.alpha", "12345678")
         self.assertTrue(tools.download_calls)
+        self.assertEqual(tools.purchase_calls, [])
         self.assertTrue(
             all(not bool(call["purchase"]) for call in tools.download_calls)
         )

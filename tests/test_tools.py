@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 from apprestore_core import __version__
 from apprestore_core.command import CommandError, Runner
 from apprestore_core.models import CommandResult, DeviceAppState
-from apprestore_core.tools import IPATOOL_VERSION, AppRestoreTools, InstallRequestState
+from apprestore_core.tools import IPATOOL_VERSION, AppRestoreTools, InstallRequestState, ToolUnavailable
 
 
 class RecordingRunner:
@@ -44,7 +44,8 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertEqual(result.stdout.strip(), marker)
 
-    def test_machine_output_routes_child_stdout_to_stderr(self) -> None:
+    @patch("apprestore_core.command._parent_has_no_console", return_value=False)
+    def test_machine_output_routes_child_stdout_to_stderr(self, _console: object) -> None:
         with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as error_stream:
             with redirect_stderr(error_stream):
                 result = Runner().run(
@@ -75,6 +76,21 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("partial-", caught.exception.result.stdout)
         self.assertIn("failure-", caught.exception.result.stderr)
 
+    @patch("apprestore_core.command._parent_has_no_console", return_value=True)
+    def test_windowed_parent_keeps_output_and_closes_stdin(self, _windowed: object) -> None:
+        result = Runner().run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; print('visible'); print('eof' if sys.stdin.read() == '' else 'open')",
+            ],
+            capture=False,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("visible", result.stdout)
+        self.assertIn("eof", result.stdout)
+
 
 class ToolArgumentTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -104,24 +120,86 @@ class ToolArgumentTests(unittest.TestCase):
         self.assertEqual(self.runner.calls[0][1].get("capture"), False)
 
     @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
-    def test_purchase_is_explicit_and_not_used_for_store_id(
+    def test_download_never_carries_purchase(
         self,
         _resolve: object,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "out.ipa"
-            self.tools.download_ipa(output, store_id="123", purchase=False)
+            self.tools.download_ipa(output, store_id="123")
             store_args = self.runner.calls[-1][0]
             self.assertNotIn("--purchase", store_args)
             self.assertEqual(self.runner.calls[-1][1].get("capture"), False)
+            self.tools.download_ipa(output, bundle_id="com.example.alpha")
+            self.assertNotIn("--purchase", self.runner.calls[-1][0])
+            with self.assertRaises(TypeError):
+                self.tools.download_ipa(output, store_id="123", purchase=True)  # type: ignore[call-arg]
 
-            self.tools.download_ipa(
-                output,
-                bundle_id="com.example.alpha",
-                purchase=True,
-            )
-            bundle_args = self.runner.calls[-1][0]
-            self.assertIn("--purchase", bundle_args)
+    @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
+    def test_purchase_is_its_own_json_command_and_needs_a_grant(self, _resolve: object) -> None:
+        from apprestore_core.purchase_grant import PurchaseGrant, PurchaseNotAllowed, _mint
+
+        self.runner.stdout = '{"alreadyOwned":false,"level":"info","success":true}\n'
+        payload = self.tools.purchase_license("1234567890", grant=_mint("1234567890"))
+        args = self.runner.calls[-1][0]
+        self.assertEqual(
+            args, ("ipatool", "--format", "json", "purchase", "--app-id", "1234567890")
+        )
+        self.assertNotIn("download", args)
+        self.assertIs(payload["success"], True)
+        calls = len(self.runner.calls)
+
+        with self.assertRaises(PurchaseNotAllowed):
+            self.tools.purchase_license("1234567890", grant=None)
+        with self.assertRaises(PurchaseNotAllowed):
+            self.tools.purchase_license("1234567890", grant=_mint("999"))
+        with self.assertRaises(PurchaseNotAllowed):
+            PurchaseGrant("1234567890", _key=object())
+        grant = _mint("1234567890")
+        self.tools.purchase_license("1234567890", grant=grant)
+        with self.assertRaises(PurchaseNotAllowed):  # one-shot
+            self.tools.purchase_license("1234567890", grant=grant)
+        self.assertEqual(len(self.runner.calls), calls + 1)
+
+    @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
+    def test_purchase_failure_keeps_ipatool_error(self, _resolve: object) -> None:
+        from apprestore_core.purchase_grant import _mint
+
+        self.runner.returncode = 1
+        self.runner.stdout = (
+            '{"error":"failed to purchase item with param \'STDQ\': failed to purchase app",'
+            '"level":"error","success":false}\n'
+        )
+        with self.assertRaises(ToolUnavailable) as caught:
+            self.tools.purchase_license("1", grant=_mint("1"))
+        self.assertIn("failed to purchase", str(caught.exception))
+
+        self.runner.returncode = 0
+        self.runner.stdout = '{"success":false,"error":"license is required"}'
+        with self.assertRaises(ToolUnavailable):
+            self.tools.purchase_license("1", grant=_mint("1"))
+
+    @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
+    def test_download_failure_keeps_the_tool_text(self, _resolve: object) -> None:
+        self.runner.returncode = 1
+        self.runner.stderr = (
+            "failed to get item: keychain passphrase is required "
+            "for owner@example.com"
+        )
+        with self.assertRaises(ToolUnavailable) as caught:
+            self.tools.download_ipa(Path("out.ipa"), store_id="1406492297")
+        message = str(caught.exception)
+        self.assertIn("passphrase is required", message)
+        self.assertNotIn("owner@example.com", message)
+
+    @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
+    def test_download_failure_keeps_the_error_at_the_end_of_a_long_log(self, _resolve: object) -> None:
+        self.runner.returncode = 1
+        self.runner.stderr = ("INF progress " * 80) + 'ERR error="failed to purchase app"'
+        with self.assertRaises(ToolUnavailable) as caught:
+            self.tools.download_ipa(Path("out.ipa"), store_id="481627348")
+        self.assertIn("failed to purchase app", str(caught.exception))
+        self.assertNotIn("INF progress", str(caught.exception))
 
     @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
     def test_login_marks_session_authenticated(self, _resolve: object) -> None:
@@ -227,7 +305,7 @@ class ToolArgumentTests(unittest.TestCase):
     ) -> None:
         tools = AppRestoreTools(self.runner)  # type: ignore[arg-type]
 
-        tools.download_ipa(Path("out.ipa"), store_id="1", purchase=False)
+        tools.download_ipa(Path("out.ipa"), store_id="1")
 
         args = self.runner.calls[-1][0]
         self.assertNotIn("--keychain-passphrase", args)
@@ -349,17 +427,27 @@ class ToolArgumentTests(unittest.TestCase):
     def test_device_info_removes_terminal_controls_and_newlines(self) -> None:
         self.runner.stdout = (
             '{"DeviceName":"\\u001b[31mWork\\nPhone\\u001b[0m",'
-            '"ProductVersion":"17.5\\rspoofed"}'
+            '"ProductVersion":"17.5\\rspoofed",'
+            '"ProductType":"iPad16,3","DeviceClass":"iPad"}'
         )
-        with patch.object(
-            self.tools,
-            "_pymobiledevice3_cmd",
-            return_value=["pymobiledevice3"],
+        with (
+            patch.object(
+                self.tools,
+                "_pymobiledevice3_only_in_user_site",
+                return_value=False,
+            ),
+            patch.object(
+                self.tools,
+                "_pymobiledevice3_cmd",
+                return_value=["pymobiledevice3"],
+            ),
         ):
             device = self.tools.device_info("UDID")
 
         self.assertEqual(device.name, "Work Phone")
         self.assertEqual(device.ios_version, "17.5 spoofed")
+        self.assertEqual(device.product_type, "iPad16,3")
+        self.assertEqual(device.device_class, "iPad")
 
     def test_device_app_state_distinguishes_absent_unknown_and_installed(self) -> None:
         with patch.object(
