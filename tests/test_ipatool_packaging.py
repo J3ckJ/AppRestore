@@ -78,3 +78,15 @@ def test_build_script_packs_through_python_with_fixed_mtime() -> None:
     assert 'log -1 --format=%ct "$commit"' in script
     assert "tar -C" not in script and "-czf" not in script
     assert "ipatool-auth-info-country.patch:" in script
+
+
+def test_go_toolchain_pin_matches_ci_workflow() -> None:
+    import re
+
+    script = (ROOT / "packaging" / "build-ipatool.sh").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "build-ipatool.yml").read_text(encoding="utf-8")
+    pinned = re.search(r'IPATOOL_GOTOOLCHAIN:-go([0-9.]+)\}', script)
+    assert pinned, "build-ipatool.sh must pin GOTOOLCHAIN"
+    assert 'export GOTOOLCHAIN="$go_toolchain"' in script
+    versions = set(re.findall(r'go-version:\s*"([0-9.]+)"', workflow))
+    assert versions == {pinned.group(1)}

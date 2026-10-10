@@ -14,7 +14,8 @@
 # The archive is reproducible: packaging/pack_ipatool.py writes it with a fixed
 # mtime (SOURCE_DATE_EPOCH, else the commit time of $commit), uid/gid 0 and a
 # gzip header without name or time. Same Go toolchain + same commit and
-# patches = same SHA-256 (CI uses Go 1.25.0).
+# patches = same SHA-256. The Go toolchain is pinned below (go1.25.0, the same
+# version build-ipatool.yml installs); override with IPATOOL_GOTOOLCHAIN.
 #
 # linux-amd64 is only for local checks; AppRestore does not ship it.
 #
@@ -24,6 +25,9 @@ set -euo pipefail
 asset="${1:?asset required: windows-amd64, macos-arm64, macos-amd64 or linux-amd64}"
 commit="cde7d00355e152714377b953ec57438626d3cb5a"
 version="2.6.0"
+go_toolchain="${IPATOOL_GOTOOLCHAIN:-go1.25.0}"
+# Use exactly this toolchain (downloaded by go if the local one differs).
+export GOTOOLCHAIN="$go_toolchain"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="${IPATOOL_OUT:-$root/dist/ipatool}"
 mkdir -p "$out"
@@ -93,6 +97,13 @@ for entry in "${patches[@]}"; do
   git -C "$work/src" apply --check "$patch_file"
   git -C "$work/src" apply "$patch_file"
 done
+
+go_reported="$(cd "$work/src" && go env GOVERSION)"
+if [[ "$go_reported" != "$go_toolchain" ]]; then
+  echo "go toolchain is $go_reported, expected $go_toolchain" >&2
+  exit 1
+fi
+echo "go toolchain: $go_reported"
 
 stage="$work/stage"
 mkdir -p "$stage/bin"
