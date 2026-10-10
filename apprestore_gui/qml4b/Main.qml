@@ -34,7 +34,7 @@ Window {
         Keys.onEnterPressed: win.enter()
     }
     function enter() {
-        if (!win.onboarding && !ui.pickerOpen && !ui.signIn.open && !ui.consent.open && (win.home.cta || "") !== "")
+        if (!win.onboarding && !ui.pickerOpen && !ui.signIn.open && !ui.consent.open && !ui.account.open && (win.home.cta || "") !== "")
             ui.primaryAction()
     }
 
@@ -115,6 +115,14 @@ Window {
         active: !!ui.signIn.open
         focus: active
         sourceComponent: SignInSheet {}
+    }
+
+    // -- «Apple ID» when signed in: who, «Выйти» (04-auth §2a) -------------------------
+    Loader {
+        anchors.fill: parent
+        active: !!ui.account.open
+        focus: active
+        sourceComponent: AccountSheet {}
     }
 
     // -- free licenses: consent before the run -----------------------------------------

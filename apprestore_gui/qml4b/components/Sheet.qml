@@ -11,6 +11,7 @@ Item {
     property string title: ""
     property string subtitle: ""
     property bool cancellable: true
+    property string cancelText: "Отмена"
     property int panelWidth: 600
     default property alias body: content.data
     signal cancel()
@@ -60,9 +61,9 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 token: "sheetLink"
                 color: Theme.ink2
-                text: "Отмена"
+                text: root.cancelText
                 Accessible.role: Accessible.Button
-                Accessible.name: "Отмена"
+                Accessible.name: root.cancelText
                 MouseArea { anchors.fill: parent; anchors.margins: -8; cursorShape: Qt.PointingHandCursor; onClicked: root.cancel() }
             }
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line }

@@ -791,3 +791,94 @@ def test_needs_patched_mid_run_switches_home_to_needs_component(qapp) -> None:
     home = controller.home
     assert home["state"] == "needs_component" and home["state"] != "store_mismatch"
     assert any(i.note == COMPONENT_NOTE for i in controller.selection.items)
+
+
+# -- «Выйти» (04-auth §2a, смоук п.18) -----------------------------------------------------
+
+
+def _signed_in_source():
+    source = FakeSource("missing")
+    source.auth_phase = "in"
+    source.account_email = "a-very-long-apple-id-address-for-elide-tests@example.com"
+    source.changed.emit()
+    return source
+
+
+def test_apple_id_link_opens_account_sheet_and_signs_out_after_confirm(qapp) -> None:
+    source = _signed_in_source()
+    controller = Restore4b(source)
+    controller.flow._relogged_for_store.add("x@example.com")  # -128 mark in memory
+    controller.link("Apple ID")
+    a = controller.account
+    assert a["open"] and not controller.signIn["open"]
+    assert a["email"] == source.account_email  # in full, no mask
+    assert a["signOut"] == "Выйти" and a["signOutEnabled"] and not a["confirm"]
+    controller.askSignOut()
+    a = controller.account
+    assert a["confirm"] and a["confirmTitle"] == "Выйти из Apple ID?"
+    assert a["confirmText"] == "Приложения на iPhone останутся. Чтобы вернуть новые, нужно будет войти снова."
+    controller.cancelSignOut()
+    assert controller.account["open"] and not controller.account["confirm"]
+    assert ("sign_out", None) not in source.calls
+    controller.askSignOut()
+    controller.confirmSignOut()
+    assert ("sign_out", None) in source.calls
+    assert not controller.account["open"] and not controller.signIn["open"]
+    assert controller.flow._relogged_for_store == set() and controller.flow.store_problem == ""
+
+
+def test_sign_out_inactive_during_installation(qapp) -> None:
+    source = _signed_in_source()
+    controller = Restore4b(source)
+    controller.primaryAction()
+    wait(qapp, lambda: controller.flow.running)
+    controller.openAccount()
+    a = controller.account
+    assert not a["signOutEnabled"] and a["signOutHint"] == "Дождитесь конца установки"
+    controller.askSignOut()
+    controller.confirmSignOut()
+    assert not controller.account["confirm"] and ("sign_out", None) not in source.calls
+
+
+def test_account_sheet_and_confirmation_load_without_warnings(qapp) -> None:
+    source = _signed_in_source()
+    controller = Restore4b(source)
+    controller.openAccount()
+    engine, icons, warnings = open_window(qapp, controller)
+    window = engine.rootObjects()[0]
+    email = window.findChild(QQuickItem, "accountEmail")
+    assert email is not None and email.property("text") == source.account_email
+    sheet = (qml_path().parent / "components" / "AccountSheet.qml").read_text(encoding="utf-8")
+    assert "Text.ElideMiddle" in sheet and "Theme.danger" not in sheet  # no red
+    controller.askSignOut()
+    for _ in range(3):
+        qapp.processEvents()
+    assert window.findChild(QQuickItem, "signOutConfirm").property("visible")
+    window.close()
+    del window, engine
+    qapp.processEvents()
+    assert warnings == []
+
+
+@pytest.mark.parametrize(
+    "caps, missing",
+    [
+        (dict(list_purchases_all=True, passphrase_stdin=False, auth_info_country=None), ("0003",)),
+        (dict(list_purchases_all=False, passphrase_stdin=True, auth_info_country=True), ("0002",)),
+        (dict(list_purchases_all=False, passphrase_stdin=False, auth_info_country=False), ("0001", "0002", "0003")),
+    ],
+)
+def test_needs_component_details_list_only_what_capabilities_lack(caps, missing) -> None:
+    from types import SimpleNamespace
+
+    from apprestore_core.ipatool_api import Capabilities
+    from apprestore_gui.ui4b import component
+    from apprestore_gui.ui4b.qt_bridge import SessionSource
+
+    tools = SimpleNamespace(license_preflight=lambda: "needs", ipatool_capabilities=lambda: Capabilities(**caps))
+    src = SessionSource.__new__(SessionSource)
+    src.session = SimpleNamespace(service=SimpleNamespace(core=SimpleNamespace(tools=tools)))
+    assert src.missing_patches() == missing
+    text = component.details_text(missing)
+    for name in ("0001", "0002", "0003"):
+        assert (name in text) == (name in missing)

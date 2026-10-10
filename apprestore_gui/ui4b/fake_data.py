@@ -244,6 +244,13 @@ class FakeSource(SourceBase):
         self.relogin = False
         self.changed.emit()
 
+    def sign_out(self) -> None:
+        self.calls.append(("sign_out", None))
+        self.signed_in = False
+        self.auth_phase = "out"
+        self.account_email = ""
+        self.changed.emit()
+
     def restore_offloaded(self, keys: list[str]) -> None:
         self.calls.append(("restore_offloaded", list(keys)))
 

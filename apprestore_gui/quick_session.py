@@ -732,9 +732,24 @@ class QuickSession(QObject):
             self._after_unlock = ""
             if email:
                 self._passphrases.pop(email.lower(), None)
+        # Every step runs even if an earlier one failed (revoked session, error):
+        # the saved session copy and purchases-cache.json go; the license journal
+        # and the icon cache are not touched.
         if email:
-            forget_session(email)
-        self._purchases.forget()
+            try:
+                forget_session(email)
+            except OSError:
+                pass
+        try:
+            self._purchases.forget()
+        except Exception:  # noqa: BLE001 - the core sign_out already deleted the file
+            pass
+        try:
+            from apprestore_core.purchases_cache import forget_purchases_cache
+
+            forget_purchases_cache()
+        except Exception:  # noqa: BLE001
+            pass
         self._on_session_view(SESSION_UNKNOWN)
         self.changed.emit()
 

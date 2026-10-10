@@ -182,6 +182,16 @@ class RestoreFlow:
         self._kick()
         self.on_change()
 
+    def on_signed_out(self) -> None:
+        """«Выйти»: forget everything about the account kept in memory, incl.
+        the -128 «already signed in again» mark (Лена: memory only)."""
+
+        self._relogin_for_store = None
+        self._relogged_for_store.clear()
+        self.store_problem = ""
+        self.store_problem_app = ""
+        self.account_email = ""
+
     def stop(self) -> None:
         self.queue.stop()
         self.on_change()

@@ -230,6 +230,10 @@ class SourceBase(QObject):
     def cancel_login(self) -> None:
         pass
 
+    def sign_out(self) -> None:
+        """QuickSession.signOut → AppRestoreService.sign_out (revoke, session copy
+        and purchases-cache.json deleted; license journal and icon cache stay)."""
+
 
 class SessionSource(SourceBase):
     """Live data from :class:`QuickSession`; installs go through its gated calls."""
@@ -452,6 +456,9 @@ class SessionSource(SourceBase):
         if hasattr(self.session, "cancelLogin"):
             self.session.cancelLogin()
 
+    def sign_out(self) -> None:
+        self.session.signOut()
+
 
 class Restore4b(QObject):
     """Everything the 4b QML reads. One ``changed`` signal; QML re-reads properties."""
@@ -481,6 +488,8 @@ class Restore4b(QObject):
         self._consent: dict[str, object] = {}
         self._limit_note: tuple[object, object] = (None, ("", False))
         self._found: list[dict[str, str]] = []
+        self._account_open = False
+        self._signout_confirm = False
         self._patches_missing: tuple[str, ...] = ()
         self._component_details = False
         self._consent_plan: LicensePlan | None = None
@@ -965,7 +974,11 @@ class Restore4b(QObject):
         elif action == "ipa":
             self.pickIpaRequested.emit()  # QML FileDialog: only a file already on this computer
         elif action == "signin":
-            self.openSignIn()
+            src = self.source
+            if src.signed_in and src.auth_phase == "in" and not src.relogin:
+                self.openAccount()  # «Apple ID» when signed in: who, and «Выйти»
+            else:
+                self.openSignIn()
         elif action == "picker":
             self.openPicker()
         elif action == "howto":
@@ -1012,6 +1025,52 @@ class Restore4b(QObject):
     def closeSignIn(self) -> None:
         self._signin_open = False
         self._refresh()
+
+    # -- «Apple ID» sheet (04-auth §2a): who is signed in, «Выйти» -------------------
+
+    @Slot()
+    def openAccount(self) -> None:
+        self._account_open = True
+        self._signout_confirm = False
+        self._refresh()
+
+    @Slot()
+    def closeAccount(self) -> None:
+        self._account_open = False
+        self._signout_confirm = False
+        self._refresh()
+
+    @Slot()
+    def askSignOut(self) -> None:
+        if self.flow.running:
+            return  # inactive during installation
+        self._signout_confirm = True
+        self._refresh()
+
+    @Slot()
+    def cancelSignOut(self) -> None:
+        self._signout_confirm = False
+        self._refresh()
+
+    @Slot()
+    def confirmSignOut(self) -> None:
+        if self.flow.running:
+            return
+        self._signout_confirm = False
+        self._account_open = False
+        self._signin_open = False
+        self.flow.on_signed_out()
+        self.source.sign_out()
+        self._refresh()
+
+    @Property("QVariantMap", notify=changed)
+    def account(self) -> dict[str, object]:
+        return account_view(
+            open_=self._account_open,
+            confirm=self._signout_confirm,
+            email=self.source.account_email,
+            running=self.flow.running,
+        )
 
     @Property("QVariantMap", notify=changed)
     def signIn(self) -> dict[str, object]:
@@ -1083,6 +1142,28 @@ def signin_view(*, open_: bool, phase: str, status: str, email: str, relogin: bo
         "codeHint": "Код не пришёл — нажмите «Отмена» и войдите ещё раз, Apple пришлёт новый.",
         "fine": "Пароль уходит только в Apple. Программа его не хранит; вход остаётся на этом компьютере, в связке ключей.",
         "go": "Подтвердить" if code else "Войти",
+    }
+
+
+def account_view(*, open_: bool, confirm: bool, email: str, running: bool) -> dict[str, object]:
+    """«Apple ID» sheet and the «Выйти из Apple ID?» confirmation (04-auth §2a).
+    The address is shown in full (ElideMiddle in QML when it does not fit)."""
+
+    return {
+        "open": bool(open_),
+        "title": "Apple ID",
+        "close": "Закрыть",
+        "label": "Вошли как",
+        "email": email,
+        "fine": "Пароль уходит только в Apple. Программа его не хранит; вход остаётся на этом компьютере, в связке ключей.",
+        "signOut": "Выйти",
+        "signOutEnabled": not running,
+        "signOutHint": "Дождитесь конца установки" if running else "",
+        "confirm": bool(confirm and open_ and not running),
+        "confirmTitle": "Выйти из Apple ID?",
+        "confirmText": "Приложения на iPhone останутся. Чтобы вернуть новые, нужно будет войти снова.",
+        "confirmGo": "Выйти",
+        "confirmCancel": "Отмена",
     }
 
 

@@ -110,6 +110,13 @@ shasum -a 256 bin/ipatool                      # macOS
 Get-FileHash bin\ipatool.exe -Algorithm SHA256   # Windows
 ```
 
+Windows: `ipatool.exe` не подписан. Перед использованием сверьте сумму —
+для сборки из этой ветки она должна быть
+`B5932FAE9A030F3FEC5C2DE670F8716BDBF09F05C986C398BF512FDF81FF0F2F`
+(PowerShell печатает её заглавными буквами). Если не совпала — не запускайте
+файл. Предупреждение SmartScreen или антивируса для неподписанного файла
+ожидаемо; запускать ли его, решаете вы.
+
 На macOS после копирования: `chmod +x bin/ipatool`.
 
 ### Что будет со старым ipatool (без патчей)

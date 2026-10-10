@@ -32,6 +32,8 @@ SHOTS: tuple[tuple[str, str, str | None], ...] = (
     ("home-relogin", "relogin", None),
     ("signin-sheet", "relogin", None),
     ("signin-code", "signin", None),
+    ("account-sheet", "missing", None),
+    ("account-signout", "missing", None),
     ("home-region", "region", "variant-4b-region.png"),
     ("home-needs-component", "unpatched", "variant-4b-needs-component.png"),
     ("onboarding-1", "onboarding-1", "variant-4b-onboarding-1.png"),
@@ -48,6 +50,14 @@ def prepare(controller, source, scenario: str, name: str = "") -> None:
         source.account_email = "marina@example.com"
         source.auth_status = "Сессия Apple ID истекла. Войдите заново."
         controller.openSignIn()
+        return
+    if name in ("account-sheet", "account-signout"):
+        source.auth_phase = "in"
+        source.account_email = "marina.konstantinopolskaya.long-address@example.com"
+        source.changed.emit()
+        controller.openAccount()
+        if name == "account-signout":
+            controller.askSignOut()
         return
     if name == "signin-code":
         controller.openSignIn()
