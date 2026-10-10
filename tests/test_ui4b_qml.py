@@ -476,3 +476,117 @@ def test_ipa_link_installs_only_a_local_file(qapp) -> None:
     controller.installIpaFile("file:///tmp/Example.ipa")
     assert ("install_ipa", "/tmp/Example.ipa") in source.calls
     controller.link("Журнал")  # hidden link: does nothing
+
+
+# -- смоук Лены, блокирующие пункты, на моках гейта ---------------------------------------------
+
+
+def _gated_source(tmp_path, scenario="consent", paid=()):
+    """FakeSource whose install_store goes through the real license_gate (fake ipatool)."""
+
+    from apprestore_core.license_gate import run_with_free_license
+
+    journal = tmp_path / "licenses_acquired.jsonl"
+    source = FakeSource(scenario)
+    source.journal = journal
+    for sid in paid:
+        source.prices[sid] = 2.99
+    owned = set(source.owned or ())
+    bought: list[str] = []
+    notes: list[str] = []
+
+    class Tools:
+        def account_country(self):
+            return "us"
+
+        def purchase_license(self, store_id, grant=None):
+            bought.append(store_id)
+            owned.add(store_id)
+
+    def attempt(sid):
+        def run():
+            if sid not in owned:
+                raise RuntimeError("license is required")
+            return "ok"
+        return run
+
+    def install_store(sid):
+        source.calls.append(("install_store", sid))
+        try:
+            run_with_free_license(
+                sid, attempt(sid), tools=Tools(), journal=journal, notify=lambda t: (notes.append(t), source.progress.emit(-1, t)),
+                lookup=lambda s, c: {"price": source.prices.get(s, 9.99), "bundleId": "b", "country": c[0]},
+            )
+        except Exception as exc:  # noqa: BLE001
+            source.installSettled.emit(sid, False, str(exc))
+            return
+        source.installSettled.emit(sid, True, "")
+
+    source.install_store = install_store  # type: ignore[method-assign]
+    return source, journal, bought, notes
+
+
+def _run_choice(qapp, tmp_path, choice):
+    from apprestore_core.license_guard import read_counts
+
+    source, journal, bought, notes = _gated_source(tmp_path)
+    controller = Restore4b(source)
+    before = read_counts(journal)
+    _open_consent(qapp, controller, source)
+    getattr(controller, choice)()
+    wait(qapp, lambda: not controller.flow.running)
+    return controller, source, journal, bought, notes, before, read_counts(journal)
+
+
+def test_smoke13_cancel_takes_nothing(qapp, tmp_path) -> None:
+    controller, source, journal, bought, notes, before, after = _run_choice(qapp, tmp_path, "consentCancel")
+    assert bought == [] and before == after and not [c for c in source.calls if c[0] == "install_store"]
+
+
+def test_smoke13_owned_only_takes_no_new_license(qapp, tmp_path) -> None:
+    controller, source, journal, bought, notes, before, after = _run_choice(qapp, tmp_path, "consentOwnedOnly")
+    assert bought == [] and before == after and notes == []
+
+
+def test_smoke12_17_continue_notice_then_plus_k_in_read_counts(qapp, tmp_path) -> None:
+    import json
+
+    controller, source, journal, bought, notes, before, after = _run_choice(qapp, tmp_path, "consentContinue")
+    k = 2
+    assert len(bought) == k and notes.count("Бесплатное приложение будет добавлено на ваш Apple ID.") == k
+    assert (after[0] - before[0], after[1] - before[1]) == (k, k)
+    statuses = [json.loads(line)["status"] for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert statuses == ["acquired"] * k  # append-only, nothing extra
+
+
+def test_smoke14_paid_never_enters_k_or_purchase(qapp, tmp_path) -> None:
+    from apprestore_gui.ui4b.fake_data import removed_items
+
+    paid_id = removed_items()[0].store_id  # Сбер: not on the account, price 2.99
+    source, journal, bought, notes = _gated_source(tmp_path, paid=(paid_id,))
+    controller = Restore4b(source)
+    consent = _open_consent(qapp, controller, source)
+    assert consent["k"] == 1 and "Сбер" not in consent["names"]
+    controller.consentContinue()
+    wait(qapp, lambda: not controller.flow.running)
+    assert paid_id not in bought and ("install_store", paid_id) not in source.calls
+
+
+def test_smoke12_notice_visible_in_queue(qapp, tmp_path) -> None:
+    source = FakeSource("missing")
+    controller = Restore4b(source)
+    controller.primaryAction()
+    wait(qapp, lambda: controller.flow.running)
+    source.progress.emit(-1, "Бесплатное приложение будет добавлено на ваш Apple ID.")
+    rows = controller.home["queue"]
+    assert any("Бесплатное приложение будет добавлено" in str(r.get("detail")) for r in rows)
+
+
+def test_smoke5_no_password_or_code_in_ui_state(qapp) -> None:
+    source = FakeSource("signin")
+    controller = Restore4b(source)
+    controller.openSignIn()
+    controller.login("m@example.com", "Secret-Pass-123")
+    controller.submitCode("482913")
+    dump = repr(controller.signIn) + repr(controller.home) + repr(source.calls)
+    assert "Secret-Pass-123" not in dump and "482913" not in dump
