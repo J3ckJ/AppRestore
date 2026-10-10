@@ -590,3 +590,17 @@ def test_smoke5_no_password_or_code_in_ui_state(qapp) -> None:
     controller.submitCode("482913")
     dump = repr(controller.signIn) + repr(controller.home) + repr(source.calls)
     assert "Secret-Pass-123" not in dump and "482913" not in dump
+
+
+def test_session_source_minus128_is_not_a_relogin_in_4b(qapp) -> None:
+    from apprestore_core.license_gate import STORE_MISMATCH_TEXT
+
+    session = FakeSession()
+    session.sessionRelogin = True
+    session.sessionNote = STORE_MISMATCH_TEXT
+    src = SessionSource(session)
+    session.changed.emit()
+    assert src.relogin is False
+    session.sessionNote = "Сессия Apple ID истекла."
+    session.changed.emit()
+    assert src.relogin is True

@@ -129,3 +129,43 @@ def test_purchases_session_problem_routes_to_relogin(session, tmp_path: Path) ->
     s._drain()
     assert s.purchasesNote == api.MESSAGES_RU[api.ErrorCode.AUTH_CODE_REQUIRED]
     assert s.sessionState == "expired" and prompts == [EMAIL]
+
+
+APPLE_128 = "failed to purchase item with param 'STDQ': Account Not In This Store"
+
+
+def _failing_install(s, exc: BaseException) -> list[tuple]:
+    settled: list[tuple] = []
+    s.installSettled.connect(lambda *args: settled.append(args))
+    s.service.core = SimpleNamespace(tools=SimpleNamespace(runner=SimpleNamespace()))
+    s._ensure_keychain = lambda: True
+
+    def boom(*_args, **_kwargs):
+        raise exc
+
+    s._restore_store_gated = boom
+    s._busy = True
+    s._install_store("UDID", "389801252", True)
+    s._drain()
+    return settled
+
+
+def test_store_mismatch_offers_sign_in_again_like_expired(session) -> None:
+    from apprestore_core.license_gate import STORE_MISMATCH_TEXT
+    from apprestore_core.tools import ToolUnavailable
+
+    s, prompts, _ = session
+    settled = _failing_install(s, ToolUnavailable(APPLE_128))
+    assert settled == [("389801252", False, STORE_MISMATCH_TEXT)]
+    assert s.sessionState == "expired" and s.sessionRelogin  # the "Войти заново" button
+    assert s.sessionNote == STORE_MISMATCH_TEXT
+    assert prompts == [EMAIL]
+    assert s.signedIn  # offered, not signed out
+
+
+def test_other_install_errors_do_not_offer_relogin(session) -> None:
+    from apprestore_core.tools import ToolUnavailable
+
+    s, prompts, _ = session
+    _failing_install(s, ToolUnavailable("failed to purchase item: something else"))
+    assert not s.sessionRelogin and prompts == []

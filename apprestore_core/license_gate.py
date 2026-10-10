@@ -76,13 +76,21 @@ _STORE_REFUSAL = (
 )
 #: failureType / FailureType with a numeric code, or a customerMessage field:
 #: only Apple's own answer carries these.
-_STORE_REFUSAL_FIELD = re.compile(r"failuretype\W{0,4}\d+|customermessage")
+_STORE_REFUSAL_FIELD = re.compile(r"failuretype\W{0,4}-?\d+|customermessage")
+#: The app is not sold in the Apple ID's store (failureType -128).
+_STORE_MISMATCH = ("account not in this store",)
 #: A bare 2040 counts only inside ipatool's purchase failure line.
 _BARE_2040 = re.compile(r"\b2040\b")
 
 
-#: Shown for -128 (the GUI's explain_user_error passes it through as is).
-STORE_MISMATCH_TEXT = MESSAGES_RU[ErrorCode.STORE_MISMATCH]
+#: Short text (Макс's MESSAGES_RU); the 4b screen shows it as its lead.
+STORE_MISMATCH_SHORT = MESSAGES_RU[ErrorCode.STORE_MISMATCH]
+#: Shown for "Account Not In This Store" in the CLI and the old window: the
+#: sign-in's store differs from the Apple ID's country (no VPN/region advice).
+STORE_MISMATCH_TEXT = f"{STORE_MISMATCH_SHORT} Выйдите из аккаунта и войдите заново."
+STORE_MISMATCH_CLI_HINT = (
+    "Подсказка: apprestore auth --revoke, затем apprestore auth --email <ваш Apple ID>"
+)
 #: Start of refusal_text() for the limit: front ends match it to list the app
 #: under «не хватило лимита».
 LIMIT_REFUSAL_TEXT = "Лимит бесплатных лицензий исчерпан"
@@ -101,19 +109,17 @@ def is_store_mismatch(message: str) -> bool:
     sign-in differs from the Apple ID's country. A refusal: no journal line.
     """
 
-    text = message or ""
-    if STORE_MISMATCH_TEXT.casefold() in text.casefold():
+    text = (message or "").casefold()
+    if STORE_MISMATCH_SHORT.casefold() in text or any(hint in text for hint in _STORE_MISMATCH):
         return True
-    return classify_error(text) is ErrorCode.STORE_MISMATCH
+    return classify_error(message or "") is ErrorCode.STORE_MISMATCH
 
 
 def is_store_refusal(message: str) -> bool:
     """True when Apple explicitly refused the purchase (case-insensitive)."""
 
-    if is_store_mismatch(message):
-        return True
     text = (message or "").casefold()
-    if any(hint in text for hint in _STORE_REFUSAL):
+    if any(hint in text for hint in _STORE_REFUSAL) or is_store_mismatch(message):
         return True
     if _STORE_REFUSAL_FIELD.search(text):
         return True
@@ -254,5 +260,12 @@ def run_with_free_license(
     try:
         return attempt()
     except BaseException:
-        update_status(entry, ACQUIRED_DOWNLOAD_FAILED, journal_path=path)
+        # Append-only: an `amends` line pointing at the purchase line's id.
+        update_status(
+            str(entry.get("id") or ""),
+            ACQUIRED_DOWNLOAD_FAILED,
+            track_id=str(entry.get("track_id") or store_id),
+            reason="download failed after purchase",
+            journal_path=path,
+        )
         raise

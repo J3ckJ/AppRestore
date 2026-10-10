@@ -172,8 +172,19 @@ def test_download_failure_after_purchase_updates_status_and_still_counts(tmp_pat
         run_with_free_license(
             STORE, Download(tools, fail_after_license=True), tools=tools, lookup=Lookup(0), journal=journal
         )
-    [entry] = _entries(journal)
-    assert entry["status"] == "acquired_download_failed"
+    first, amend = _entries(journal)  # append-only: the purchase line stays as written
+    assert first["status"] == "acquired" and first["id"]
+    assert amend["amends"] == first["id"] and amend["status"] == "acquired_download_failed"
+    assert amend["track_id"] == STORE and "voids" not in amend
+
+
+def test_download_failure_after_purchase_still_counts_once(tmp_path: Path) -> None:
+    journal = tmp_path / "j.jsonl"
+    tools = Tools()
+    with pytest.raises(RuntimeError, match="TLS"):
+        run_with_free_license(
+            STORE, Download(tools, fail_after_license=True), tools=tools, lookup=Lookup(0), journal=journal
+        )
     assert read_counts(journal) == (1, 1)
 
 
@@ -411,6 +422,58 @@ def test_store_refusal_is_case_insensitive(message: str) -> None:
     assert purchase_outcome(ToolUnavailable(message)) == "refused"
 
 
+APPLE_128_ERROR = "failed to purchase item with param 'STDQ': Account Not In This Store"
+APPLE_128_LINE = json.dumps(
+    {"level": "error", "error": APPLE_128_ERROR, "success": False, "time": "2026-10-10T18:50:00+03:00"}
+)
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr"),
+    [
+        (APPLE_128_LINE + "\n", ""),
+        ("", APPLE_128_LINE + "\n"),
+        ("", f'6:50PM ERR error="{APPLE_128_ERROR}" success=false\n'),
+    ],
+    ids=["pty-json", "stderr-json", "stderr-text"],
+)
+def test_account_not_in_this_store_exact_output_is_refused_and_not_journaled(tmp_path: Path, stdout, stderr) -> None:
+    journal = tmp_path / "j.jsonl"
+    tools, runner, patches = _real_tools(stdout, stderr)
+    with patches[0], patches[1]:
+        with pytest.raises(ToolUnavailable) as caught:
+            run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(0), journal=journal)  # type: ignore[arg-type]
+    assert [call[-3:] for call in runner.calls] == [("purchase", "--app-id", STORE)]
+    assert not journal.exists(), "Apple's explicit refusal must not be journaled"
+    from apprestore_core.license_gate import purchase_outcome
+    from apprestore_gui.errors import STORE_MISMATCH_TEXT, explain_user_error
+
+    assert purchase_outcome(caught.value) == "refused"
+    assert explain_user_error(str(caught.value)) == STORE_MISMATCH_TEXT
+    assert STORE_MISMATCH_TEXT == (
+        "Магазин в текущем входе не совпадает со страной вашего Apple ID. Выйдите из аккаунта и войдите заново."
+    )
+    assert "vpn" not in STORE_MISMATCH_TEXT.casefold() and "регион" not in STORE_MISMATCH_TEXT
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        APPLE_128_ERROR,
+        APPLE_128_ERROR.upper(),
+        "account not in this store",
+        '{"failureType":"-128","customerMessage":"Account Not In This Store"}',
+        '{"FailureType": -128}',
+        "failureType=-128",
+    ],
+)
+def test_account_not_in_this_store_is_refused_case_insensitive(message: str) -> None:
+    from apprestore_core.license_gate import is_store_refusal, purchase_outcome
+
+    assert is_store_refusal(message)
+    assert purchase_outcome(ToolUnavailable(message)) == "refused"
+
+
 @pytest.mark.parametrize(
     "message",
     [
@@ -485,7 +548,51 @@ def test_gui_text_for_store_mismatch_is_recognised_again() -> None:
     from apprestore_gui.errors import explain_user_error
 
     text = explain_user_error(APPLE_128_ERROR)
-    assert text == STORE_MISMATCH_TEXT == "Магазин в текущем входе не совпадает со страной вашего Apple ID."
+    assert text == STORE_MISMATCH_TEXT and text.startswith("Магазин в текущем входе не совпадает со страной вашего Apple ID.")
     assert is_store_mismatch(text)
     limit = refusal_text(Verdict(False, "лимит за сутки", 5, 7))
     assert is_limit_refusal(limit) and not is_limit_refusal(text)
+
+
+class _MismatchService:
+    def __init__(self, **_kwargs: object) -> None:
+        self.tools = type("T", (), {"ipatool_authenticated": lambda self: True})()
+
+    def download(self, *_args, **_kwargs):
+        raise ToolUnavailable(APPLE_128_ERROR)
+
+    download_by_store_id = download
+
+
+@pytest.mark.parametrize("argv", [["download", "com.example.alpha"], ["download", "--acquire-license", "389801252"]])
+def test_cli_store_mismatch_says_sign_out_and_in(argv, capsys) -> None:
+    from unittest.mock import patch
+
+    from apprestore_core import cli
+
+    with patch("apprestore_core.cli.AppRestoreService", _MismatchService):
+        assert cli.main(argv) == 1
+    err = capsys.readouterr().err
+    assert "Магазин в текущем входе не совпадает со страной вашего Apple ID." in err
+    assert "apprestore auth --revoke" in err and "apprestore auth --email" in err
+    assert "vpn" not in err.casefold()
+
+
+def test_cli_json_store_mismatch_has_message_and_hint(capsys) -> None:
+    from unittest.mock import patch
+
+    from apprestore_core import cli
+    from apprestore_core.license_gate import STORE_MISMATCH_TEXT
+
+    with patch("apprestore_core.cli.AppRestoreService", _MismatchService):
+        assert cli.main(["--json", "download", "com.example.alpha"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"] == APPLE_128_ERROR
+    assert payload["message"] == STORE_MISMATCH_TEXT
+    assert "auth --revoke" in payload["hint"]
+
+
+def test_cli_other_errors_unchanged() -> None:
+    from apprestore_core import cli
+
+    assert cli._error_text(ToolUnavailable("boom")) == "boom"

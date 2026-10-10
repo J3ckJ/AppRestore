@@ -28,7 +28,12 @@ from apprestore_gui.account_vault import (
 from apprestore_gui.auth_pty import AppleLogin, AuthResult, keychain_has_saved_account, probe_keychain
 from apprestore_gui.device_form import device_form, device_noun
 from apprestore_gui.errors import NOT_OWNED_TEXT, explain_user_error, is_license_missing
-from apprestore_core.license_gate import LicenseDenied, run_with_free_license
+from apprestore_core.license_gate import (
+    STORE_MISMATCH_TEXT,
+    LicenseDenied,
+    is_store_mismatch,
+    run_with_free_license,
+)
 from apprestore_gui.popular_apps import POPULAR_APPS
 from apprestore_gui.service_adapter import GuiService
 from apprestore_gui.shelf_probe import probe_store
@@ -222,6 +227,13 @@ class QuickSession(QObject):
         self.sessionChanged.emit()
         if view.relogin and not before.relogin:
             self.loginPrompt.emit(email)
+
+    def _relogin_if_store_mismatch(self, exc: BaseException) -> None:
+        """Apple's "Account Not In This Store": same "sign in again" state as
+        an expired session (the sign-in's store differs from the Apple ID's)."""
+
+        if is_store_mismatch(str(exc)):
+            self._on_session_view(SessionView("expired", STORE_MISMATCH_TEXT, relogin=True))
 
     def _on_purchases_view(self, view: PurchasesView) -> None:
         with self._lock:
@@ -1131,6 +1143,7 @@ class QuickSession(QObject):
                 try:
                     self._restore_one(udid, app)
                 except Exception as exc:  # noqa: BLE001
+                    self._relogin_if_store_mismatch(exc)
                     errors.append(f"{app.name}: {explain_user_error(str(exc))}")
                 else:
                     self.appRestored.emit(key)
@@ -1178,6 +1191,7 @@ class QuickSession(QObject):
                 return
             except Exception as exc:  # noqa: BLE001
                 text = NOT_OWNED_TEXT if is_license_missing(str(exc)) else explain_user_error(str(exc))
+                self._relogin_if_store_mismatch(exc)
                 self.installSettled.emit(store_id, False, text)
                 return
             self.installSettled.emit(store_id, True, "")
@@ -1317,6 +1331,7 @@ class QuickSession(QObject):
                 except LicenseDenied as denied:
                     errors.append(f"{app.name}: {denied}")
                 except Exception as exc:  # noqa: BLE001
+                    self._relogin_if_store_mismatch(exc)
                     errors.append(f"{app.name}: {explain_user_error(str(exc))}")
                 else:
                     saved += 1

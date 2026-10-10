@@ -62,6 +62,8 @@ def explain_user_error(message: str) -> str:
         return "iPhone не ответил. Разблокируйте его и подключите кабелем ещё раз."
     if "purchasing paid apps is not supported" in low:
         return "Платное приложение без оплаты не ставится."
+    if is_store_mismatch(low):
+        return STORE_MISMATCH_TEXT
     if is_store_refusal(low):
         return STORE_REFUSED_TEXT
     if "valid apple id email" in low:

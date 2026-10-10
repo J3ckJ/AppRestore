@@ -43,6 +43,7 @@ from apprestore_gui.ui4b.home import STATE_DONE, STATE_STORE_MISMATCH, HomeInput
 from apprestore_gui.ui4b.region import apply_statuses, load_classifier
 from apprestore_gui.ui4b.region import classify as classify_region_ids
 from apprestore_gui.ui4b.onboarding import Onboarding
+from apprestore_core.license_gate import is_store_mismatch
 from apprestore_core.license_guard import DEFAULT_TOTAL_LIMIT
 from apprestore_gui.ui4b.queue import LIMIT_ERROR
 from apprestore_gui.ui4b.scan import ScanCounter
@@ -261,7 +262,10 @@ class SessionSource(SourceBase):
         self.noun = str(s.deviceNoun or "iPhone")
         self.signed_in = bool(s.signedIn)
         self.auth_phase = str(getattr(s, "authPhase", "") or "")
-        self.relogin = bool(getattr(s, "sessionRelogin", False))
+        # QuickSession puts -128 into the same «sign in again» state as an expired
+        # session (old window). 4b has its own -128 screen: not a relogin here.
+        note = str(getattr(s, "sessionNote", "") or "")
+        self.relogin = bool(getattr(s, "sessionRelogin", False)) and not is_store_mismatch(note)
         self.auth_status = str(getattr(s, "authStatus", "") or "")
         self.account_email = str(getattr(s, "accountEmail", "") or getattr(s, "boundEmail", "") or "")
         was_online = self.online

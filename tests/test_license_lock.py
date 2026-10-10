@@ -193,7 +193,9 @@ def test_update_status_waits_for_the_same_journal_lock(tmp_path: Path) -> None:
     finished = threading.Event()
 
     def update() -> None:
-        license_journal.update_status(entry, "acquired_download_failed", journal_path=journal)
+        license_journal.update_status(
+            entry["id"], "acquired_download_failed", track_id=STORE, journal_path=journal
+        )
         finished.set()
 
     with license_guard.journal_lock(journal):
@@ -201,4 +203,4 @@ def test_update_status_waits_for_the_same_journal_lock(tmp_path: Path) -> None:
         worker.start()
         assert not finished.wait(0.3)  # blocked on <journal>.lock
     assert finished.wait(5)
-    assert [e["status"] for e in _entries(journal)] == ["acquired_download_failed"]
+    assert [e["status"] for e in _entries(journal)] == ["acquired", "acquired_download_failed"]
