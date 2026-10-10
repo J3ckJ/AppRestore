@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -373,17 +374,34 @@ def _rounded_image(image: QImage, size: int) -> QImage:
 
 
 class IconBook(QObject):
-    """Local icon files for the Quick UI. Lookup never blocks the window."""
+    """Local icon files for the Quick UI. Lookup never blocks the window.
+
+    One worker thread drains a queue (no parallel loaders writing the same
+    ``index.json``), every result reaches the GUI thread through a queued signal
+    (``revision`` changes only there), and a lookup that found nothing is tried
+    again later (network may come up after start) — at most ``MAX_TRIES`` times
+    per session, ``RETRY_S`` apart.
+    """
 
     changed = Signal()
+    _found = Signal(list, str)
+
+    MAX_TRIES = 3
+    RETRY_S = 45.0
 
     def __init__(self, cache: ArtworkCache | None = None) -> None:
         super().__init__()
         self.cache = cache or ArtworkCache()
         self._lock = threading.Lock()
         self._paths: dict[str, str] = {}
-        self._tried: set[str] = set()
+        self._done: set[str] = set()
+        self._pending: set[str] = set()
+        self._tries: dict[str, tuple[int, float]] = {}
+        self._queue: list[tuple[str, str, str]] = []
+        self._worker: threading.Thread | None = None
         self._revision = 0
+        self.stats = {"found": 0, "missed": 0, "errors": 0}
+        self._found.connect(self._apply, Qt.ConnectionType.QueuedConnection)
 
     @Property(int, notify=changed)
     def revision(self) -> int:
@@ -400,6 +418,8 @@ class IconBook(QObject):
         return QUrl.fromLocalFile(path).toString()
 
     def remember(self, keys: list[str], path: str) -> None:
+        """GUI thread: store the path under every key and bump ``revision``."""
+
         stored = [key for key in keys if key]
         if not path or not stored:
             return
@@ -414,42 +434,75 @@ class IconBook(QObject):
             self._revision += 1
         self.changed.emit()
 
+    @Slot(list, str)
+    def _apply(self, keys: list, path: str) -> None:
+        self.remember([str(k) for k in keys], path)
+
+    def _load_one(self, store_id: str, bundle_id: str, site: str) -> bool:
+        path = self.cache.rounded_icon_file(store_id=store_id, bundle_id=bundle_id, site=site)
+        if path is None:
+            return False
+        info_bundle = ""
+        if store_id.isdigit():
+            info = self.cache.artwork_info(store_id=store_id, bundle_id=bundle_id)
+            if info:
+                info_bundle = str(info.get("bundleId") or "")
+        keys = [k for k in (store_id, bundle_id, info_bundle) if k]
+        if threading.current_thread() is threading.main_thread():
+            self.remember(keys, str(path))
+        else:
+            self._found.emit(keys, str(path))
+        return True
+
     def load_now(self, items: list[tuple[str, str, str]]) -> None:
         for store_id, bundle_id, site in items:
             token = f"{store_id}|{bundle_id}|{site}"
+            try:
+                ok = self._load_one(store_id, bundle_id, site)
+            except Exception:  # noqa: BLE001 - one bad icon must not stop the rest
+                ok = False
+                with self._lock:
+                    self.stats["errors"] += 1
             with self._lock:
-                if token in self._tried:
-                    continue
-                self._tried.add(token)
-            path = self.cache.rounded_icon_file(
-                store_id=store_id,
-                bundle_id=bundle_id,
-                site=site,
-            )
-            if path is not None:
-                info_bundle = ""
-                if store_id.isdigit():
-                    info = self.cache.artwork_info(store_id=store_id, bundle_id=bundle_id)
-                    if info:
-                        info_bundle = str(info.get("bundleId") or "")
-                self.remember([store_id, bundle_id, info_bundle], str(path))
+                self._pending.discard(token)
+                if ok:
+                    self._done.add(token)
+                    self.stats["found"] += 1
+                else:
+                    count, _ = self._tries.get(token, (0, 0.0))
+                    self._tries[token] = (count + 1, time.monotonic())
+                    self.stats["missed"] += 1
+
+    def _due(self, token: str) -> bool:
+        if token in self._done or token in self._pending:
+            return False
+        count, last = self._tries.get(token, (0, 0.0))
+        if count >= self.MAX_TRIES:
+            return False
+        return count == 0 or time.monotonic() - last >= self.RETRY_S
 
     def consider_async(self, items: list[tuple[str, str, str]]) -> None:
-        pending: list[tuple[str, str, str]] = []
         with self._lock:
             for store_id, bundle_id, site in items:
                 token = f"{store_id}|{bundle_id}|{site}"
-                if token in self._tried or not (store_id or bundle_id or site):
+                if not (store_id or bundle_id or site) or not self._due(token):
                     continue
-                pending.append((store_id, bundle_id, site))
-        if not pending:
-            return
-        threading.Thread(
-            target=self.load_now,
-            args=(pending,),
-            name="apprestore-icons",
-            daemon=True,
-        ).start()
+                self._pending.add(token)
+                self._queue.append((store_id, bundle_id, site))
+            if not self._queue or self._worker is not None:
+                return
+            self._worker = threading.Thread(target=self._drain, name="apprestore-icons", daemon=True)
+            worker = self._worker
+        worker.start()
+
+    def _drain(self) -> None:
+        while True:
+            with self._lock:
+                if not self._queue:
+                    self._worker = None
+                    return
+                batch, self._queue = self._queue[:], []
+            self.load_now(batch)
 
 
 def prefetch_many(

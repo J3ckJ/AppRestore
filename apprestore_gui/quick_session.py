@@ -75,7 +75,7 @@ def offloaded_card(app: OffloadedApp) -> dict[str, str]:
         "storeId": app.bundle_id,
         "name": name,
         "detail": version if version and version != "?" else "сгружено",
-        "mark": name[:1].upper(),
+        "mark": "",  # never a letter (Ника): the window shows real artwork or a neutral tile
         "color": color,
         "ink": ink,
     }
@@ -96,7 +96,7 @@ def phone_card(app: InstalledApp) -> dict[str, object]:
         "storeId": app.store_id or "",
         "name": name,
         "detail": version if version and version != "?" else "на устройстве",
-        "mark": name[:1].upper(),
+        "mark": "",  # never a letter (Ника): the window shows real artwork or a neutral tile
         "color": color,
         "ink": ink,
     }
@@ -115,7 +115,7 @@ def library_card(entry: IpaMetadata) -> dict[str, object]:
         "storeId": "",
         "name": name,
         "detail": version if version and version != "?" else entry.path.name,
-        "mark": name[:1].upper(),
+        "mark": "",  # never a letter (Ника): the window shows real artwork or a neutral tile
         "color": color,
         "ink": ink,
         "placed": False,

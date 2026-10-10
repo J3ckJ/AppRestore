@@ -80,8 +80,15 @@ def build(settings: QSettings) -> tuple[QQmlApplicationEngine | None, list[Any]]
     controller.updateAvailable.connect(show_update)
     controller.openDocRequested.connect(open_doc)
     source.changed.connect(queue_icons)
+    from PySide6.QtCore import QTimer
+
+    # icons that were not found yet (network came up later) are retried by IconBook
+    retry = QTimer()
+    retry.setInterval(int(IconBook.RETRY_S * 1000))
+    retry.timeout.connect(queue_icons)
+    retry.start()
     engine = QQmlApplicationEngine()
-    keep: list[Any] = [session, source, controller, icon_book, engine]
+    keep: list[Any] = [session, source, controller, icon_book, engine, retry]
     if not load(engine, controller, icon_book):
         return None, keep
     session.refresh()

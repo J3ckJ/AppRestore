@@ -16,7 +16,7 @@ def test_offloaded_card_uses_bundle_id_as_the_window_key() -> None:
     assert card["storeId"] == "ru.sberbankmobile"
     assert card["name"] == "СберБанк"
     assert card["detail"] == "17.6.1"
-    assert card["mark"] == "С"
+    assert card["mark"] == ""  # never a letter
     assert card["color"].startswith("#")
     assert card["ink"].startswith("#")
 
@@ -61,4 +61,4 @@ def test_offloaded_card_falls_back_when_the_version_is_unknown() -> None:
     card = offloaded_card(OffloadedApp(bundle_id="ru.example", name="  ", version="?"))
     assert card["name"] == "ru.example"
     assert card["detail"] == "сгружено"
-    assert card["mark"] == "R"
+    assert card["mark"] == ""

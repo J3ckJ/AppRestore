@@ -24,7 +24,15 @@ from apprestore_core.models import MissingApp, OffloadedApp
 GROUP_REMOVED = "removed"
 from apprestore_core.region_probe import RegionStatus  # noqa: E402
 
+from .names import FALLBACK as NAME_FALLBACK  # noqa: E402
+from .names import usable  # noqa: E402
 from .store_labels import caption, region_group_title  # noqa: E402
+
+
+def usable_name(name: object, bundle_id: str = "", store_id: str = "") -> str:
+    """Never a bundle id as a title (names.py has the full chain)."""
+
+    return usable(name, bundle_id, store_id) or NAME_FALLBACK
 
 GROUP_REGION = "region"
 GROUP_OFFLOADED = "offloaded"
@@ -111,7 +119,7 @@ def _ipa_size(path: Path | None) -> int | None:
 
 
 def from_offloaded(app: OffloadedApp, size_hint: int | None = None) -> RestoreItem:
-    name = app.name.strip() or app.bundle_id
+    name = usable_name(app.name, app.bundle_id, str(app.store_id or ""))
     size = size_hint if size_hint and size_hint > 0 else _ipa_size(app.local_ipa)
     return RestoreItem(
         key=app.bundle_id,
@@ -133,7 +141,7 @@ def from_missing(
 ) -> RestoreItem | None:
     """None when there is no way back (no store id and no local IPA)."""
 
-    name = app.name.strip() or app.bundle_id or str(app.store_id or "")
+    name = usable_name(app.name, app.bundle_id, str(app.store_id or ""))
     store_id = str(app.store_id or "")
     ipa = str(app.local_ipa) if app.local_ipa else ""
     size = size_hint if size_hint and size_hint > 0 else _ipa_size(app.local_ipa)

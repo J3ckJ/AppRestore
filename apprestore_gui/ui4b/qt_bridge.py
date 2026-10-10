@@ -56,6 +56,8 @@ from apprestore_core.delisted_attempt import on_account as attempt_account
 from apprestore_core.delisted_attempt import reset_session as reset_attempt_session
 from apprestore_core.delisted_attempt import mark_attempted, record_prices, record_region_probe
 from apprestore_gui.ui4b.find_qt import Find4b
+from apprestore_gui.ui4b.names import builtin_names, purchase_names
+from apprestore_gui.ui4b.names import resolve as resolve_name
 from apprestore_gui.ui4b.settings import ARCHIVE_DEFAULT, UPDATE_BUSY, settings_view, update_status
 from apprestore_gui.ui4b.space import UNKNOWN_SPACE, DeviceSpace, plan_space, query_device_space
 
@@ -278,6 +280,7 @@ class SessionSource(SourceBase):
             session.filesChanged.connect(self.changed)  # phoneApps (installed apps, pymobiledevice3)
         self._phone_udid = ""
         self._statuses: dict[str, object] = {}
+        self._builtin_names: dict[str, str] | None = None
         self._missingReady.connect(self._on_missing)
         self._spaceReady.connect(self._on_space)
 
@@ -357,15 +360,38 @@ class SessionSource(SourceBase):
             self._space = space
             self.changed.emit()
 
+    def _name_books(self) -> tuple[dict[str, str], dict[str, str]]:
+        if self._builtin_names is None:
+            self._builtin_names = builtin_names()
+        return purchase_names(list(self.session.purchases or [])), self._builtin_names
+
+    def _named(self, apps: list[Any]) -> list[Any]:
+        """device CFBundleDisplayName/CFBundleName → purchases cache → built-in list → «Приложение»."""
+
+        bought, builtin = self._name_books()
+        out = []
+        for app in apps:
+            name = resolve_name(getattr(app, "name", ""), bundle_id=str(getattr(app, "bundle_id", "") or ""),
+                                store_id=str(getattr(app, "store_id", "") or ""), purchases=bought, builtin=builtin)
+            try:
+                out.append(replace(app, name=name) if name != getattr(app, "name", None) else app)
+            except TypeError:  # not a dataclass (tests): keep it
+                out.append(app)
+        return out
+
     def items(self) -> list[RestoreItem]:
-        return apply_statuses(build_items(self.session.offloaded_snapshot(), self._missing), self._statuses)
+        offloaded = self._named(list(self.session.offloaded_snapshot()))
+        return apply_statuses(build_items(offloaded, self._named(list(self._missing))), self._statuses)
 
     def phone_apps(self) -> list[PhoneApp]:
         rows = list(getattr(self.session, "phoneApps", []) or [])
-        return [
-            PhoneApp(str(r.get("name") or ""), store_id=str(r.get("storeId") or ""), bundle_id=str(r.get("bundleId") or ""))
-            for r in rows
-        ]
+        bought, builtin = self._name_books()
+        out = []
+        for r in rows:
+            sid, bid = str(r.get("storeId") or ""), str(r.get("bundleId") or "")
+            name = resolve_name(r.get("name"), bundle_id=bid, store_id=sid, purchases=bought, builtin=builtin)
+            out.append(PhoneApp(name, store_id=sid, bundle_id=bid))
+        return out
 
     def space(self) -> DeviceSpace:
         return self._space
