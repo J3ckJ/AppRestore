@@ -112,6 +112,7 @@ class FakeIpatool:
         self.calls: list[tuple[str, ...]] = []
         self.licensed = False
         self.on_output = None
+        self.auth: dict[str, object] = {"email": "x", "success": True}
 
     def run(self, args, **_kwargs) -> CommandResult:
         command = tuple(str(arg) for arg in args)
@@ -127,7 +128,7 @@ class FakeIpatool:
             shutil.copyfile(self.ipa, output)
             return CommandResult(command, 0, "", "")
         if "auth" in command:
-            return CommandResult(command, 0, json.dumps({"email": "x", "success": True}), "")
+            return CommandResult(command, 0, json.dumps(self.auth), "")
         return CommandResult(command, 0, "", "")
 
     def purchases(self) -> list[tuple[str, ...]]:
@@ -271,3 +272,49 @@ def test_widgets_checkbox_refuses_over_limit(world, which) -> None:
     with pytest.raises(LicenseDenied, match="Лимит"):
         _widgets_calls(gui, which)
     assert runner.purchases() == []
+
+
+# ---------------------------------------------------------------- bundle id → lookup
+
+
+def test_cli_bundle_id_is_looked_up_in_account_country_then_gated(world) -> None:
+    runner, root, journal, _price = world
+    runner.auth = {"email": "x", "storeFront": "143469-16,29", "success": True}  # RU
+    asked: list[tuple[str, tuple[str, ...] | None]] = []
+
+    def lookup(bundle_id, countries=None):
+        asked.append((bundle_id, countries))
+        return STORE if countries == ("ru",) else None
+
+    with patch("apprestore_core.service.lookup_itunes_store_id", side_effect=lookup):
+        assert _run_cli(runner, root, "download", "com.example.alpha", "--acquire-license") == 0
+    assert asked[0] == ("com.example.alpha", ("ru",))
+    [purchase] = runner.purchases()
+    assert purchase[-2:] == ("--app-id", STORE)
+    assert all("--purchase" not in call for call in runner.downloads())
+    assert json.loads(journal.read_text(encoding="utf-8"))["track_id"] == STORE
+
+
+def test_cli_bundle_id_falls_back_to_the_country_list(world) -> None:
+    runner, root, _journal, _price = world
+    runner.auth = {"email": "x", "storeFront": "143517-2,32", "success": True}  # KZ
+    asked: list[object] = []
+
+    def lookup(bundle_id, countries=None):
+        asked.append(countries)
+        return None if countries == ("kz",) else STORE
+
+    with patch("apprestore_core.service.lookup_itunes_store_id", side_effect=lookup):
+        assert _run_cli(runner, root, "download", "com.example.alpha", "--acquire-license") == 0
+    assert asked == [("kz",), None]
+    assert runner.purchases()[0][-2:] == ("--app-id", STORE)
+
+
+def test_cli_bundle_id_not_found_refuses_without_purchase(world, capsys) -> None:
+    runner, root, journal, _price = world
+    with patch("apprestore_core.service.lookup_itunes_store_id", return_value=None):
+        assert _run_cli(runner, root, "download", "com.example.missing", "--acquire-license") == 1
+    err = capsys.readouterr().err
+    assert "--store-id" in err and "com.example.missing" in err
+    assert runner.purchases() == []
+    assert not journal.exists()

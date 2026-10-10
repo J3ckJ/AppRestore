@@ -930,6 +930,35 @@ class AppRestoreService:
             mode=self.license_mode,
         )
 
+    def _store_id_for_license(self, bundle_id: str) -> str:
+        """Numeric App Store ID for a bundle id, so nobody has to look it up by hand.
+
+        Public iTunes lookup, first in the Apple ID's country (``auth info``),
+        then in the usual fallback list. No ipatool purchase here.
+        """
+
+        print(f"  looking up App Store ID for {bundle_id}…")
+        country = ""
+        try:
+            country = str(self.tools.account_country() or "").strip().lower()
+        except Exception:  # noqa: BLE001 - unknown country: fallback list only
+            country = ""
+        found: str | None = None
+        if country:
+            found = lookup_itunes_store_id(bundle_id, countries=(country,))
+        if not found:
+            found = lookup_itunes_store_id(bundle_id)
+        if not found:
+            raise AppRestoreError(
+                f"Не нашли {bundle_id} в App Store"
+                + (f" ({country.upper()} и запасные страны)" if country else "")
+                + ", поэтому лицензию не берём. Если знаете числовой App Store ID, "
+                "укажите его: --store-id <число> (он есть в ссылке "
+                "apps.apple.com/…/id<число>)."
+            )
+        print(f"  found App Store ID {found}")
+        return found
+
     def download(
         self,
         bundle_id: str,
@@ -943,8 +972,8 @@ class AppRestoreService:
             resolved = parse_app_store_id(str(store_id)) if store_id is not None else None
             if store_id is not None and not resolved:
                 raise AppRestoreError("store_id must be an 8-12 digit positive integer")
-            if not resolved and lookup_store_id:
-                resolved = lookup_itunes_store_id(expected)
+            if not resolved:
+                resolved = self._store_id_for_license(expected)
             return self._license_gated(
                 resolved,
                 lambda: self.download(
