@@ -9,7 +9,10 @@ from pathlib import Path
 
 import pytest
 
-import apprestore_core.license_guard as lg
+try:
+    from apprestore_core import license_guard as lg
+except ImportError:
+    import license_guard as lg
 
 
 FIXED = dt.datetime(2026, 10, 10, 12, 0, tzinfo=dt.timezone.utc)
@@ -605,3 +608,26 @@ def test_next_daily_slot_respects_custom_limit(tmp_path):
     _seed(j, [_row(10, 1), _row(2, 2)])
     assert lg.next_daily_slot(journal_path=j, daily_limit=2, now=_now) == FIXED + dt.timedelta(hours=14)
     assert lg.next_daily_slot(journal_path=j, daily_limit=3, now=_now) is None
+
+
+# ------------------------------------------------------------------ preflight
+
+
+@pytest.mark.parametrize("gate", [False, "нужна патченая сборка"])
+def test_preflight_block_skips_purchase_and_journal(tmp_path, gate):
+    journal = tmp_path / "j" / "licenses_acquired.jsonl"
+    calls = []
+    res = lg.acquire_and_record("1", 0, purchase=lambda: calls.append(1) or "purchase_uncertain",
+                                preflight=lambda: gate, journal_path=journal)
+    assert calls == [] and not res.allowed and not res.recorded
+    assert res.code == lg.PREFLIGHT_BLOCKED and (res.used_today, res.used_total) == (-1, -1)
+    assert res.reason == (gate if isinstance(gate, str) else "preflight запретил взятие лицензии")
+    assert not journal.parent.exists()
+
+
+@pytest.mark.parametrize("gate", [None, True])
+def test_preflight_pass_keeps_normal_path(tmp_path, gate):
+    journal = tmp_path / "licenses_acquired.jsonl"
+    res = lg.acquire_and_record("1", 0, purchase=lambda: "acquired", preflight=lambda: gate,
+                                journal_path=journal)
+    assert res.recorded and res.code is None and res.used_total == 1

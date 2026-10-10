@@ -498,8 +498,10 @@ def _gated_source(tmp_path, scenario="consent", paid=()):
     notes: list[str] = []
 
     class Tools:
-        def ipatool_missing_patches(self):
-            return source.missing_patches()
+        def license_preflight(self):
+            from apprestore_core.license_gate import NEEDS_PATCHED_IPATOOL_TEXT
+
+            return NEEDS_PATCHED_IPATOOL_TEXT if source.missing_patches() else None
 
         def account_country(self):
             return "us"
@@ -696,6 +698,7 @@ def test_unpatched_ipatool_no_consent_owned_go_marked_listed(qapp, tmp_path) -> 
     assert "ipatool" not in home["fine"] + home["lead"]  # technical words only behind «Подробнее»
     controller.link(DETAILS_LINK)
     assert "0001" in controller.home["fine"] and "ipatool" in controller.home["fine"]
+    assert controller.ipatoolCaps == {"canAcquireLicense": False, "missing": ["0001", "0003"]}
     before = source.license_counts()
     controller.link(DETAILS_LINK)
     controller.primaryAction()
@@ -716,7 +719,7 @@ def test_unpatched_gate_refuses_even_if_called_directly(qapp, tmp_path) -> None:
     source.installSettled.connect(lambda sid, ok, text: settled.append((sid, ok, text)))
     sid = removed_items()[0].store_id
     source.install_store(sid)
-    assert settled == [(sid, False, NEEDS_PATCHED_IPATOOL_TEXT)]
+    assert settled and settled[0][:2] == (sid, False) and NEEDS_PATCHED_IPATOOL_TEXT in settled[0][2]
     assert bought == [] and not journal.exists()
 
 
@@ -752,8 +755,11 @@ def test_needs_component_hides_region_and_skips_region_probe(qapp) -> None:
     assert any(i.note == COMPONENT_NOTE for i in controller.selection.items)
 
     class Tools:
-        def ipatool_missing_patches(self):
-            return ("0001",)
+        def license_preflight(self):
+            return "нужна сборка"
+
+        def ipatool_capabilities(self):
+            return SimpleNamespace(auth_info_country=None, list_purchases_all=False, passphrase_stdin=True)
 
         def account_country(self):
             raise AssertionError("region_probe must be off without 0001")
@@ -763,3 +769,25 @@ def test_needs_component_hides_region_and_skips_region_probe(qapp) -> None:
     src = SessionSource(session)
     src.online = True
     assert src._classify([SimpleNamespace(store_id="1")]) == {}
+
+
+
+def test_needs_patched_mid_run_switches_home_to_needs_component(qapp) -> None:
+    from apprestore_core.license_gate import NEEDS_PATCHED_IPATOOL_TEXT
+    from apprestore_gui.ui4b.component import COMPONENT_NOTE
+
+    source = FakeSource("missing")
+    source.owned = set()  # unknown to the GUI that the binary is old
+    controller = Restore4b(source)
+    controller.primaryAction()
+    wait(qapp, lambda: controller.flow.running)
+    for entry in list(controller.flow.queue.entries):
+        if entry.item.store_id:
+            source.installSettled.emit(entry.item.store_id, False, NEEDS_PATCHED_IPATOOL_TEXT)
+    wait(qapp, lambda: not controller.flow.running)
+    assert controller.flow.component_blocked
+    assert "ipatool" not in controller.home.get("lead", "")
+    controller.dismissDone()
+    home = controller.home
+    assert home["state"] == "needs_component" and home["state"] != "store_mismatch"
+    assert any(i.note == COMPONENT_NOTE for i in controller.selection.items)

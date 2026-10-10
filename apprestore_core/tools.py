@@ -1262,20 +1262,39 @@ class AppRestoreTools:
             raise ToolUnavailable(detail or "ipatool purchase failed")
         return payload
 
-    def ipatool_missing_patches(self) -> tuple[str, ...]:
-        """AppRestore patches the license path needs that this ipatool lacks
-        (``ipatool_caps.missing_patches``: 0001 country, 0003 passphrase stdin)."""
+    #: Макс's IpatoolClient per binary path: its capability probes are cached on it.
+    _caps_clients: dict[str, Any] = {}
 
-        from .ipatool_caps import missing_patches
+    def ipatool_client(self):
+        """Макс's ``IpatoolClient`` for offline capability probes (no passphrase)."""
 
-        return missing_patches(resolve_tool("ipatool"))
+        from .ipatool_api import IpatoolClient
+
+        binary = resolve_tool("ipatool")
+        if not binary:
+            return None
+        client = AppRestoreTools._caps_clients.get(binary)
+        if client is None:
+            client = IpatoolClient(binary, keychain_passphrase="")
+            AppRestoreTools._caps_clients[binary] = client
+        return client
+
+    def license_preflight(self) -> str | None:
+        """``client.license_preflight()``: None = a new license may be taken, else
+        the Russian reason (NEEDS_PATCHED_BUILD). No binary = not allowed."""
+
+        from .ipatool_api import MESSAGES_RU, ErrorCode
+
+        client = self.ipatool_client()
+        if client is None:
+            return MESSAGES_RU[ErrorCode.NEEDS_PATCHED_BUILD]
+        return client.license_preflight()
 
     def ipatool_capabilities(self):
-        """``ipatool_caps.capabilities`` of the installed ipatool (Макс's names)."""
+        """``client.capabilities()`` (cached) or None without a binary."""
 
-        from .ipatool_caps import capabilities
-
-        return capabilities(resolve_tool("ipatool"))
+        client = self.ipatool_client()
+        return None if client is None else client.capabilities()
 
     def account_country(self) -> str:
         """Country of the signed-in Apple ID from ``auth info``; ``""`` = unknown.

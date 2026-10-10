@@ -173,12 +173,10 @@ class SourceBase(QObject):
         return []
 
     def missing_patches(self) -> tuple[str, ...]:
-        """AppRestore ipatool patches (0001, 0003) the installed binary lacks."""
+        """() when Макс's ``can_acquire_license()``; else the patches that are
+        missing (for «Подробнее»; may be ("?",) when it cannot say which)."""
 
         return ()
-
-    def ipatool_version(self) -> str:
-        return ""
 
     def search_store(self, term: str, purchases: list[dict[str, object]]) -> list[dict[str, str]]:
         """Worker thread: App Store + purchases (ui4b.search), no IPA catalogues."""
@@ -312,8 +310,8 @@ class SessionSource(SourceBase):
 
         if not self.online:
             return {}
-        if "0001" in self.missing_patches():
-            return {}  # needs-component: region_probe is off (no account country)
+        if self.missing_patches():
+            return {}  # needs-component: region_probe is off
         try:
             country = str(self.session.service.core.tools.account_country() or "").strip().upper()
         except Exception:  # noqa: BLE001
@@ -327,7 +325,11 @@ class SessionSource(SourceBase):
             self.changed.emit()
 
     def _load_space(self, udid: str) -> None:
-        self._spaceReady.emit(udid, query_device_space(self.session.service.core.tools, udid))
+        try:
+            space = query_device_space(self.session.service.core.tools, udid)
+        except Exception:  # noqa: BLE001 - no service yet: «не удалось проверить»
+            space = UNKNOWN_SPACE
+        self._spaceReady.emit(udid, space)
 
     def _on_space(self, udid: str, space: object) -> None:
         if udid == self.session.current_udid() and isinstance(space, DeviceSpace):
@@ -351,16 +353,24 @@ class SessionSource(SourceBase):
         return list(self.session.purchases or [])
 
     def missing_patches(self) -> tuple[str, ...]:
+        # ipatoolCaps.canAcquireLicense = client.can_acquire_license() (cached probes)
         try:
-            return tuple(self.session.service.core.tools.ipatool_missing_patches())
+            tools = self.session.service.core.tools
+            if tools.license_preflight() is None:
+                return ()
+            caps = tools.ipatool_capabilities()
         except Exception:  # noqa: BLE001 - cannot tell: like the gate, not safe
-            return ("0001", "0003")
-
-    def ipatool_version(self) -> str:
-        try:
-            return str(self.session.service.core.tools.ipatool_capabilities().version or "")
-        except Exception:  # noqa: BLE001
-            return ""
+            return ("?",)
+        if caps is None:
+            return ("0001", "0002", "0003")
+        missing = tuple(
+            name for name, ok in (
+                ("0001", caps.auth_info_country is not False),
+                ("0002", caps.list_purchases_all),
+                ("0003", caps.passphrase_stdin),
+            ) if not ok
+        )
+        return missing or ("?",)
 
     def owned_store_ids(self) -> set[str] | None:
         # QuickSession.purchases = purchases.py's list-purchases cache
@@ -492,7 +502,9 @@ class Restore4b(QObject):
         self.flow.observe_account(src.signed_in, src.auth_phase, src.relogin, src.account_email)
         if self._signin_open and src.signed_in and src.auth_phase == "in" and not src.relogin:
             self._signin_open = False
-        self._patches_missing = tuple(self.source.missing_patches())
+        self._patches_missing = tuple(self.source.missing_patches()) or (
+            ("?",) if self.flow.component_blocked else ()
+        )
         items = self.source.items()
         if self._patches_missing:
             items = component.mark(items, self.source.owned_store_ids(), self._patches_missing)
@@ -506,6 +518,9 @@ class Restore4b(QObject):
         self._refresh()
 
     def _refresh(self) -> None:
+        if self.flow.component_blocked and not self._patches_missing:
+            self._on_source()  # NEEDS_PATCHED_BUILD mid-run: re-mark the list (needs-component)
+            return
         src = self.source
         self._step = self.onboarding.step(
             connected=src.connected, signed_in=src.signed_in, scan_done=self.scan.done
@@ -532,7 +547,7 @@ class Restore4b(QObject):
                 store_problem_app=self.flow.store_problem_app,
                 limit_note=self._limit_note_for_queue(queue)[0],
                 limit_total=self._limit_note_for_queue(queue)[1],
-                component_details=component.details_text(self._patches_missing, self.source.ipatool_version())
+                component_details=component.details_text(self._patches_missing)
                 if self._component_details and self._patches_missing else "",
                 component=bool(self._patches_missing),
             )
@@ -547,6 +562,10 @@ class Restore4b(QObject):
             self.flow.on_install_settled(entry.item.ipa_path if ok else "", ok, text)
 
     # -- properties --------------------------------------------------------------
+
+    @Property("QVariantMap", notify=changed)
+    def ipatoolCaps(self) -> dict[str, object]:
+        return {"canAcquireLicense": not self._patches_missing, "missing": list(self._patches_missing)}
 
     @Property("QVariantMap", notify=changed)
     def home(self) -> dict[str, object]:

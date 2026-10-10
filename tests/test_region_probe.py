@@ -7,8 +7,11 @@ import urllib.request
 
 import pytest
 
-import apprestore_core.region_probe as rp
-from apprestore_core.region_probe import RegionProbe, RegionStatus
+try:
+    from apprestore_core import region_probe as rp
+except ImportError:
+    import region_probe as rp
+RegionProbe, RegionStatus = rp.RegionProbe, rp.RegionStatus
 
 
 @pytest.fixture(autouse=True)

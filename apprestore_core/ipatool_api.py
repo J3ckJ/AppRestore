@@ -11,8 +11,9 @@ stable :class:`ErrorCode` with Russian text.  Text output is never parsed.
 What this module never does: sign in, buy (``purchase`` / ``--purchase``),
 download packages, write to the keychain, or log the keychain passphrase,
 the Apple ID email, tokens or the command line.  With ipatool patch 0003 the
-passphrase is passed in the child's environment (IPATOOL_KEYCHAIN_PASSPHRASE),
-not in argv, so it does not show up in ``ps``.
+passphrase goes on stdin (``--keychain-passphrase-stdin``), not in argv or env;
+without it ("auto") the call fails with PASSPHRASE_NO_SECURE_METHOD and the
+GUI asks for the passphrase in its hidden terminal.
 
 Public API (for Dima):
 
@@ -23,6 +24,9 @@ Public API (for Dima):
         page.total, page.items[0].cache_key            # --all first, pages of 100 as fallback
     client.all_purchases()                             # -> PurchasesPage (needs patch 0002)
     client.account_info()                              # -> AccountInfo (offline)
+    client.capabilities()                              # -> Capabilities (offline probes, cached)
+    client.license_preflight()                         # -> None | RU reason; pass as
+        # license_guard.acquire_and_record(..., preflight=client.license_preflight)
 
 Python 3.10+, standard library only.
 """
@@ -42,6 +46,7 @@ from typing import Callable, Iterator, Mapping, Optional, Protocol, Sequence
 
 __all__ = [
     "AccountInfo",
+    "Capabilities",
     "CancelEvent",
     "ErrorCode",
     "IpatoolClient",
@@ -117,6 +122,9 @@ class ErrorCode(str, enum.Enum):
     # Local / tool
     INVALID_ARGUMENT = "invalid_argument"
     FLAG_UNSUPPORTED = "flag_unsupported"
+    #: The binary is not AppRestore's patched build (0001-0003): taking a
+    #: license is refused BEFORE ``purchase`` (no journal entry, no limit used).
+    NEEDS_PATCHED_BUILD = "needs_patched_build"
     BINARY_MISSING = "binary_missing"
     BAD_OUTPUT = "bad_output"
     UNKNOWN = "unknown"
@@ -148,10 +156,11 @@ MESSAGES_RU: Mapping[ErrorCode, str] = {
     ErrorCode.NO_CATALOG_VERSION: "В каталоге Apple нет актуальной версии (часто снятое приложение). Нужна сохранённая версия или лицензия.",
     ErrorCode.RATE_LIMITED: "Слишком много попыток входа. Подождите несколько минут.",
     ErrorCode.AUTH_SERVER_UNUSABLE: "Сервер входа Apple не ответил нормально. Повторите позже или из другой сети.",
-    ErrorCode.NETWORK: "Нет связи с Apple. Проверьте подключение к интернету и попробуйте ещё раз.",  # R5 (Лена): без VPN
+    ErrorCode.NETWORK: "Нет связи с Apple. Проверьте подключение к интернету и попробуйте ещё раз.",
     ErrorCode.TIMEOUT: "Apple не ответила вовремя. Проверьте интернет и повторите.",
     ErrorCode.INVALID_ARGUMENT: "Неверный параметр запроса к ipatool.",
     ErrorCode.FLAG_UNSUPPORTED: "Эта сборка ipatool не поддерживает нужную функцию. Обновите AppRestore.",
+    ErrorCode.NEEDS_PATCHED_BUILD: "Для возврата приложений нужна сборка ipatool с патчами",
     ErrorCode.BINARY_MISSING: "Не найден ipatool. Переустановите AppRestore.",
     ErrorCode.BAD_OUTPUT: "ipatool ответил в неожиданном формате.",
     ErrorCode.UNKNOWN: "Неизвестная ошибка ipatool. Повторите позже.",
@@ -523,6 +532,36 @@ class AccountInfo:
     email: str = field(default="", repr=False)  # never printed by repr()
 
 
+@dataclass(frozen=True)
+class Capabilities:
+    """What this ipatool binary supports (AppRestore patches 0001-0003).
+
+    ``list_purchases_all`` (0002) and ``passphrase_stdin`` (0003) come from
+    offline probes that touch neither the keychain nor the network.
+    ``auth_info_country`` (0001) is only positive evidence: True after
+    :meth:`IpatoolClient.account_info` returned storeFront/countryCode, else
+    None (the patched binary omits both when the account has no storefront).
+    The patched-build decision therefore rests on 0002 + 0003.
+    """
+
+    list_purchases_all: bool
+    passphrase_stdin: bool
+    auth_info_country: Optional[bool] = None
+
+    @property
+    def patched_build(self) -> bool:
+        """True for AppRestore's patched build: 0002 and 0003 present (0001 is never seen missing)."""
+
+        return self.list_purchases_all and self.passphrase_stdin and self.auth_info_country is not False
+
+
+#: The patched ``list-purchases`` rejects ``--all`` together with ``--page``
+#: before it opens the keychain or the network (patch 0002); an old binary
+#: answers "unknown flag: --all".  Used as the offline capability probe.
+ALL_FLAG_PROBE_ARGS = ("list-purchases", "--all", "--page", "2", "--format", "json", "--non-interactive")
+ALL_FLAG_PROBE_MARKER = "--all cannot be combined with --page or --max-results"
+
+
 def _parse_time(value: object) -> Optional[datetime]:
     if not value:
         return None
@@ -641,6 +680,8 @@ class IpatoolClient:
         self._passphrase_via = passphrase_via
         self._base_env = dict(os.environ if base_env is None else base_env)
         self._stdin_supported: Optional[bool] = None
+        self._all_supported: Optional[bool] = None
+        self._auth_info_country: Optional[bool] = None
 
     # -- plumbing ---------------------------------------------------------
 
@@ -659,6 +700,62 @@ class IpatoolClient:
             except (OSError, subprocess.SubprocessError):
                 self._stdin_supported = False
         return self._stdin_supported
+
+    def _all_flag_supported(self) -> bool:
+        """True when ``list-purchases --all`` exists (patch 0002).  Offline, cached.
+
+        ``--all --page 2`` is an invalid combination: the patched binary
+        refuses it before reading the keychain; the old one does not know
+        ``--all``.  No passphrase, no stdin, no account access.
+        """
+
+        if self._all_supported is None:
+            try:
+                result = self._run([self.binary, *ALL_FLAG_PROBE_ARGS], 20.0,
+                                   self._env_without_passphrase(), None)
+                self._all_supported = ALL_FLAG_PROBE_MARKER in (result.stdout + result.stderr)
+            except (OSError, subprocess.SubprocessError):
+                self._all_supported = False
+        return self._all_supported
+
+    def capabilities(self, *, refresh: bool = False) -> Capabilities:
+        """Probe what the binary supports.  Offline, results cached on the client."""
+
+        if refresh:
+            self._stdin_supported = None
+            self._all_supported = None
+        return Capabilities(
+            list_purchases_all=self._all_flag_supported(),
+            passphrase_stdin=self._stdin_flag_supported(),
+            auth_info_country=self._auth_info_country,
+        )
+
+    def can_acquire_license(self) -> bool:
+        """True only for AppRestore's patched build (see :class:`Capabilities`)."""
+
+        return self.capabilities().patched_build
+
+    def license_preflight(self) -> Optional[str]:
+        """Check before ANY license (``purchase``): None if allowed, else the RU reason.
+
+        Meant as ``license_guard.acquire_and_record(..., preflight=client.license_preflight)``:
+        it runs before the journal lock, so an unpatched binary never reaches
+        ``purchase``, writes nothing to the journal and spends no limit.
+        """
+
+        if self.can_acquire_license():
+            return None
+        return MESSAGES_RU[ErrorCode.NEEDS_PATCHED_BUILD]
+
+    def require_license_capable(self) -> None:
+        """Raise IpatoolError(NEEDS_PATCHED_BUILD) unless :meth:`can_acquire_license`."""
+
+        if not self.can_acquire_license():
+            caps = self.capabilities()
+            missing = [name for name, ok in (("0002 list-purchases --all", caps.list_purchases_all),
+                                             ("0003 --keychain-passphrase-stdin", caps.passphrase_stdin)) if not ok]
+            raise IpatoolError(ErrorCode.NEEDS_PATCHED_BUILD,
+                               "ipatool без патчей AppRestore: " + ", ".join(missing))
 
     def passphrase_method(self) -> str:
         """How the passphrase will be delivered: 'stdin' | 'flag' | 'env' | 'none'.
@@ -757,6 +854,11 @@ class IpatoolClient:
         """Saved account from the keychain.  Offline: proves nothing about the token."""
 
         data = self._call(["auth", "info"], timeout)
+        # Patch 0001 adds storeFront/countryCode only when the saved account has
+        # a storefront, so their presence proves the patch but their absence
+        # proves nothing.  Remembered for capabilities() as positive evidence.
+        if data.get("storeFront") or data.get("countryCode"):
+            self._auth_info_country = True
         return AccountInfo(
             name=str(data.get("name", "") or ""),
             store_front=(str(data["storeFront"]) if data.get("storeFront") else None),

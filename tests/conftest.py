@@ -14,4 +14,4 @@ def _fake_ipatools_count_as_patched(request, monkeypatch):
         return
     from apprestore_core.tools import AppRestoreTools
 
-    monkeypatch.setattr(AppRestoreTools, "ipatool_missing_patches", lambda self: ())
+    monkeypatch.setattr(AppRestoreTools, "license_preflight", lambda self: None)

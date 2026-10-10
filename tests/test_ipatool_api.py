@@ -14,7 +14,14 @@ import threading
 
 import pytest
 
-import apprestore_core.ipatool_api as api
+# Works both in Dima's checkout (package apprestore_core) and in maks-share
+# (flat modules next to this file).
+try:
+    from apprestore_core import ipatool_api as api
+    from apprestore_core import license_guard as lg
+except ImportError:
+    import ipatool_api as api
+    import license_guard as lg
 
 PASS = "secret-passphrase-for-tests"
 
@@ -430,8 +437,6 @@ def test_apple_failure_type_empty_on_success():
 
 def test_failure_type_refusal_not_written_to_journal(tmp_path):
     """FailureType 2040 (разный регистр) -> отказ -> в журнал НЕ попадает."""
-    from apprestore_core import license_guard as lg
-
     journal = tmp_path / "licenses_acquired.jsonl"
 
     def purchase():
@@ -629,8 +634,6 @@ def test_session_alive_store_mismatch_is_not_expired():
 
 
 def test_store_mismatch_refusal_not_written_to_journal(tmp_path):
-    from apprestore_core import license_guard as lg
-
     journal = tmp_path / "licenses_acquired.jsonl"
 
     def purchase():
@@ -640,3 +643,158 @@ def test_store_mismatch_refusal_not_written_to_journal(tmp_path):
                                 storefront="us", mode="real")
     assert res.recorded is False and res.status is None
     assert lg.read_counts(journal) == (0, 0)
+
+
+# ------------------------------------------------- capability preflight (smoke п.12)
+
+ALL_PROBE_PATCHED = err(api.ALL_FLAG_PROBE_MARKER)                      # REAL text of patched 0002
+ALL_PROBE_OLD = api.RunResult(1, "", 'ERR error="unknown flag: --all" success=false\n')  # REAL (colours stripped)
+HELP_PATCHED = ok("Flags:\n      --keychain-passphrase string\n      --keychain-passphrase-stdin   read ...\n")
+HELP_OLD = ok("Flags:\n      --keychain-passphrase string   passphrase for unlocking keychain\n")
+
+
+def _patched_runner(*more):
+    return FakeRunner(ALL_PROBE_PATCHED, HELP_PATCHED, *more)
+
+
+def _old_runner(*more):
+    return FakeRunner(ALL_PROBE_OLD, HELP_OLD, *more)
+
+
+def test_capabilities_patched_build_detected_offline():
+    runner = _patched_runner()
+    c = api.IpatoolClient("/x/ipatool", keychain_passphrase=PASS, runner=runner, base_env={"PATH": "/usr/bin"})
+    caps = c.capabilities()
+    assert caps.list_purchases_all and caps.passphrase_stdin and caps.patched_build
+    assert c.can_acquire_license() is True and c.license_preflight() is None
+    c.require_license_capable()  # does not raise
+    assert runner.calls[0][1:] == list(api.ALL_FLAG_PROBE_ARGS)
+    assert runner.calls[1][1:] == ["--help"]
+    for argv, env, stdin in zip(runner.calls, runner.envs, runner.stdins):
+        assert PASS not in " ".join(argv) and PASS not in env.values() and stdin is None
+        assert api.PASSPHRASE_ENV not in env
+        assert not any("purchase" == a or a == "--purchase" for a in argv)
+
+
+def test_capabilities_old_binary_blocks_license():
+    c = client(_old_runner(), via="auto")
+    caps = c.capabilities()
+    assert caps.list_purchases_all is False and caps.passphrase_stdin is False
+    assert caps.patched_build is False
+    assert c.can_acquire_license() is False
+    assert c.license_preflight() == "Для возврата приложений нужна сборка ipatool с патчами"
+    with pytest.raises(api.IpatoolError) as info:
+        c.require_license_capable()
+    assert info.value.code is api.ErrorCode.NEEDS_PATCHED_BUILD
+    assert api.MESSAGES_RU[api.ErrorCode.NEEDS_PATCHED_BUILD] == "Для возврата приложений нужна сборка ipatool с патчами"
+
+
+@pytest.mark.parametrize("answers", [
+    (ALL_PROBE_PATCHED, HELP_OLD),   # 0002 only
+    (ALL_PROBE_OLD, HELP_PATCHED),   # 0003 only
+])
+def test_capabilities_partial_build_is_not_patched(answers):
+    c = client(FakeRunner(*answers))
+    assert c.can_acquire_license() is False
+
+
+def test_capabilities_missing_binary_is_not_patched():
+    c = client(FakeRunner(FileNotFoundError(), FileNotFoundError()))
+    assert c.can_acquire_license() is False
+
+
+def test_capabilities_cached_and_refreshable():
+    runner = _patched_runner(ALL_PROBE_OLD, HELP_OLD)
+    c = client(runner)
+    assert c.can_acquire_license() and c.can_acquire_license() and c.license_preflight() is None
+    assert len(runner.calls) == 2, "probes run once per client"
+    assert c.capabilities(refresh=True).patched_build is False
+    assert len(runner.calls) == 4
+
+
+def test_capabilities_stdin_probe_shared_with_passphrase_method():
+    runner = _patched_runner()
+    c = client(runner, via="auto")
+    c.capabilities()
+    assert c.passphrase_method() == "stdin"
+    assert len(runner.calls) == 2, "--help is not probed twice"
+
+
+def test_capabilities_auth_info_country_is_positive_evidence_only():
+    runner = _patched_runner(
+        ok(line(name="E", email="e@x", success=True)),
+        ok(line(name="E", email="e@x", storeFront="143441-1,34", countryCode="US", success=True)),
+    )
+    c = client(runner)
+    assert c.capabilities().auth_info_country is None
+    c.account_info()                               # no storefront: proves nothing
+    assert c.capabilities().auth_info_country is None and c.can_acquire_license()
+    c.account_info()
+    assert c.capabilities().auth_info_country is True
+
+
+def _journal_with_one_entry(tmp_path):
+    journal = tmp_path / "licenses_acquired.jsonl"
+    res = lg.acquire_and_record("111", 0, purchase=lambda: "acquired", journal_path=journal, mode="real")
+    assert res.recorded
+    return journal
+
+
+def test_preflight_old_binary_never_purchases_or_touches_journal(tmp_path):
+    journal = _journal_with_one_entry(tmp_path)
+    before = journal.read_bytes()
+    counts_before = lg.read_counts(journal)
+    calls = []
+
+    c = client(_old_runner(), via="auto")
+    res = lg.acquire_and_record("492224193", 0, purchase=lambda: calls.append(1) or "purchase_uncertain",
+                                preflight=c.license_preflight, journal_path=journal, mode="gui")
+    assert calls == [], "purchase must not run on an unpatched ipatool"
+    assert res.allowed is False and res.recorded is False and res.status is None
+    assert res.code == lg.PREFLIGHT_BLOCKED
+    assert res.reason == "Для возврата приложений нужна сборка ipatool с патчами"
+    assert (res.used_today, res.used_total) == (-1, -1)
+    assert journal.read_bytes() == before, "nothing written (no purchase_uncertain)"
+    assert lg.read_counts(journal) == counts_before, "limit unchanged"
+
+
+def test_preflight_runs_before_journal_lock(tmp_path, monkeypatch):
+    journal = tmp_path / "fresh" / "licenses_acquired.jsonl"
+
+    def no_lock(*_a, **_k):
+        raise AssertionError("journal_lock must not be taken when preflight blocks")
+
+    monkeypatch.setattr(lg, "journal_lock", no_lock)
+    res = lg.acquire_and_record("1", 0, purchase=lambda: "acquired",
+                                preflight=client(_old_runner()).license_preflight, journal_path=journal)
+    assert res.code == lg.PREFLIGHT_BLOCKED
+    assert not journal.parent.exists(), "journal directory not even created"
+
+
+def test_preflight_patched_binary_acquires_as_before(tmp_path):
+    journal = tmp_path / "licenses_acquired.jsonl"
+    calls = []
+    c = client(_patched_runner())
+    res = lg.acquire_and_record("492224193", 0, purchase=lambda: calls.append(1) or "acquired",
+                                preflight=c.license_preflight, journal_path=journal,
+                                storefront="us", mode="gui")
+    assert calls == [1]
+    assert res.allowed and res.recorded and res.status == "acquired" and res.code is None
+    assert (res.used_today, res.used_total) == (1, 1)
+
+
+def test_preflight_exception_propagates_without_journal(tmp_path):
+    journal = tmp_path / "licenses_acquired.jsonl"
+    c = client(_old_runner())
+
+    with pytest.raises(api.IpatoolError) as info:
+        lg.acquire_and_record("1", 0, purchase=lambda: "acquired",
+                              preflight=c.require_license_capable, journal_path=journal)
+    assert info.value.code is api.ErrorCode.NEEDS_PATCHED_BUILD
+    assert not journal.exists()
+
+
+def test_preflight_absent_keeps_old_behaviour(tmp_path):
+    journal = tmp_path / "licenses_acquired.jsonl"
+    res = lg.acquire_and_record("1", 0, purchase=lambda: "acquired", journal_path=journal)
+    assert res.recorded and res.code is None

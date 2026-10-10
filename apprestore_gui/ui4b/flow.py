@@ -31,10 +31,11 @@ from collections.abc import Callable, Iterable
 from typing import Protocol
 
 from apprestore_core.ipatool_api import MESSAGES_RU, SESSION_CODES, classify_error
-from apprestore_core.license_gate import is_limit_refusal, is_store_mismatch
+from apprestore_core.license_gate import is_limit_refusal, is_needs_patched, is_store_mismatch
 
 from apprestore_gui.ui4b.catalog import ACTION_IPA, ACTION_OFFLOADED, ACTION_STORE, RestoreItem
 from apprestore_gui.ui4b.queue import CURRENT, LIMIT_ERROR, WAIT, RestoreQueue
+from apprestore_gui.ui4b.component import COMPONENT_NOTE
 from apprestore_gui.ui4b.space import DeviceSpace, SpacePlan, plan_space
 
 
@@ -74,6 +75,8 @@ class RestoreFlow:
         self.account_email = ""
         #: "" | "mismatch" (first -128) | "unavailable" (-128 again after signing in again)
         self.store_problem = ""
+        #: NEEDS_PATCHED_BUILD / PREFLIGHT_BLOCKED seen in this program run (sticky).
+        self.component_blocked = False
         self.store_problem_app = ""
         self._relogin_for_store: str | None = None
         self._relogged_for_store: set[str] = set()
@@ -170,6 +173,11 @@ class RestoreFlow:
             # acquire_and_record said no: the app goes to «не хватило лимита»,
             # the others continue (already bought ones still install).
             text = LIMIT_ERROR
+        if not ok and is_needs_patched(text):
+            # NEEDS_PATCHED_BUILD / PREFLIGHT_BLOCKED mid-run: no error screen;
+            # the controller switches home to needs-component, others go on.
+            self.component_blocked = True
+            text = COMPONENT_NOTE
         self.queue.settle(store_id, ok, text)
         self._kick()
         self.on_change()

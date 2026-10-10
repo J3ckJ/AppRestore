@@ -21,25 +21,21 @@ DETAILS_LINK = "Подробнее"
 QUIET_TEXT = "Удалённые из App Store пока не вернуть: нужен дополнительный компонент."
 #: The quiet line under the button (02/01 spec): the link is inline, bold.
 QUIET_LINE = f'{QUIET_TEXT} <a href="{HOWTO_LINK}"><b>{HOWTO_LINK}</b></a>' 
-_PATCH_WHAT = {
-    "0001": "0001 — страна аккаунта (auth info)",
-    "0003": "0003 — пароль связки ключей через stdin",
-}
 
 
-def details_text(missing: Iterable[str], version: str = "") -> str:
+def details_text(missing: Iterable[str]) -> str:
     """«Подробнее» — the only place with technical words (02-picker §2a)."""
 
     missing = tuple(missing)
     what = {
-        "0001": "без дополнения 0001 (страна аккаунта), поэтому цену приложения проверить нельзя",
+        "0001": "без дополнения 0001 (страна аккаунта: цену приложения проверить нельзя)",
+        "0002": "без дополнения 0002 (весь список покупок одним запросом)",
         "0003": "без дополнения 0003 (пароль связки ключей через stdin)",
     }
-    parts = [what.get(name, f"без дополнения {name}") for name in missing] or ["без нужных дополнений"]
-    ver = f" {version}" if version else ""
+    parts = [what[name] for name in missing if name in what] or ["без нужных дополнений"]
     return (
         "Для удалённых из App Store AppRestore использует ipatool со своими дополнениями. "
-        f"Сейчас установлен ipatool{ver} " + " и ".join(parts) + ", и новые бесплатные лицензии "
+        "Сейчас установлен ipatool " + " и ".join(parts) + ", поэтому новые бесплатные лицензии "
         "не берутся. Сгруженные и уже купленные приложения это не затрагивает."
     )
 

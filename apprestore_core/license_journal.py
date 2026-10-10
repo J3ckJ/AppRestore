@@ -121,6 +121,7 @@ def acquire_and_record(
     storefront: str = "",
     mode: str | None = "gui",
     journal_path: Path,
+    preflight: Callable[[], object] | None = None,
 ) -> tuple[Verdict, dict[str, Any] | None]:
     """Limit check → ``purchase()`` → journal line, as one locked step.
 
@@ -155,6 +156,7 @@ def acquire_and_record(
         track_id,
         price,
         purchase=callback,
+        preflight=preflight,  # Макс: checked before the journal lock (PREFLIGHT_BLOCKED)
         journal_path=journal_path,
         bundle_id=bundle_id,
         storefront=storefront,
@@ -165,11 +167,17 @@ def acquire_and_record(
     if caught:
         raise caught[0]
     verdict = Verdict(result.allowed, result.reason, result.used_today, result.used_total)
+    if getattr(result, "code", None) == license_guard.PREFLIGHT_BLOCKED:
+        raise PreflightBlocked(result.reason)
     if not result.allowed:
         return verdict, None
     if not result.recorded:  # pragma: no cover - callback only says refused via exception
         raise PurchaseRefused(result.reason)
     return verdict, result.entry
+
+
+class PreflightBlocked(Exception):
+    """license_guard said PREFLIGHT_BLOCKED: no lock, no purchase, no journal line."""
 
 
 def _private(journal_path: Path) -> None:

@@ -368,8 +368,8 @@ def _real_tools(stdout: str, stderr: str, returncode: int = 1):
         def account_country(self) -> str:
             return "us"
 
-        def ipatool_missing_patches(self) -> tuple[str, ...]:
-            return ()  # a patched build (0001, 0003)
+        def license_preflight(self):
+            return None  # a patched build
 
     runner = Runner()
     tools = Tools(runner)  # type: ignore[arg-type]
@@ -602,25 +602,25 @@ def test_cli_other_errors_unchanged() -> None:
 
 
 
-# ------------------------------------------- preflight: ipatool without patches 0001/0003
+# ------------------------------------------- preflight (Макс: client.license_preflight → PREFLIGHT_BLOCKED)
 
 
-@pytest.mark.parametrize("lacking", [("0001",), ("0003",), ("0001", "0003")])
-def test_unpatched_ipatool_refused_before_lookup_lock_purchase_and_journal(tmp_path: Path, lacking) -> None:
-    from apprestore_core.license_gate import NEEDS_PATCHED_IPATOOL_TEXT, run_with_free_license
+@pytest.mark.parametrize("country", ["us", ""])
+def test_unpatched_ipatool_refused_before_lock_purchase_and_journal(tmp_path: Path, country) -> None:
+    from apprestore_core.license_gate import NEEDS_PATCHED_IPATOOL_TEXT, is_needs_patched, run_with_free_license
     from apprestore_core.license_guard import read_counts
 
     journal = tmp_path / "j.jsonl"
     calls: list[str] = []
 
     class Tools:
-        def ipatool_missing_patches(self):
+        def license_preflight(self):
             calls.append("preflight")
-            return lacking
+            return NEEDS_PATCHED_IPATOOL_TEXT
 
         def account_country(self):
             calls.append("country")
-            return "us"
+            return country
 
         def purchase_license(self, *a, **k):
             calls.append("purchase")
@@ -628,31 +628,44 @@ def test_unpatched_ipatool_refused_before_lookup_lock_purchase_and_journal(tmp_p
     def attempt():
         raise RuntimeError("license is required")
 
-    def lookup(*a):
-        calls.append("lookup")
-        return {"price": 0, "bundleId": "b", "country": "us"}
-
     with pytest.raises(LicenseDenied) as caught:
-        run_with_free_license("389801252", attempt, tools=Tools(), lookup=lookup, journal=journal)
-    assert str(caught.value) == NEEDS_PATCHED_IPATOOL_TEXT
-    assert calls == ["preflight"]
-    assert not journal.exists() and not journal.with_suffix(".jsonl.lock").exists()
+        run_with_free_license("389801252", attempt, tools=Tools(), journal=journal,
+                              lookup=lambda *a: {"price": 0, "bundleId": "b", "country": "us"})
+    assert is_needs_patched(str(caught.value))
+    assert "purchase" not in calls and "preflight" in calls
+    assert not journal.exists() and not journal.with_name(journal.name + ".lock").exists()
     assert read_counts(journal) == (0, 0)
 
 
-def test_missing_patches_reads_markers_from_the_binary(tmp_path: Path) -> None:
-    from apprestore_core import ipatool_caps
+def test_preflight_goes_through_license_guard_before_the_lock(tmp_path: Path, monkeypatch) -> None:
+    from apprestore_core import license_guard as lg
+    from apprestore_core.license_journal import PreflightBlocked, acquire_and_record
 
-    ipatool_caps.reset_cache()
-    old = tmp_path / "old"
-    old.write_bytes(b"\x00" * (3 << 20) + b"too many authentication redirects")
-    new = tmp_path / "new"
-    new.write_bytes(b"\x00" * ((1 << 20) - 10) + b"appstore.CountryCodeFromStoreFront" + b"\x00" * 99 + b"--keychain-passphrase-stdin")
-    half = tmp_path / "half"
-    half.write_bytes(b"appstore.CountryCodeFromStoreFront")
-    assert ipatool_caps.missing_patches(str(old)) == ("0001", "0003")
-    assert ipatool_caps.missing_patches(str(new)) == ()
-    assert ipatool_caps.missing_patches(str(half)) == ("0003",)
-    assert ipatool_caps.missing_patches(None) == ("0001", "0003")
-    assert ipatool_caps.missing_patches(str(tmp_path / "nope")) == ("0001", "0003")
-    ipatool_caps.reset_cache()
+    seen = {}
+    real = lg.acquire_and_record
+
+    def spy(*a, **k):
+        seen.update(k)
+        result = real(*a, **k)
+        seen["code"] = result.code
+        return result
+
+    monkeypatch.setattr(lg, "acquire_and_record", spy)
+    bought = []
+    with pytest.raises(PreflightBlocked):
+        acquire_and_record("1", 0.0, lambda: bought.append(1), journal_path=tmp_path / "j.jsonl",
+                           preflight=lambda: "нужна сборка")
+    assert seen["code"] == lg.PREFLIGHT_BLOCKED and callable(seen["preflight"])
+    assert bought == [] and not (tmp_path / "j.jsonl").exists()
+
+
+def test_tools_preflight_is_makss_client(monkeypatch, tmp_path: Path) -> None:
+    from apprestore_core import tools as tools_module
+    from apprestore_core.tools import AppRestoreTools
+
+    monkeypatch.undo()  # the real method, not the conftest stub
+    monkeypatch.setattr(tools_module, "resolve_tool", lambda name: None)
+    AppRestoreTools._caps_clients.clear()
+    t = AppRestoreTools()
+    assert t.license_preflight()  # no binary: not allowed
+    assert t.ipatool_capabilities() is None

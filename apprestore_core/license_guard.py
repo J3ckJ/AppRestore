@@ -38,9 +38,10 @@
         ...
 
     res = acquire_and_record(track_id, price, purchase=do_purchase,
+                             preflight=client.license_preflight,  # ipatool_api.IpatoolClient
                              bundle_id=bundle_id, storefront=storefront, mode="gui")
     if not res.allowed:
-        show_error(res.reason)              # лимит/платное/нет цены
+        show_error(res.reason)              # лимит/платное/нет цены/не та сборка ipatool
     elif not res.recorded:
         show_error("Apple не выдала лицензию")
     else:
@@ -93,9 +94,12 @@ __all__ = ["Verdict", "AcquireResult", "check_can_acquire", "record_acquire",
            "read_counts", "acquire_and_record", "journal_lock",
            "default_journal_path", "record_void", "record_amend", "DEFAULT_DAILY_LIMIT",
            "DEFAULT_TOTAL_LIMIT", "ACQUIRED_STATUSES", "VOID_STATUS",
-           "next_daily_slot", "NEVER"]
+           "next_daily_slot", "NEVER", "PREFLIGHT_BLOCKED"]
 
 DEFAULT_DAILY_LIMIT = 5
+#: AcquireResult.code, когда preflight (например, IpatoolClient.license_preflight)
+#: запретил покупку: purchase не вызывался, журнал не открывался.
+PREFLIGHT_BLOCKED = "preflight_blocked"
 DEFAULT_TOTAL_LIMIT = 15
 JOURNAL_ENV = "APPRESTORE_LICENSE_JOURNAL"
 # next_daily_slot(): «слот не освободится сам» (окно держат записи без даты).
@@ -222,6 +226,8 @@ class AcquireResult:
     used_today: int
     used_total: int
     entry: dict[str, Any] | None = None
+    #: PREFLIGHT_BLOCKED, если отказал preflight (журнал не читали: счётчики -1).
+    code: str | None = None
 
     def __bool__(self) -> bool:
         return self.recorded
@@ -680,6 +686,7 @@ def _status_from_purchase(outcome: Any) -> str | None:
 
 def acquire_and_record(track_id: Any, price: Any, *,
                        purchase: Callable[[], Any],
+                       preflight: Callable[[], Any] | None = None,
                        journal_path: Path | str | None = None,
                        daily_limit: int = DEFAULT_DAILY_LIMIT,
                        total_limit: int = DEFAULT_TOTAL_LIMIT,
@@ -695,7 +702,19 @@ def acquire_and_record(track_id: Any, price: Any, *,
     purchase НЕ вызывается. Если purchase вернул «нет лицензии» — запись не
     делается. Блокировка файла журнала удерживается на всё время (включая
     purchase), поэтому параллельные GUI и bench не превысят лимит.
+
+    `preflight` (необязательный) вызывается ДО блокировки и до чтения журнала:
+    None/True — можно; False или строка (причина) — отказ с code=PREFLIGHT_BLOCKED,
+    purchase не вызывается, журнал не трогается, лимит не тратится
+    (used_today/used_total = -1: журнал не читали). Исключение из preflight
+    пробрасывается, журнал тоже не тронут.
     """
+
+    if preflight is not None:
+        gate = preflight()
+        if gate is not None and gate is not True:
+            reason = gate if isinstance(gate, str) and gate else "preflight запретил взятие лицензии"
+            return AcquireResult(False, False, None, reason, -1, -1, None, code=PREFLIGHT_BLOCKED)
 
     path = _resolve(journal_path)
     with journal_lock(path):
