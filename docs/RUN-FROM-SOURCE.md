@@ -22,7 +22,7 @@ iPhone подключается кабелем; при первом подклю
 ```bash
 git clone https://github.com/J3ckJ/AppRestore.git
 cd AppRestore
-git switch <ветка интеграции>
+git switch cursor/redesign-704e
 ```
 
 macOS:
