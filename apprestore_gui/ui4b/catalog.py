@@ -22,6 +22,10 @@ from pathlib import Path
 from apprestore_core.models import MissingApp, OffloadedApp
 
 GROUP_REMOVED = "removed"
+from apprestore_core.region_probe import RegionStatus  # noqa: E402
+
+from .store_labels import caption, region_group_title  # noqa: E402
+
 GROUP_REGION = "region"
 GROUP_OFFLOADED = "offloaded"
 #: Offline only: removed + region folded into one unchecked group (Ника §6).
@@ -30,7 +34,7 @@ GROUP_ORDER: tuple[str, ...] = (GROUP_REMOVED, GROUP_NOPHONE, GROUP_REGION, GROU
 GROUP_TITLES: dict[str, str] = {
     GROUP_REMOVED: "Удалённые из App Store",
     GROUP_NOPHONE: "Нет на iPhone · не проверено",
-    GROUP_REGION: "Нет в регионе",
+    GROUP_REGION: region_group_title(),  # region_probe + Ника's overrides (store_labels)
     GROUP_OFFLOADED: "Сгруженные",
 }
 
@@ -124,7 +128,7 @@ def from_missing(
     size = size_hint if size_hint and size_hint > 0 else _ipa_size(app.local_ipa)
     key = app.bundle_id or f"store:{store_id}" or ipa
     if region_blocked:
-        where = f"Нет в App Store {region_name}".strip() if region_name else "Нет в App Store вашего региона"
+        where = caption(RegionStatus.NOT_IN_REGION)  # one source, no country name in the caption
         return RestoreItem(
             key=key, name=name, group=GROUP_REGION, action=ACTION_NONE if not ipa else ACTION_IPA,
             store_id=store_id, bundle_id=app.bundle_id, size_bytes=size, ipa_path=ipa, note=where,

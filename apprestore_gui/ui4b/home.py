@@ -18,6 +18,7 @@ from apprestore_gui.ui4b.catalog import (
     RestoreItem,
     short_name_of,
 )
+from apprestore_gui.ui4b.region import IPA_LINK, IPA_MORE
 from apprestore_gui.ui4b.formatting import (
     format_size,
     join_names,
@@ -160,7 +161,7 @@ def link_action(name: str) -> str:
 
     if name == "Остановить":
         return "stop"
-    if name == "Файлы IPA" or name.startswith("Есть файл IPA"):
+    if name in ("Файлы IPA", IPA_LINK):
         return "ipa"  # a file already on this computer → install (installSaved)
     if name == "Apple ID":
         return "signin"
@@ -243,7 +244,7 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             cta="Войти заново",
             fine="Вход хранится только на этом компьютере, в связке ключей под вашим паролем. "
             "Код подтверждения придёт на ваши устройства Apple.",
-            links=["Есть файл IPA", "Почему это безопасно"],
+            links=[IPA_LINK, "Почему это безопасно"],
         )
     elif queue is not None and queue.active:
         state = STATE_INSTALLING
@@ -326,7 +327,7 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             cta="Войти",
             fine="Вход хранится только на этом компьютере, в связке ключей под вашим паролем. "
             "Код подтверждения придёт на ваши устройства Apple.",
-            links=["Есть файл IPA", "Почему это безопасно"],
+            links=[IPA_LINK, "Почему это безопасно"],
         )
     elif region and len(selectable) <= RESTORE_ALL_MAX:
         state = STATE_REGION
@@ -346,7 +347,8 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             f"и Apple не отдаёт {'его' if len(region) == 1 else 'их'} этой учётной записи.",
             cta=f"Вернуть {len(selectable)}" if selectable else "",
             # «Войти с другим Apple ID» — отложено (Лена)
-            links=[f"Есть файл IPA для {full_na}", "Подробнее"],
+            links=[IPA_LINK],
+            fine=IPA_MORE,
         )
     else:
         plan = plan_space(selectable, inp.space)

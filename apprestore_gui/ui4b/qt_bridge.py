@@ -25,7 +25,7 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from apprestore_gui.ui4b.catalog import ACTION_IPA, GROUP_REGION, GROUP_REMOVED, RestoreItem, build_items
+from apprestore_gui.ui4b.catalog import ACTION_IPA, ACTION_STORE, GROUP_REGION, GROUP_REMOVED, RestoreItem, build_items
 from apprestore_gui.ui4b.flow import RestoreFlow
 from apprestore_gui.ui4b.formatting import format_size
 from apprestore_gui.ui4b.licenses import (
@@ -40,11 +40,13 @@ from apprestore_gui.ui4b.licenses import (
 )
 from apprestore_gui.ui4b.licenses import candidates as license_candidates
 from apprestore_gui.ui4b.home import STATE_DONE, STATE_STORE_MISMATCH, HomeInput, PhoneApp, home_view, link_action
-from apprestore_gui.ui4b.region import apply_statuses, load_classifier, to_status
+from apprestore_gui.ui4b.region import apply_statuses, load_classifier
+from apprestore_gui.ui4b.region import classify as classify_region_ids
 from apprestore_gui.ui4b.onboarding import Onboarding
 from apprestore_core.license_guard import DEFAULT_TOTAL_LIMIT
 from apprestore_gui.ui4b.queue import LIMIT_ERROR
 from apprestore_gui.ui4b.scan import ScanCounter
+from apprestore_gui.ui4b.search import SEARCH_HINT, search_store
 from apprestore_gui.ui4b.selection import CHECK_ON, OFFLINE_FOOTER, Selection
 from apprestore_gui.ui4b.space import UNKNOWN_SPACE, DeviceSpace, plan_space, query_device_space
 
@@ -58,6 +60,7 @@ ROLES: tuple[str, ...] = (
     "action",
     "name",
     "shortName",
+    "ipaHint",
     "unverified",
     "nameHtml",
     "developer",
@@ -162,6 +165,14 @@ class SourceBase(QObject):
 
     def recheck(self) -> None:
         """The network is back: read again (lookup, list-purchases), buy nothing."""
+
+    def purchase_rows(self) -> list[dict[str, object]]:
+        return []
+
+    def search_store(self, term: str, purchases: list[dict[str, object]]) -> list[dict[str, str]]:
+        """Worker thread: App Store + purchases (ui4b.search), no IPA catalogues."""
+
+        return search_store(term, purchases)
 
     def limit_slot_text(self) -> str:
         """For «не хватило лимита»: next_daily_slot + read_counts, local time."""
@@ -283,24 +294,16 @@ class SessionSource(SourceBase):
         self._missingReady.emit(udid, apps)
 
     def _classify(self, apps: object) -> dict[str, object]:
-        """Макс's classifier when present (read-only); otherwise nothing (group hidden)."""
+        """region_probe for the user's apps not on the phone (worker thread, only online)."""
 
-        classify = load_classifier()
-        if classify is None or not self.online:
+        if not self.online:
             return {}
         try:
-            country = str(self.session.service.core.tools.account_country() or "").strip().lower()
+            country = str(self.session.service.core.tools.account_country() or "").strip().upper()
         except Exception:  # noqa: BLE001
             country = ""
-        out: dict[str, object] = {}
-        for app in apps or []:  # type: ignore[union-attr]
-            sid = str(getattr(app, "store_id", "") or "")
-            if sid:
-                try:
-                    out[sid] = to_status(classify(sid, country))
-                except Exception:  # noqa: BLE001 - UNKNOWN: no guessing
-                    pass
-        return out
+        ids = [str(getattr(app, "store_id", "") or "") for app in apps or []]  # type: ignore[union-attr]
+        return classify_region_ids(load_classifier(), ids, country or None, online=self.online)
 
     def _on_missing(self, udid: str, apps: object) -> None:
         if udid == self.session.current_udid():
@@ -327,6 +330,9 @@ class SessionSource(SourceBase):
 
     def space(self) -> DeviceSpace:
         return self._space
+
+    def purchase_rows(self) -> list[dict[str, object]]:
+        return list(self.session.purchases or [])
 
     def owned_store_ids(self) -> set[str] | None:
         # QuickSession.purchases = purchases.py's list-purchases cache
@@ -436,6 +442,7 @@ class Restore4b(QObject):
         self._signin_open = False
         self._consent: dict[str, object] = {}
         self._limit_note: tuple[object, object] = (None, ("", False))
+        self._found: list[dict[str, str]] = []
         self._consent_plan: LicensePlan | None = None
         self._consent_space: DeviceSpace = UNKNOWN_SPACE
         source.changed.connect(self._on_source)
@@ -445,6 +452,7 @@ class Restore4b(QObject):
         source.installSettled.connect(self.flow.on_install_settled)
         source.copySettled.connect(self._on_copy_settled)
         self._spaceChecked.connect(self._start_after_space)
+        self._storeFound.connect(self._on_found)
         self._on_source()
 
     # -- updates ---------------------------------------------------------------
@@ -563,11 +571,43 @@ class Restore4b(QObject):
                 return dict(row)
         return {}
 
+    _storeFound = Signal(object)
+
+    @Property(str, constant=True)
+    def searchHint(self) -> str:
+        return SEARCH_HINT
+
+    @Property("QVariantList", notify=changed)
+    def storeFound(self) -> list[dict[str, str]]:
+        return list(self._found)
+
     @Slot(str)
     def searchStore(self, query: str) -> None:
-        """«Искать в App Store и архиве»: handed to the window (not wired yet)."""
+        """App Store (iTunes search/lookup) + the account's purchases. Nothing else."""
 
         self.storeSearchRequested.emit(query)
+        if not query.strip() or not self.source.online:
+            return
+        purchases = self.source.purchase_rows()
+        threading.Thread(
+            target=lambda: self._storeFound.emit(self.source.search_store(query, purchases)),
+            daemon=True, name="ui4b-store-search",
+        ).start()
+
+    def _on_found(self, rows: object) -> None:
+        self._found = [
+            dict(r, sourceText="в ваших покупках" if r.get("source") == "purchases" else "App Store")
+            for r in (rows or [])  # type: ignore[union-attr]
+        ]
+        self._refresh()
+
+    @Slot(str, str)
+    def installFound(self, store_id: str, name: str) -> None:
+        """A found app: the same path as «Вернуть» (fresh space, consent if needed, gate)."""
+
+        item = RestoreItem(key=f"store:{store_id}", name=name or store_id, group=GROUP_REMOVED,
+                           action=ACTION_STORE, store_id=store_id)
+        self._start([item])
 
     @Property(bool, notify=changed)
     def pickerOpen(self) -> bool:
@@ -715,9 +755,13 @@ class Restore4b(QObject):
             return
         if not self.source.online and not self.selection.selected_items():
             return  # offline: only offloaded ones can go (the rest are not selectable)
+        self._start(self.selection.selected_items())
+
+    def _start(self, chosen: list[RestoreItem]) -> None:
+        if self._checking_space or self.flow.running or self._consent or not chosen:
+            return
         self._checking_space = True
         self._refresh()
-        chosen = self.selection.selected_items()
         threading.Thread(target=self._check_space, args=(chosen,), daemon=True, name="ui4b-space-check").start()
 
     def _check_space(self, chosen: list[RestoreItem]) -> None:

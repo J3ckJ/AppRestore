@@ -5,10 +5,10 @@
 lookup in 1–2 fixed reference storefronts, cached — LEGAL §1.10). Here we only
 take the result: no lookups, no guessing.
 
-* ``NOT_IN_REGION`` → group «Нет в регионе», caption only;
+* ``NOT_IN_REGION`` → group «Нет в App Store вашей страны», caption only;
 * ``DELISTED`` → stays in «Удалённые», caption «удалено из App Store»;
 * ``UNKNOWN`` / ``AVAILABLE`` / no classifier → nothing changes. With no
-  classification «Нет в регионе» stays empty and is not shown at all.
+  classification that group stays empty and is not shown at all.
 
 The captions live here and nowhere else (Макс sends his, Ника finalises).
 Captions are labels only: no «buy it there», no region switch, no hints where
@@ -24,49 +24,68 @@ from dataclasses import replace
 from .catalog import ACTION_NONE, ACTION_STORE, GROUP_REGION, GROUP_REMOVED, RestoreItem
 
 
-class StoreStatus(str, enum.Enum):
-    AVAILABLE = "available"
-    NOT_IN_REGION = "not_in_region"
-    DELISTED = "delisted"
-    UNKNOWN = "unknown"
+from apprestore_core.region_probe import RegionStatus
+
+from .store_labels import caption
+
+#: The region-group link and its explanation (Лена): only a file the user already has.
+IPA_LINK = "Поставить из файла на компьютере…"
+IPA_MORE = "Если у вас сохранился собственный файл, например из старой резервной копии, его можно поставить с этого компьютера."
+
+# Compatibility name for the earlier adapter.
+StoreStatus = RegionStatus
 
 
-CAPTIONS: dict[StoreStatus, str] = {
-    StoreStatus.NOT_IN_REGION: "нет в App Store вашей страны",
-    StoreStatus.DELISTED: "удалено из App Store",
-}
+def to_status(value: object) -> RegionStatus:
+    """Anything from the classifier (enum member, its name or value) → RegionStatus."""
 
-
-def to_status(value: object) -> StoreStatus:
-    """Anything from the classifier (enum member, its name or value) → StoreStatus."""
-
+    if isinstance(value, RegionStatus):
+        return value
     raw = getattr(value, "name", None) or getattr(value, "value", None) or value
     text = str(raw or "").strip().lower()
-    for status in StoreStatus:
-        if text in (status.value, status.name.lower()):
+    for status in RegionStatus:
+        if text in (str(status.value).lower(), status.name.lower()):
             return status
-    return StoreStatus.UNKNOWN
+    return RegionStatus.UNKNOWN
 
 
 def apply_statuses(items: Iterable[RestoreItem], statuses: Mapping[str, object]) -> list[RestoreItem]:
+    """Only labels and the region group; no guessing for UNKNOWN (it stays where it was)."""
+
     out: list[RestoreItem] = []
     for item in items:
-        status = to_status(statuses.get(item.store_id)) if item.store_id else StoreStatus.UNKNOWN
-        if item.action == ACTION_STORE and status is StoreStatus.NOT_IN_REGION:
-            out.append(replace(item, group=GROUP_REGION, action=ACTION_NONE, note=CAPTIONS[status]))
-        elif item.group == GROUP_REMOVED and status is StoreStatus.DELISTED:
-            out.append(replace(item, note=item.note or CAPTIONS[status]))
+        if not item.store_id or item.store_id not in statuses:
+            out.append(item)
+            continue
+        status = to_status(statuses.get(item.store_id))
+        if item.action == ACTION_STORE and status is RegionStatus.NOT_IN_REGION:
+            out.append(replace(item, group=GROUP_REGION, action=ACTION_NONE, note=caption(status)))
+        elif item.group == GROUP_REMOVED and status in (RegionStatus.DELISTED, RegionStatus.UNKNOWN):
+            out.append(replace(item, note=item.note or caption(status)))
         else:
             out.append(item)
     return out
 
 
-def load_classifier() -> Callable[[str, str], object] | None:
-    """Макс's classifier if it is there (``apprestore_core.store_status.classify``)."""
+def load_classifier() -> Callable[[list[str], str], Mapping[object, object]] | None:
+    """Макс's ``region_probe.classify_region`` (batch: track ids + account country)."""
 
     try:
-        from apprestore_core import store_status  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 - not delivered yet: the group stays hidden
+        from apprestore_core.region_probe import classify_region
+    except Exception:  # noqa: BLE001
         return None
-    func = getattr(store_status, "classify", None)
-    return func if callable(func) else None
+    return classify_region
+
+
+def classify(classifier: Callable[..., Mapping[object, object]] | None, store_ids: list[str],
+             country: str | None, *, online: bool) -> dict[str, object]:
+    """Worker-thread call. No network / no country / no ids → {} (groups hidden)."""
+
+    ids = [sid for sid in store_ids if str(sid).isdigit()]
+    if classifier is None or not online or not country or not ids:
+        return {}
+    try:
+        result = classifier(ids, country)
+    except Exception:  # noqa: BLE001 - ValueError on a bad country, network: nothing shown
+        return {}
+    return {str(k): to_status(v) for k, v in dict(result).items()}

@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 from dataclasses import replace
 
+from apprestore_gui.ui4b.region import IPA_LINK
+
 from apprestore_gui.ui4b.catalog import (
     ACTION_NONE,
     ACTION_OFFLOADED,
@@ -362,7 +364,7 @@ class Selection:
             if group == GROUP_NOPHONE:
                 action = ""
             elif group == GROUP_REGION:
-                action = "Подробнее"
+                action = ""  # no actions in this group (Лена/Макс): caption only
             elif searching:
                 action = "Снять найденные" if state == CHECK_ON else "Выбрать найденные"
             elif state == CHECK_ON:
@@ -390,6 +392,7 @@ class Selection:
                         "group": group,
                         "name": item.name,
                         "shortName": short_name_of(item.name),
+                        "ipaHint": IPA_LINK if group == GROUP_REGION else "",
                         "nameHtml": highlight_html(item.name, match, self.mark_color),
                         "developer": item.developer,
                         "storeId": item.store_id,

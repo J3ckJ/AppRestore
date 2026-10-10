@@ -101,7 +101,7 @@ def test_build_items_groups_actions_and_dedupe(tmp_path: Path) -> None:
     assert by["com.sber"].label == "Сбер"
     assert by["com.file"].action == ACTION_IPA and by["com.file"].ipa_path == str(ipa)
     assert by["com.region"].group == GROUP_REGION and not by["com.region"].selectable
-    assert by["com.region"].note == "Нет в App Store России"
+    assert by["com.region"].note == "Нет в App Store вашей страны"
 
 
 # -- selection ------------------------------------------------------------------
@@ -931,9 +931,10 @@ def test_region_adapter_accepts_only_known_statuses() -> None:
         items[3].store_id: "something new",
     }
     out = region.apply_statuses(items, statuses)
-    assert out[0].group == GROUP_REGION and out[0].note == "нет в App Store вашей страны" and not out[0].selectable
-    assert out[1].group == GROUP_REMOVED and out[1].note == "удалено из App Store"
-    assert out[2] == items[2] and out[3] == items[3]  # UNKNOWN: no guessing
+    assert out[0].group == GROUP_REGION and out[0].note == "Нет в App Store вашей страны" and not out[0].selectable
+    assert out[1].group == GROUP_REMOVED and out[1].note == "Удалено из App Store"
+    assert out[2].group == GROUP_REMOVED and out[2].note == "Не удалось проверить"  # UNKNOWN: stays, no guessing
+    assert out[3].group == GROUP_REMOVED
     assert region.apply_statuses(items, {}) == items
     # no classification → «Нет в регионе» not shown at all (no «0»)
     sel = selection.Selection(items)
@@ -947,7 +948,7 @@ def test_links_only_lead_to_existing_things() -> None:
     for name in ("Журнал", "Подробнее", "Почему это безопасно", "Как это работает", "Исходный код",
                  "Войти с другим Apple ID", "Не получается подключить"):
         assert link_action(name) == ""
-    assert link_action("Есть файл IPA для «Альфа-Банк»") == "ipa"
+    assert link_action("Поставить из файла на компьютере…") == "ipa"
     assert link_action("Найти другое приложение") == "picker"
     v = home.home_view(home.HomeInput(connected=False, signed_in=True, items=removed4()))
     assert all(link_action(n) for n in v["links"])
@@ -966,4 +967,60 @@ def test_user_texts_have_no_urls_or_where_to_get_ipa() -> None:
         else:
             strings = [_strip_comments(text)]
         bad += [f"{path.name}: {b}" for s in strings for b in banned if b in s.casefold()]
+    assert bad == []
+
+
+
+def test_region_probe_called_only_online_with_country() -> None:
+    from apprestore_gui.ui4b import region
+
+    calls = []
+
+    def fake(ids, country):
+        calls.append((list(ids), country))
+        return {int(ids[0]): region.RegionStatus.NOT_IN_REGION}
+
+    assert region.classify(fake, ["1"], "RU", online=False) == {}
+    assert region.classify(fake, ["1"], None, online=True) == {}
+    assert calls == []
+    assert region.classify(fake, ["1", "x"], "RU", online=True) == {"1": region.RegionStatus.NOT_IN_REGION}
+    assert calls == [(["1"], "RU")]
+    assert region.classify(lambda i, c: (_ for _ in ()).throw(ValueError("bad")), ["1"], "R", online=True) == {}
+
+
+def test_region_group_has_no_actions() -> None:
+    from apprestore_gui.ui4b import region
+
+    items = region.apply_statuses(removed4(), {removed4()[3].store_id: "NOT_IN_REGION"})
+    rows = selection.Selection(items).rows()
+    header = next(r for r in rows if r["kind"] == "header" and r["group"] == GROUP_REGION)
+    assert header["action"] == "" and header["title"] == "Нет в App Store вашей страны"
+    v = home.home_view(home.HomeInput(connected=True, signed_in=True, items=items))
+    assert v["links"] == ["Поставить из файла на компьютере…"]
+    assert "резервной копии" in v["fine"]
+
+
+def test_4b_search_is_app_store_and_purchases_only() -> None:
+    from apprestore_gui.ui4b.search import search_store
+
+    calls = []
+    rows = search_store(
+        "сбер",
+        [{"trackId": "492224193", "name": "СберБанк Онлайн"}, {"trackId": "1", "name": "Другое"}],
+        itunes_search=lambda term, limit=10: calls.append(("search", term)) or [{"storeId": "492224193", "name": "x"}, {"storeId": "7", "name": "Сбер ID"}],
+        itunes_lookup=lambda sid: calls.append(("lookup", sid)) or None,
+    )
+    assert [(r["storeId"], r["source"]) for r in rows] == [("492224193", "purchases"), ("7", "appstore")]
+    search_store("564177498", [], itunes_search=lambda *a, **k: [], itunes_lookup=lambda sid: calls.append(("lookup", sid)) or {"storeId": sid, "name": "ВКонтакте"})
+    assert ("lookup", "564177498") in calls
+
+
+def test_no_ipafilezone_or_archive_in_4b() -> None:
+    root = _QML.parent
+    bad = []
+    for path in list((root / "ui4b").rglob("*.py")) + list(_QML.rglob("*.qml")):
+        text = path.read_text(encoding="utf-8").casefold()
+        for word in ("ipafilezone", "search_app_catalogs", "service.search_apps", "search_apps(", "архив", "нет в регионе"):
+            if word in text:
+                bad.append(f"{path.name}: {word}")
     assert bad == []

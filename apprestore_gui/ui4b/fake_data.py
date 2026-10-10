@@ -22,6 +22,8 @@ from apprestore_gui.ui4b.catalog import (
 from apprestore_gui.ui4b.home import PhoneApp
 from apprestore_gui.ui4b.qt_bridge import SourceBase
 from apprestore_gui.ui4b.space import DeviceSpace
+from apprestore_gui.ui4b.store_labels import caption
+from apprestore_core.region_probe import RegionStatus
 
 MB = 1000 * 1000
 GB = 1000 * MB
@@ -91,7 +93,7 @@ def region_items() -> list[RestoreItem]:
     return [
         RestoreItem(
             key=f"store:{sid}", name=name, short_name=short, developer=dev, group=GROUP_REGION,
-            action=ACTION_NONE, store_id=sid, size_bytes=size * MB, note="Нет в App Store России",
+            action=ACTION_NONE, store_id=sid, size_bytes=size * MB, note=caption(RegionStatus.NOT_IN_REGION),
         )
         for sid, name, short, dev, size in REGION
     ]
@@ -156,7 +158,7 @@ class FakeSource(SourceBase):
         elif scenario == "region":
             alfa = removed_items()[3]
             self._items = removed_items()[:3] + [
-                replace(alfa, group=GROUP_REGION, action=ACTION_NONE, note="Нет в App Store России")
+                replace(alfa, group=GROUP_REGION, action=ACTION_NONE, note=caption(RegionStatus.NOT_IN_REGION))
             ]
             self._phone = phone
         elif scenario in ("many", "picker", "picker-search", "picker-nospace", "picker-offline"):

@@ -245,6 +245,7 @@ Item {
                 required property string note
                 required property bool hasIpaHint
                 required property string shortName
+                required property string ipaHint
                 required property bool unverified
                 required property bool selected
                 required property bool selectable
@@ -268,7 +269,7 @@ Item {
                     lineHeightMode: Text.FixedHeight
                     lineHeight: 15 * 1.6
                     text: (ui.searchNote ? ui.searchNote + "<br>" : "")
-                          + "<font color='" + Theme.ink + "'><b>Нет того, что искали?</b></font> Поищем в App Store и в архиве по названию, ссылке apps.apple.com или номеру."
+                          + "<font color='" + Theme.ink + "'><b>Нет того, что искали?</b></font> " + ui.searchHint
                 }
                 Rectangle {
                     width: storeLabel.implicitWidth + 36
@@ -277,8 +278,23 @@ Item {
                     color: "transparent"
                     border.width: 1
                     border.color: Theme.ink
-                    T { id: storeLabel; anchors.centerIn: parent; token: "link"; font.weight: 600; text: "Искать «" + ui.query + "» в App Store и архиве" }
+                    T { id: storeLabel; anchors.centerIn: parent; token: "link"; font.weight: 600; text: "Искать «" + ui.query + "»" }
                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: ui.searchStore(ui.query) }
+                }
+                // App Store / purchases results: «Поставить» goes the usual way (space, consent, gate)
+                Repeater {
+                    model: ui.storeFound
+                    Row {
+                        spacing: 12
+                        AppIcon { width: Theme.rowIcon; height: Theme.rowIcon; storeId: modelData.storeId; anchors.verticalCenter: parent.verticalCenter }
+                        T { token: "row"; text: modelData.name; anchors.verticalCenter: parent.verticalCenter }
+                        T { token: "rowNote"; color: Theme.ink2; text: modelData.sourceText; anchors.verticalCenter: parent.verticalCenter }
+                        T {
+                            token: "groupAction"; color: Theme.ink; font.underline: true; text: "Поставить"
+                            anchors.verticalCenter: parent.verticalCenter
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: ui.installFound(modelData.storeId, modelData.name) }
+                        }
+                    }
                 }
             }
         }
@@ -417,7 +433,8 @@ Item {
                         visible: row.hasIpaHint
                         token: "rowNote"; font.weight: 550; color: Theme.ink2
                         font.underline: true
-                        text: "Есть файл IPA для «" + row.shortName + "»"
+                        text: row.ipaHint
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: ui.link("Файлы IPA") }
                     }
                 }
                 T {
