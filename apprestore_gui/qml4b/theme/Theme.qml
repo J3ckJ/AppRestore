@@ -30,9 +30,9 @@ QtObject {
         line: "#D6D4CE",
         lineSoft: "#ECEBE6",
         track: "#D3D1CA",
-        accent: "#B35128",          // ui4b: решение Лены 10.10 (у Ники было #C45A2C)
-        accentHover: "#A04824",     // ui4b: на шаг темнее нового accent
-        accentPressed: "#8E3F1F",   // ui4b: [предл.]
+        accent: "#B35128",
+        accentHover: "#A34A24",
+        accentPressed: "#934221",
         accentDisabled: "#D9D7D1",
         accentTint: "#F6EBE4",
         ok: "#2F9E55",

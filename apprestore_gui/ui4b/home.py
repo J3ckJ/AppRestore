@@ -80,6 +80,8 @@ class HomeInput:
     store_problem_app: str = ""
     #: «Лимит обновится завтра в 14:20» / «Общий лимит 15 исчерпан» / "".
     limit_note: str = ""
+    #: The total limit (15) is used up (read_counts): no time, an explanation.
+    limit_total: bool = False
 
 
 def _minutes(count: int) -> str:
@@ -266,10 +268,18 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             lead = (lead + " " if lead else "") + f"Не вернулись: <b>{names}</b> ({reason})."
         if limit:
             names = join_names([entry.item.label for entry in limit], limit=8)
-            lead = (lead + " " if lead else "") + f"На {names} не хватило лимита бесплатных лицензий."
-            if inp.limit_note:
-                lead += f" {inp.limit_note}."
-            lead += " Сами на завтра не ставим."
+            if inp.limit_total:
+                lead = (lead + " " if lead else "") + f"Для {names} лицензий больше нет."
+                view["fine"] = (
+                    "На этом компьютере AppRestore уже взял 15 бесплатных лицензий — это общий предел, "
+                    "новых он больше не берёт. Приложения, которые уже есть на вашем Apple ID, "
+                    "и сгруженные возвращаются как обычно."
+                )
+            else:
+                lead = (lead + " " if lead else "") + f"На {names} не хватило лимита бесплатных лицензий."
+                if inp.limit_note:
+                    lead += f" {inp.limit_note}."
+                lead += " Сами на завтра не ставим."
         for reason, label in (("no_license", "Без новой лицензии не возвращали"), ("paid", "Платные не возвращаем")):
             names_skipped = queue.skipped.get(reason) or []
             if names_skipped:

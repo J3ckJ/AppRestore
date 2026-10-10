@@ -17,6 +17,7 @@ from apprestore_gui.ui4b.catalog import (
     ACTION_NONE,
     ACTION_OFFLOADED,
     GROUP_NOPHONE,
+    GROUP_OFFLOADED,
     GROUP_ORDER,
     GROUP_REGION,
     GROUP_REMOVED,
@@ -47,11 +48,11 @@ class Match:
     length: int = 0
 
 
-OFFLINE_ROW_NOTE = "не проверено"
+OFFLINE_ROW_NOTE = "нужен интернет"
 #: Лена 10.10: offloaded ones the iPhone downloads itself (no license, no
 #: gate), so they can be restored offline; everything through the gate cannot.
 OFFLINE_FOOTER = "Нет интернета: сейчас можно вернуть только сгруженные."
-OFFLINE_RAIL_SUB = "проверим, когда будет сеть"
+OFFLINE_RAIL_SUB = "нужен интернет"
 
 
 def parse_query(text: str) -> tuple[str, str]:
@@ -176,6 +177,12 @@ class Selection:
         self._selected = {k for k in wanted if k in self._by_key and self._by_key[k].selectable}
         if self.rail != RAIL_ALL and not any(i.group == self.rail for i in self._items):
             self.rail = RAIL_ALL
+
+    @property
+    def group_order(self) -> tuple[str, ...]:
+        if self.offline:  # Ника §6: «Сгруженные» first, then the unchecked group
+            return (GROUP_OFFLOADED, GROUP_NOPHONE)
+        return GROUP_ORDER
 
     def set_space(self, space: DeviceSpace) -> None:
         self.space = space
@@ -309,7 +316,7 @@ class Selection:
                 "on": self.rail == RAIL_ALL,
             }
         )
-        for group in GROUP_ORDER:
+        for group in self.group_order:
             in_group = [item for item in visible if item.group == group]
             hideable = group in (GROUP_REGION, GROUP_NOPHONE) or (self.offline and group == GROUP_REMOVED)
             if hideable and not any(i.group == group for i in self._items):
@@ -333,7 +340,7 @@ class Selection:
                 }
             )
         # Concept order in the rail: all, removed, offloaded, region.
-        order = {RAIL_ALL: 0, GROUP_REMOVED: 1, GROUP_NOPHONE: 1, "offloaded": 2, GROUP_REGION: 3}
+        order = {RAIL_ALL: 0, GROUP_REMOVED: 1, GROUP_NOPHONE: 3 if self.offline else 1, "offloaded": 2, GROUP_REGION: 3}
         rows.sort(key=lambda row: order.get(str(row["key"]), 9))
         return rows
 
@@ -346,7 +353,7 @@ class Selection:
         searching = bool(self.query.strip())
         visible = self._visible_items()
         out: list[dict[str, object]] = []
-        for group in GROUP_ORDER:
+        for group in self.group_order:
             in_group = self._sorted([item for item in visible if item.group == group])
             if not in_group:
                 continue

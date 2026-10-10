@@ -167,6 +167,8 @@ def slot_text(
 
     if used_total >= total_limit:
         return f"Общий лимит {total_limit} исчерпан"
+    if when is None:
+        return "Место уже освободилось"  # Ника §5.4 [предл.]; the queue still does not restart
     if not isinstance(when, datetime) or when == NEVER or when.tzinfo is None:
         return ""
     local = when.astimezone()  # the user's zone (box/desktop local)

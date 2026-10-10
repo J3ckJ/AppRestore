@@ -29,7 +29,7 @@ GROUP_NOPHONE = "nophone"
 GROUP_ORDER: tuple[str, ...] = (GROUP_REMOVED, GROUP_NOPHONE, GROUP_REGION, GROUP_OFFLOADED)
 GROUP_TITLES: dict[str, str] = {
     GROUP_REMOVED: "Удалённые из App Store",
-    GROUP_NOPHONE: "Нет на iPhone",
+    GROUP_NOPHONE: "Нет на iPhone · не проверено",
     GROUP_REGION: "Нет в регионе",
     GROUP_OFFLOADED: "Сгруженные",
 }

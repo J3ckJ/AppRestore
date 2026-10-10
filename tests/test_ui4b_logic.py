@@ -842,7 +842,7 @@ def test_limit_slot_text_all_cases(tmp_path) -> None:
     now = dt.datetime.now().astimezone()
     soon = (now + dt.timedelta(minutes=30)).astimezone(dt.timezone.utc)
     later = (now.replace(hour=12, minute=0) + dt.timedelta(days=1)).astimezone(dt.timezone.utc)
-    assert slot_text(None, 3) == ""                       # a slot is free now
+    assert slot_text(None, 3) == "Место уже освободилось"  # a slot is free by now
     assert slot_text(lg.NEVER, 3) == ""                    # never shown as a date
     text = slot_text(soon, 3, now_local=now)
     local = soon.astimezone().strftime("%H:%M")
@@ -852,6 +852,7 @@ def test_limit_slot_text_all_cases(tmp_path) -> None:
     # real journal: 5 today → a moment 24 h after the oldest, in UTC
     journal = tmp_path / "j.jsonl"
     assert next_slot(journal) is None
+    from apprestore_gui.ui4b.home import HomeInput, home_view  # noqa: F401
     for i in range(5):
         lg.record_acquire(f"1{i}", None, "us", journal_path=journal, price=0)
     when = next_slot(journal)
@@ -899,3 +900,18 @@ def test_wrong_2fa_code_goes_back_to_password_form() -> None:
     assert _explain_login_failure(1, "ERR something failed") != WRONG_CODE_TEXT
     assert not is_wrong_code("dial tcp: i/o timeout", code_sent=True)
     assert "VPN" not in _explain_login_failure(1, "failed to get bag: init.itunes.apple.com timeout")
+
+
+def test_limit_total_summary_has_no_time_and_explains() -> None:
+    from apprestore_gui.ui4b.flow import RestoreFlow
+    from apprestore_gui.ui4b.home import HomeInput, home_view
+    from apprestore_gui.ui4b.space import DeviceSpace
+
+    flow = RestoreFlow(RecordingBackend())
+    items = removed4()
+    flow.begin(items, DeviceSpace(128 * GB, 50 * GB))
+    for i, it in enumerate(items):
+        flow.on_install_settled(it.store_id, i != 3, "Лимит бесплатных лицензий исчерпан: всего 15/15")
+    v = home_view(HomeInput(connected=True, signed_in=True, items=items, queue=flow.queue, limit_total=True))
+    assert "Для Альфа лицензий больше нет." in v["lead"] and "освободится" not in v["lead"]
+    assert "сгруженные возвращаются как обычно" in v["fine"]

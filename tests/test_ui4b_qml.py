@@ -367,9 +367,9 @@ def test_picker_offline_folds_groups_and_allows_only_offloaded(qapp) -> None:
     controller.openPicker()
     rows = controller.selection.rows()
     groups = [r["group"] for r in rows if r["kind"] == "header"]
-    assert groups == ["nophone", "offloaded"]  # removed + region folded, region not shown
+    assert groups == ["offloaded", "nophone"]  # offloaded first; removed + region folded
     nophone = [r for r in rows if r["kind"] == "app" and r["group"] == "nophone"]
-    assert nophone and all(r["note"] == "не проверено" and r["unverified"] and not r["selectable"] for r in nophone)
+    assert nophone and all(r["note"] == "нужен интернет" and r["unverified"] and not r["selectable"] for r in nophone)
     rail = [r["key"] for r in controller.selection.rail_rows()]
     assert "region" not in rail and "removed" not in rail and "nophone" in rail
     assert controller.footer["goEnabled"] is False  # store apps were marked, none can go offline

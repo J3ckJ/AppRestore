@@ -41,6 +41,7 @@ from apprestore_gui.ui4b.licenses import (
 from apprestore_gui.ui4b.licenses import candidates as license_candidates
 from apprestore_gui.ui4b.home import STATE_DONE, STATE_STORE_MISMATCH, HomeInput, PhoneApp, home_view
 from apprestore_gui.ui4b.onboarding import Onboarding
+from apprestore_core.license_guard import DEFAULT_TOTAL_LIMIT
 from apprestore_gui.ui4b.queue import LIMIT_ERROR
 from apprestore_gui.ui4b.scan import ScanCounter
 from apprestore_gui.ui4b.selection import CHECK_ON, OFFLINE_FOOTER, Selection
@@ -397,7 +398,7 @@ class Restore4b(QObject):
         self._scan_started = False
         self._signin_open = False
         self._consent: dict[str, object] = {}
-        self._limit_note: tuple[object, str] = (None, "")
+        self._limit_note: tuple[object, object] = (None, ("", False))
         self._consent_plan: LicensePlan | None = None
         self._consent_space: DeviceSpace = UNKNOWN_SPACE
         source.changed.connect(self._on_source)
@@ -450,7 +451,8 @@ class Restore4b(QObject):
                 relogin=bool(src.relogin or self.flow.needs_signin),
                 store_problem=self.flow.store_problem,
                 store_problem_app=self.flow.store_problem_app,
-                limit_note=self._limit_note_for_queue(queue),
+                limit_note=self._limit_note_for_queue(queue)[0],
+                limit_total=self._limit_note_for_queue(queue)[1],
             )
         )
         self.picker.set_rows(self.selection.rows())
@@ -630,20 +632,21 @@ class Restore4b(QObject):
         self.selection.set_query(query)
         self._refresh()
 
-    def _limit_note_for_queue(self, queue: object) -> str:
-        """Read once per finished queue that had limit refusals (journal, local time)."""
+    def _limit_note_for_queue(self, queue: object) -> tuple[str, bool]:
+        """(slot text, total used up): read once per finished queue with limit refusals."""
 
         if queue is None or not getattr(queue, "finished", False):
-            return ""
+            return ("", False)
         if not any(e.error == LIMIT_ERROR for e in queue.entries):  # type: ignore[attr-defined]
-            return ""
+            return ("", False)
         if self._limit_note[0] is not queue:
             try:
-                text = self.source.limit_slot_text()
+                total = self.source.license_counts()[1] >= DEFAULT_TOTAL_LIMIT
+                text = "" if total else self.source.limit_slot_text()
             except Exception:  # noqa: BLE001
-                text = ""
-            self._limit_note = (queue, text)
-        return self._limit_note[1]
+                total, text = False, ""
+            self._limit_note = (queue, (text, total))
+        return self._limit_note[1]  # type: ignore[return-value]
 
     # -- restore -----------------------------------------------------------------
 
