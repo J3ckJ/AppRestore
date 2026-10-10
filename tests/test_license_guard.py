@@ -113,7 +113,7 @@ def test_record_aligned_fields(tmp_path):
     assert entry["price"] == 0.0
     assert entry["mode"] == "gui"
     line = json.loads(path.read_text(encoding="utf-8").strip())
-    assert set(line.keys()) == {"time", "track_id", "app_id", "bundle_id",
+    assert set(line.keys()) == {"id", "time", "track_id", "app_id", "bundle_id",
                                 "storefront", "status", "price", "mode"}
 
 
@@ -274,3 +274,110 @@ def test_parallel_acquire_respects_limit(tmp_path):
     assert lg.read_counts(path, now=_now) == (2, 2)
     # В журнале ровно 2 строки.
     assert len([ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]) == 2
+
+
+# -------------------------------------------------------------- APPEND-ONLY: voided
+
+def _append_raw(path, entry):
+    import json as _j
+    with path.open("a", encoding="utf-8") as h:
+        h.write(_j.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def test_voided_pair_counts_zero(tmp_path):
+    """Исходная (purchase_uncertain) + voided со ссылкой -> счёт 0, обе строки видны."""
+    journal = tmp_path / "licenses_acquired.jsonl"
+    orig = {"time": "2026-10-10T15:16:42+00:00", "track_id": "492224193",
+            "app_id": "492224193", "bundle_id": "", "storefront": "us",
+            "status": "purchase_uncertain", "price": 0.0, "mode": "real"}
+    _append_raw(journal, orig)
+    assert lg.read_counts(journal) == (1, 1)          # до гашения считается
+    lg.record_void(None, "erroneous: 2040", legacy_match=(orig["time"], orig["track_id"]), journal_path=journal)
+    assert lg.read_counts(journal) == (0, 0)          # после гашения — 0/0
+    lines = [l for l in journal.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(lines) == 2                            # обе строки на месте (append-only)
+
+
+def test_void_without_ref_does_not_break_counts(tmp_path):
+    """voided без корректного `voids` ничего не гасит и сам не считается."""
+    journal = tmp_path / "licenses_acquired.jsonl"
+    good = {"time": "2026-10-10T10:00:00+00:00", "track_id": "111", "status": "acquired"}
+    _append_raw(journal, good)
+    _append_raw(journal, {"time": "2026-10-10T10:05:00+00:00", "track_id": "999",
+                          "status": "voided"})                 # без поля voids
+    _append_raw(journal, {"time": "2026-10-10T10:06:00+00:00", "track_id": "999",
+                          "status": "voided", "voids": {"time": "nope", "track_id": "nope"}})
+    assert lg.read_counts(journal) == (1, 1)          # считается только 'good'
+
+
+def test_void_matches_only_same_time_and_track(tmp_path):
+    """voided гасит ровно одну исходную по паре (time, track_id)."""
+    journal = tmp_path / "licenses_acquired.jsonl"
+    a = {"time": "2026-10-10T09:00:00+00:00", "track_id": "111", "status": "acquired"}
+    b = {"time": "2026-10-10T09:30:00+00:00", "track_id": "111", "status": "acquired"}
+    _append_raw(journal, a)
+    _append_raw(journal, b)
+    assert lg.read_counts(journal) == (2, 2)
+    lg.record_void(None, "fix", legacy_match=(a["time"], a["track_id"]), journal_path=journal)
+    assert lg.read_counts(journal) == (1, 1)          # погашена только a, b осталась
+
+
+# -------------------------------------------------------------- id + void по id
+
+def test_new_record_has_uuid_id(tmp_path):
+    journal = tmp_path / "licenses_acquired.jsonl"
+    e = lg.record_acquire("389801252", bundle_id="com.x", storefront="us", journal_path=journal)
+    import uuid as _uuid
+    assert "id" in e and isinstance(e["id"], str)
+    _uuid.UUID(e["id"])                       # валидный uuid4 (иначе бросит)
+
+
+def test_void_by_id_cancels_exactly_that_entry(tmp_path):
+    journal = tmp_path / "licenses_acquired.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=journal)
+    assert lg.read_counts(journal) == (1, 1)
+    lg.record_void(e["id"], "mistake", track_id="389801252", journal_path=journal)
+    assert lg.read_counts(journal) == (0, 0)
+    # ссылка записана как id-строка, не словарь
+    lines = journal.read_text(encoding="utf-8").splitlines()
+    import json as _j
+    void = _j.loads(lines[-1])
+    assert void["status"] == "voided" and void["voids"] == e["id"]
+
+
+def test_two_same_second_same_track_voided_individually_by_id(tmp_path):
+    """Две записи одного track_id в ту же секунду -> гасятся поотдельно по id."""
+    journal = tmp_path / "licenses_acquired.jsonl"
+    fixed = dt.datetime(2026, 10, 10, 12, 0, 0, tzinfo=dt.timezone.utc)
+    a = lg.record_acquire("492224193", status="purchase_uncertain",
+                          journal_path=journal, now=lambda: fixed)
+    b = lg.record_acquire("492224193", status="purchase_uncertain",
+                          journal_path=journal, now=lambda: fixed)
+    assert a["id"] != b["id"]
+    assert a["time"] == b["time"] and a["track_id"] == b["track_id"]  # неотличимы по паре
+    assert lg.read_counts(journal, now=lambda: fixed) == (2, 2)
+    lg.record_void(a["id"], "only A", track_id="492224193", journal_path=journal)
+    # погашена ровно A, B осталась (пара бы погасила обе — здесь нет)
+    assert lg.read_counts(journal, now=lambda: fixed) == (1, 1)
+
+
+def test_amends_alias_is_honored(tmp_path):
+    """Дима пишет ссылку в поле `amends` -> читается как гашение по id."""
+    journal = tmp_path / "licenses_acquired.jsonl"
+    e = lg.record_acquire("389801252", status="acquired", journal_path=journal)
+    assert lg.read_counts(journal) == (1, 1)
+    _append_raw(journal, {"id": "void-x", "time": "2026-10-10T13:00:00+00:00",
+                          "track_id": "389801252", "status": "voided", "amends": e["id"],
+                          "reason": "via update_status"})
+    assert lg.read_counts(journal) == (0, 0)
+
+
+def test_legacy_pair_still_works_without_id(tmp_path):
+    """Старая запись без id + voided-словарь по паре -> 0/0 (обратная совместимость)."""
+    journal = tmp_path / "licenses_acquired.jsonl"
+    _append_raw(journal, {"time": "2026-10-10T15:16:42+00:00", "track_id": "492224193",
+                          "status": "purchase_uncertain", "price": 0.0})   # без id
+    assert lg.read_counts(journal) == (1, 1)
+    lg.record_void(None, "legacy fix",
+                   legacy_match=("2026-10-10T15:16:42+00:00", "492224193"), journal_path=journal)
+    assert lg.read_counts(journal) == (0, 0)

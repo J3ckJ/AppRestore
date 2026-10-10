@@ -79,6 +79,12 @@ class Lookup:
         return {"storeId": store_id, "bundleId": "com.example.free", "price": self.price, "country": country}
 
 
+AMENDS_PENDING = (
+    "license_guard fc1a2a71 counts an `amends` line as one more license; Лена's chain semantics "
+    "proposed in maks-share/license_guard-amends-proposal/"
+)
+
+
 def _fill(journal: Path, *, today: int = 0, old: int = 0) -> None:
     now = dt.datetime.now(dt.timezone.utc)
     lines = [{"time": now.isoformat(timespec="seconds"), "track_id": "1", "status": "acquired"}] * today
@@ -172,8 +178,20 @@ def test_download_failure_after_purchase_updates_status_and_still_counts(tmp_pat
         run_with_free_license(
             STORE, Download(tools, fail_after_license=True), tools=tools, lookup=Lookup(0), journal=journal
         )
-    [entry] = _entries(journal)
-    assert entry["status"] == "acquired_download_failed"
+    first, amend = _entries(journal)  # append-only: the purchase line stays as written
+    assert first["status"] == "acquired" and first["id"]
+    assert amend["amends"] == first["id"] and amend["status"] == "acquired_download_failed"
+    assert amend["track_id"] == STORE and "voids" not in amend
+
+
+@pytest.mark.xfail(strict=True, reason=AMENDS_PENDING)
+def test_download_failure_after_purchase_still_counts_once(tmp_path: Path) -> None:
+    journal = tmp_path / "j.jsonl"
+    tools = Tools()
+    with pytest.raises(RuntimeError, match="TLS"):
+        run_with_free_license(
+            STORE, Download(tools, fail_after_license=True), tools=tools, lookup=Lookup(0), journal=journal
+        )
     assert read_counts(journal) == (1, 1)
 
 

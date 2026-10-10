@@ -225,5 +225,12 @@ def run_with_free_license(
     try:
         return attempt()
     except BaseException:
-        update_status(entry, ACQUIRED_DOWNLOAD_FAILED, journal_path=path)
+        # Append-only: an `amends` line pointing at the purchase line's id.
+        update_status(
+            str(entry.get("id") or ""),
+            ACQUIRED_DOWNLOAD_FAILED,
+            track_id=str(entry.get("track_id") or store_id),
+            reason="download failed after purchase",
+            journal_path=path,
+        )
         raise

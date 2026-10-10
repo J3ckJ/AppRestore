@@ -7,19 +7,24 @@ owns the cross-process lock ``<journal>.lock`` (``journal_lock``,
 below maps the gate's purchase onto Макс's callback contract, and
 ``update_status`` takes Макс's ``journal_lock``.
 
-The gate writes ``acquired`` right after a successful ``ipatool purchase``
-and, if the download that follows fails, turns that same line into
-``acquired_download_failed``. ``license_guard`` has no "update a line"
-function, so ``update_status`` here rewrites that one line in place (atomic
-replace), unless ``license_guard`` grows its own ``update_status``.
+The journal is append-only (Лена): lines are never rewritten or removed.
+The gate writes ``acquired`` right after a successful ``ipatool purchase``;
+if the download that follows fails, ``update_status`` APPENDS an amendment
+``{id, time, track_id, status, amends: <id of that line>, reason}``. Лена's
+semantics: the limit counts the last status of the chain (``acquired`` →
+``acquired_download_failed`` still counts once), only ``voids`` cancels, and
+the amendment itself is not counted. Until ``license_guard`` implements that
+(proposal: ``maks-share/license_guard-amends-proposal/``), it counts the
+amendment line as one more license: stricter, never looser.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
-import tempfile
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -76,45 +81,63 @@ def record(
     return entry
 
 
-def update_status(entry: dict[str, Any], status: str, *, journal_path: Path) -> bool:
-    """Set ``status`` on the journal line ``entry`` (matched by time + track_id)."""
+def update_status(
+    target_id: str,
+    status: str,
+    *,
+    track_id: str = "",
+    reason: str = "",
+    journal_path: Path,
+) -> dict[str, Any] | None:
+    """Append ``amends: <target_id>`` with the chain's new ``status``.
 
-    native = getattr(license_guard, "update_status", None)
-    if callable(native):
-        return bool(native(entry, status, journal_path=journal_path))
+    ``target_id`` is the ``id`` of the line ``acquire_and_record`` returned.
+    Earlier lines stay byte-for-byte unchanged; the file only grows. Returns
+    the appended line, or ``None`` (nothing written) when ``target_id`` is
+    empty or not in the journal: legacy lines without ``id`` are never
+    amended, only voided explicitly by ``license_guard.record_void``.
+    """
+
+    native = getattr(license_guard, "record_amend", None)
     path = Path(journal_path)
+    if not target_id:
+        return None
+    if callable(native):
+        with _LOCK:
+            entry = native(target_id, status, reason, track_id=track_id, journal_path=path)
+        _private(path)
+        return entry
+    line = {
+        "id": str(uuid.uuid4()),
+        "time": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "track_id": str(track_id),
+        "status": str(status),
+        "amends": str(target_id),
+        "reason": reason,
+    }
     # Same <journal>.lock as Макс's acquire_and_record / record_acquire / bench.
     with _LOCK, license_guard.journal_lock(path):
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except FileNotFoundError:
-            return False
-        key = (str(entry.get("time", "")), str(entry.get("track_id", "")))
-        for index in range(len(lines) - 1, -1, -1):
-            try:
-                item = json.loads(lines[index])
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(item, dict):
-                continue
-            if (str(item.get("time", "")), str(item.get("track_id", ""))) != key:
-                continue
-            item["status"] = status
-            lines[index] = json.dumps(item, ensure_ascii=False)
-            handle, temporary = tempfile.mkstemp(prefix=".licenses-", dir=str(path.parent))
-            try:
-                with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                    stream.write("\n".join(lines) + "\n")
-                os.chmod(temporary, 0o600)
-                os.replace(temporary, path)
-            except BaseException:
-                try:
-                    os.unlink(temporary)
-                except OSError:
-                    pass
-                raise
-            return True
+        if not _has_id(path, str(target_id)):
+            return None
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(line, ensure_ascii=False) + "\n")
+    _private(path)
+    return line
+
+
+def _has_id(path: Path, wanted: str) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return False
+    for raw in text.splitlines():
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict) and item.get("id") == wanted:
+            return True
+    return False
 
 
 class PurchaseRefused(Exception):

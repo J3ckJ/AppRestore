@@ -57,6 +57,7 @@ import datetime as dt
 import json
 import os
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -73,8 +74,8 @@ except ImportError:  # pragma: no cover - не-Windows
 
 __all__ = ["Verdict", "AcquireResult", "check_can_acquire", "record_acquire",
            "read_counts", "acquire_and_record", "journal_lock",
-           "default_journal_path", "DEFAULT_DAILY_LIMIT", "DEFAULT_TOTAL_LIMIT",
-           "ACQUIRED_STATUSES"]
+           "default_journal_path", "record_void", "DEFAULT_DAILY_LIMIT",
+           "DEFAULT_TOTAL_LIMIT", "ACQUIRED_STATUSES", "VOID_STATUS"]
 
 DEFAULT_DAILY_LIMIT = 5
 DEFAULT_TOTAL_LIMIT = 15
@@ -84,6 +85,12 @@ JOURNAL_ENV = "APPRESTORE_LICENSE_JOURNAL"
 # сделка, «взяли, но скачивание упало», и «purchase упал по сети/таймауту и неясно,
 # прошла ли сделка» — при сомнении безопаснее считать (лицензия могла добавиться).
 ACQUIRED_STATUSES = frozenset({"acquired", "acquired_download_failed", "purchase_uncertain"})
+
+# Журнал только APPEND-ONLY (требование Лены): строки не удаляем и не правим.
+# Ошибочную запись ГАСИМ отдельной строкой status="voided" со ссылкой `voids`
+# на исходную (time+track_id). При подсчёте и сама voided-строка не считается,
+# и исходная, на которую она ссылается, вычитается. Обе строки остаются в файле.
+VOID_STATUS = "voided"
 
 
 def default_journal_path() -> Path:
@@ -216,8 +223,69 @@ def _counts_toward_limit(entry: dict[str, Any]) -> bool:
     return str(status) in ACQUIRED_STATUSES
 
 
+def _entry_key(entry: dict[str, Any]) -> tuple[str, str]:
+    """Legacy-ключ строки для погашения: (time, track_id) как строки.
+
+    Используется ТОЛЬКО для старых записей без поля ``id``.
+    """
+
+    return (str(entry.get("time", "")), str(entry.get("track_id", "")))
+
+
+#: Поля voided-записи, которыми можно сослаться на исходную. ``voids`` — наш
+#: основной, ``amends`` — алиас Димы (update_status пишет ту же схему).
+_VOID_REF_FIELDS = ("voids", "amends")
+
+
+def _voided_id_refs(entries: list[dict[str, Any]]) -> set[str]:
+    """id исходных записей, погашенных voided-строками (ссылка ``voids``/``amends`` = id-строка)."""
+
+    ids: set[str] = set()
+    for e in entries:
+        if str(e.get("status") or "") != VOID_STATUS:
+            continue
+        for field in _VOID_REF_FIELDS:
+            ref = e.get(field)
+            if isinstance(ref, str) and ref:
+                ids.add(ref)
+    return ids
+
+
+def _voided_pair_refs(entries: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    """Legacy: (time, track_id) исходных строк БЕЗ id, погашенных voided-строками.
+
+    Старая схема ссылки — словарь ``voids`` = {"time", "track_id"}. voided-строка
+    без корректной ссылки ничего не гасит (и сама не считается), подсчёт не ломается.
+    """
+
+    refs: set[tuple[str, str]] = set()
+    for e in entries:
+        if str(e.get("status") or "") != VOID_STATUS:
+            continue
+        for field in _VOID_REF_FIELDS:
+            ref = e.get(field)
+            if isinstance(ref, dict):
+                key = (str(ref.get("time", "")), str(ref.get("track_id", "")))
+                if key != ("", ""):
+                    refs.add(key)
+    return refs
+
+
 def _read_counts_unlocked(path: Path, now: Callable[[], dt.datetime]) -> tuple[int, int]:
-    entries = [e for e in _read_entries_unlocked(path) if _counts_toward_limit(e)]
+    rows = _read_entries_unlocked(path)
+    id_refs = _voided_id_refs(rows)
+    pair_refs = _voided_pair_refs(rows)
+    entries: list[dict[str, Any]] = []
+    for e in rows:
+        if not _counts_toward_limit(e):
+            continue  # voided-строки и неучитываемые статусы не считаем
+        eid = e.get("id")
+        if isinstance(eid, str) and eid:
+            if eid in id_refs:
+                continue  # погашена по id (однозначно даже при совпадении time)
+        elif _entry_key(e) in pair_refs:
+            continue  # старая запись без id -> погашение по паре (time, track_id)
+        entries.append(e)
     since = now() - dt.timedelta(hours=24)
     used_today = 0
     for item in entries:
@@ -272,6 +340,7 @@ def _record_unlocked(track_id: Any, bundle_id: str | None, storefront: str | Non
     track = str(track_id) if track_id is not None else ""
     alias = str(app_id) if app_id is not None else track
     entry = {
+        "id": str(uuid.uuid4()),
         "time": now().isoformat(timespec="seconds"),
         "track_id": track,
         "app_id": alias,
@@ -325,6 +394,7 @@ def record_acquire(track_id: Any, bundle_id: str | None = None,
     """Дописать взятую лицензию в журнал (под блокировкой). Возвращает строку.
 
     Единый формат строки (для GUI и bench):
+      id         — uuid4 записи (строка); по нему гасят через voided/amends;
       time       — ISO 8601, UTC;
       track_id   — основной ключ (числовой App Store ID, строкой);
       app_id     — алиас track_id (совместимость со старым bench);
@@ -341,6 +411,61 @@ def record_acquire(track_id: Any, bundle_id: str | None = None,
     with journal_lock(path):
         return _record_unlocked(track_id, bundle_id, storefront, path, status,
                                 price, mode, app_id, now)
+
+
+def record_void(target_id: Any = None, reason: str = "", *,
+                track_id: Any = None,
+                legacy_match: tuple[Any, Any] | None = None,
+                journal_path: Path | str | None = None,
+                now: Callable[[], dt.datetime] = _now_utc) -> dict[str, Any]:
+    """Дописать APPEND-ONLY строку status="voided", гасящую ошибочную запись.
+
+    Исходную строку НЕ трогаем (журнал только дописывается). При подсчёте не
+    считается ни сама voided-строка, ни погашенная исходная.
+
+    Основной путь (новые записи с ``id``):
+        record_void(target_id, reason, track_id=<для читаемости>)
+      -> ссылка `voids` = <id исходной> (строка). Погашение однозначно даже если
+      две попытки одного track_id записаны в ту же секунду.
+
+    Legacy-путь (старые записи БЕЗ ``id``):
+        record_void(None, reason, legacy_match=(orig_time, orig_track_id))
+      -> ссылка `voids` = {"time", "track_id"} (словарь), сопоставление по паре.
+
+    Схема voided-строки (для GUI/Димы):
+      id       — uuid4 самой voided-строки;
+      time     — ISO 8601 UTC, когда погасили;
+      track_id — track_id исходной (для читаемости);
+      status   — "voided";
+      voids    — <id исходной> (строка) ЛИБО {"time","track_id"} (legacy-словарь);
+                 алиас `amends` (пишет Дима) читается так же;
+      reason   — человекочитаемая причина.
+    """
+
+    if target_id is None and legacy_match is None:
+        raise ValueError("record_void: нужен target_id (новый путь) или legacy_match=(time, track_id)")
+
+    path = _resolve(journal_path)
+    if target_id is not None:
+        voids: Any = str(target_id)
+        tid = str(track_id) if track_id is not None else ""
+    else:
+        orig_time, orig_track_id = legacy_match  # type: ignore[misc]
+        voids = {"time": str(orig_time), "track_id": str(orig_track_id)}
+        tid = str(track_id if track_id is not None else orig_track_id)
+    entry = {
+        "id": str(uuid.uuid4()),
+        "time": now().isoformat(timespec="seconds"),
+        "track_id": tid,
+        "status": VOID_STATUS,
+        "voids": voids,
+        "reason": reason,
+    }
+    with journal_lock(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return entry
 
 
 def _status_from_purchase(outcome: Any) -> str | None:
