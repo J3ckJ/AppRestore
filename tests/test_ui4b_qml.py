@@ -604,3 +604,65 @@ def test_session_source_minus128_is_not_a_relogin_in_4b(qapp) -> None:
     session.sessionNote = "Сессия Apple ID истекла."
     session.changed.emit()
     assert src.relogin is True
+
+
+def test_smoke9_offloaded_only_never_touches_the_license_journal(qapp, tmp_path) -> None:
+    from apprestore_gui.ui4b.catalog import GROUP_OFFLOADED
+
+    source, journal, bought, notes = _gated_source(tmp_path, scenario="picker")
+    source.owned = set()  # nothing on the account: still no license for offloaded ones
+    controller = Restore4b(source)
+    before = source.license_counts()
+    controller.selection.select_visible(False)
+    keys = [it.key for it in controller.selection.items if it.group == GROUP_OFFLOADED][:3]
+    for key in keys:
+        controller.selection.set_selected(key, True)
+    controller.restoreSelected()
+    wait(qapp, lambda: any(c[0] == "restore_offloaded" for c in source.calls))
+    assert not controller.consent.get("open")
+    assert [c for c in source.calls if c[0] == "install_store"] == [] and bought == [] and notes == []
+    assert source.license_counts() == before and not journal.exists()
+
+
+def test_smoke5_no_secrets_in_logs_or_terminal(qapp, caplog, capsys) -> None:
+    """Window state is covered above; here: logging and stdout/stderr during sign-in,
+    and no log/print call in the sign-in/session code takes a secret variable."""
+
+    import ast
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    class Session(FakeSession):
+        def login(self, email, password):
+            self.got = (email, len(password))
+
+        def submitCode(self, code):
+            self.code_len = len(code)
+
+    session = Session()
+    controller = Restore4b(SessionSource(session))
+    controller.openSignIn()
+    controller.login("m@example.com", "Secret-Pass-123")
+    controller.submitCode("482913")
+    out = capsys.readouterr()
+    text = caplog.text + out.out + out.err
+    assert "Secret-Pass-123" not in text and "482913" not in text
+
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "apprestore_gui"
+    files = [root / "auth_pty.py", root / "quick_session.py", root / "purchases.py", *(root / "ui4b").rglob("*.py")]
+    secret = ("password", "passphrase", "secret", "cookie", "token", "code")
+    bad = []
+    for path in files:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else ""
+            if name not in ("print", "debug", "info", "warning", "error", "exception", "critical", "log"):
+                continue
+            for arg in ast.walk(ast.Module(body=[ast.Expr(a) for a in node.args], type_ignores=[])):
+                if isinstance(arg, ast.Name) and any(s in arg.id.casefold() for s in secret):
+                    bad.append(f"{path.name}:{node.lineno} {arg.id}")
+    assert bad == []

@@ -1024,3 +1024,31 @@ def test_no_ipafilezone_or_archive_in_4b() -> None:
             if word in text:
                 bad.append(f"{path.name}: {word}")
     assert bad == []
+
+
+def test_quick_ui_runs_on_real_sources_fakes_only_behind_flags() -> None:
+    import ast
+    import inspect
+
+    from apprestore_gui import app
+    from apprestore_gui.ui4b import window
+
+    src = inspect.getsource(app.main)
+    assert "ui4b.window import main as quick_4b_main" in src and 'args.ui == "quick"' in src
+    build = inspect.getsource(window.build)
+    for real in ("QuickSession()", "IconBook()", "SessionSource(session)", "session.refresh()"):
+        assert real in build
+    tree = ast.parse(inspect.getsource(window))
+    names = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | {
+        a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
+    }
+    assert not any("fake" in (m or "") for m in names)
+    # the real source reads phone/space/purchases/licenses/region from the real services
+    from apprestore_gui.ui4b import qt_bridge
+
+    ss = inspect.getsource(qt_bridge.SessionSource)
+    for call in ("service.missing(", "query_device_space(", "session.purchases", "account_country()",
+                 "classify_region_ids(", "lookup_offer(", "session.installStore(", "session.restore("):
+        assert call in ss, call
+    base = inspect.getsource(qt_bridge.SourceBase)
+    assert "read_counts(journal_path())" in base and "next_slot(path)" in base

@@ -25,20 +25,15 @@ def load(engine: QQmlApplicationEngine, controller: QObject, icon_book: QObject)
     return bool(engine.rootObjects())
 
 
-def main() -> int:
-    from PySide6.QtGui import QGuiApplication
-    from PySide6.QtQuickControls2 import QQuickStyle
+def build(settings: QSettings) -> tuple[QQmlApplicationEngine | None, list[Any]]:
+    """The real window: QuickSession (pymobiledevice3, ipatool_api, purchases cache,
+    license_gate/license_guard), IconBook (icons_cache), region_probe. No fakes here:
+    FakeSource lives only in tests, ``selftest`` and ``scripts/ui4b_screenshots.py``."""
 
     from apprestore_gui.icons_cache import IconBook
     from apprestore_gui.quick_session import QuickSession
     from apprestore_gui.ui4b.qt_bridge import Restore4b, SessionSource
-    from apprestore_gui.ui_icons import app_icon
 
-    QQuickStyle.setStyle("Basic")
-    app = QGuiApplication([sys.argv[0]])
-    app.setApplicationName("AppRestore")
-    app.setWindowIcon(app_icon())
-    settings = QSettings("AppRestore", "AppRestore")
     session = QuickSession()
     icon_book = IconBook()
     source = SessionSource(session)
@@ -60,10 +55,26 @@ def main() -> int:
     controller.changed.connect(remember_onboarding)
     source.changed.connect(queue_icons)
     engine = QQmlApplicationEngine()
-    keep: list[Any] = [session, source, controller, icon_book]
+    keep: list[Any] = [session, source, controller, icon_book, engine]
     if not load(engine, controller, icon_book):
-        return 1
+        return None, keep
     session.refresh()
+    return engine, keep
+
+
+def main() -> int:
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtQuickControls2 import QQuickStyle
+
+    from apprestore_gui.ui_icons import app_icon
+
+    QQuickStyle.setStyle("Basic")
+    app = QGuiApplication([sys.argv[0]])
+    app.setApplicationName("AppRestore")
+    app.setWindowIcon(app_icon())
+    engine, keep = build(QSettings("AppRestore", "AppRestore"))
+    if engine is None:
+        return 1
     app.exec()
     del keep
     return 0
