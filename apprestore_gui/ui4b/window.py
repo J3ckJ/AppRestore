@@ -33,11 +33,16 @@ def build(settings: QSettings) -> tuple[QQmlApplicationEngine | None, list[Any]]
     from apprestore_gui.icons_cache import IconBook
     from apprestore_gui.quick_session import QuickSession
     from apprestore_gui.ui4b.qt_bridge import Restore4b, SessionSource
+    from apprestore_gui.ui4b.settings import ARCHIVE_DEFAULT, ARCHIVE_KEY
 
     session = QuickSession()
     icon_book = IconBook()
     source = SessionSource(session)
-    controller = Restore4b(source, onboarded=bool(settings.value(ONBOARDED_KEY, False, type=bool)))
+    controller = Restore4b(
+        source,
+        onboarded=bool(settings.value(ONBOARDED_KEY, False, type=bool)),
+        archive_search=bool(settings.value(ARCHIVE_KEY, ARCHIVE_DEFAULT, type=bool)),
+    )
 
     def remember_onboarding() -> None:
         if controller.onboarding.finished and not settings.value(ONBOARDED_KEY, False, type=bool):
@@ -58,7 +63,21 @@ def build(settings: QSettings) -> tuple[QQmlApplicationEngine | None, list[Any]]
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
+    def show_update(info: Any) -> None:
+        # the old window's dialog (download, checksum, swap); needs QApplication
+        from PySide6.QtWidgets import QApplication
+
+        if QApplication.instance() is None or not isinstance(QApplication.instance(), QApplication):
+            return
+        from apprestore_gui.update_dialog import UpdateDialog
+
+        dialog = UpdateDialog(info, None)
+        keep.append(dialog)
+        dialog.open()
+
     controller.changed.connect(remember_onboarding)
+    controller.archiveSearchChanged.connect(lambda on: settings.setValue(ARCHIVE_KEY, bool(on)))
+    controller.updateAvailable.connect(show_update)
     controller.openDocRequested.connect(open_doc)
     source.changed.connect(queue_icons)
     engine = QQmlApplicationEngine()
@@ -70,13 +89,14 @@ def build(settings: QSettings) -> tuple[QQmlApplicationEngine | None, list[Any]]
 
 
 def main() -> int:
-    from PySide6.QtGui import QGuiApplication
     from PySide6.QtQuickControls2 import QQuickStyle
+    from PySide6.QtWidgets import QApplication
 
     from apprestore_gui.ui_icons import app_icon
 
     QQuickStyle.setStyle("Basic")
-    app = QGuiApplication([sys.argv[0]])
+    # QApplication (not QGuiApplication): «Проверить обновления» reuses the old UpdateDialog
+    app = QApplication([sys.argv[0]])
     app.setApplicationName("AppRestore")
     app.setWindowIcon(app_icon())
     engine, keep = build(QSettings("AppRestore", "AppRestore"))

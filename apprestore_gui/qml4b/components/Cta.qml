@@ -10,10 +10,12 @@ Tpl.AbstractButton {
     id: root
     property bool secondary: false
     property bool enabledLook: true
+    //: sheet buttons (goHeight/goRadius, like «Вернуть N» in the picker)
+    property bool compact: false
     readonly property bool live: enabled
     enabled: enabledLook
-    implicitHeight: Theme.ctaHeight
-    implicitWidth: label.implicitWidth + 2 * Theme.ctaPadX
+    implicitHeight: compact ? Theme.goHeight : Theme.ctaHeight
+    implicitWidth: label.implicitWidth + 2 * (compact ? 24 : Theme.ctaPadX)
     height: implicitHeight
     width: implicitWidth
     focusPolicy: Qt.StrongFocus
@@ -26,22 +28,22 @@ Tpl.AbstractButton {
     contentItem: T {
         id: label
         Accessible.ignored: true
-        token: "button"
+        token: root.compact ? "go" : "button"
         text: root.text
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         color: root.secondary ? (root.live ? Theme.ink : Theme.ink3) : Theme.inkOnAccent
     }
     background: Rectangle {
-        radius: Theme.ctaRadius
+        radius: root.compact ? Theme.goRadius : Theme.ctaRadius
         color: root.secondary
                ? (root.pressed && root.live ? Theme.secondaryPressed : root.hovered && root.live ? Theme.surfaceSoft : Theme.card)
                : (!root.live ? Theme.accentDisabled
                   : root.pressed ? Theme.accentPressed
                   : root.hovered ? Theme.accentHover : Theme.accent)
         Behavior on color { ColorAnimation { duration: 120; easing.type: Theme.easeOut } }
-        border.width: root.secondary ? Theme.hair : 0
-        border.color: Theme.line
+        border.width: root.secondary ? (root.compact ? 1.5 : Theme.hair) : 0
+        border.color: root.compact ? Theme.ink : Theme.line
         Rectangle {
             visible: root.visualFocus
             anchors.fill: parent

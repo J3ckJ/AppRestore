@@ -279,7 +279,8 @@ Item {
                     border.width: 1
                     border.color: Theme.ink
                     T { id: storeLabel; anchors.centerIn: parent; token: "link"; font.weight: 600; text: "Искать «" + ui.query + "» в App Store и в покупках" }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: ui.searchStore(ui.query) }
+                    // the «Найти» sheet with this query (02-picker §6b)
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: ui.find.openWith(ui.query) }
                 }
                 // App Store / purchases results: «Поставить» goes the usual way (space, consent, gate)
                 Repeater {

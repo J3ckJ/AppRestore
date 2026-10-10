@@ -12,6 +12,7 @@ Thin on purpose: every decision is in ``selection``, ``space``, ``home``,
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from typing import Any
 
 from PySide6.QtCore import (
@@ -25,8 +26,8 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from apprestore_gui.ui4b.catalog import ACTION_IPA, ACTION_STORE, GROUP_REGION, GROUP_REMOVED, RestoreItem, build_items
-from apprestore_gui.ui4b.flow import RestoreFlow
+from apprestore_gui.ui4b.catalog import ACTION_IPA, ACTION_NONE, ACTION_STORE, GROUP_REGION, GROUP_REMOVED, RestoreItem, build_items
+from apprestore_gui.ui4b.flow import APPLE_REJECTED_NOTE, RestoreFlow
 from apprestore_gui.ui4b.formatting import format_size
 from apprestore_gui.ui4b.licenses import (
     CANCEL,
@@ -39,7 +40,7 @@ from apprestore_gui.ui4b.licenses import (
     slot_text,
 )
 from apprestore_gui.ui4b.licenses import candidates as license_candidates
-from apprestore_gui.ui4b.home import STATE_DONE, STATE_STORE_MISMATCH, HomeInput, PhoneApp, home_view, link_action
+from apprestore_gui.ui4b.home import STATE_APPLE_REJECTED, STATE_DONE, STATE_STORE_MISMATCH, HomeInput, PhoneApp, home_view, link_action
 from apprestore_gui.ui4b.region import apply_statuses, load_classifier
 from apprestore_gui.ui4b.region import classify as classify_region_ids
 from apprestore_gui.ui4b import component
@@ -51,6 +52,8 @@ from apprestore_gui.ui4b.onboarding import illustration_tiles, scanning_count, s
 from apprestore_gui.ui4b.scan import ScanCounter
 from apprestore_gui.ui4b.search import SEARCH_HINT, search_store
 from apprestore_gui.ui4b.selection import CHECK_ON, OFFLINE_FOOTER, Selection
+from apprestore_gui.ui4b.find_qt import Find4b
+from apprestore_gui.ui4b.settings import ARCHIVE_DEFAULT, UPDATE_BUSY, settings_view, update_status
 from apprestore_gui.ui4b.space import UNKNOWN_SPACE, DeviceSpace, plan_space, query_device_space
 
 ROLES: tuple[str, ...] = (
@@ -155,6 +158,17 @@ class SourceBase(QObject):
 
     def free_prices(self, store_ids: list[str]) -> dict[str, float | None]:
         """iTunes lookup price in the account's country; None = unknown."""
+
+        return {}
+
+    def store_offers(self, store_ids: list[str]) -> dict[str, dict[str, object]]:
+        """«Найти» (worker thread): {id: {price, developer}} from the public lookup
+        in the account's country; price None = unknown."""
+
+        return {}
+
+    def store_statuses(self, store_ids: list[str]) -> dict[str, object]:
+        """«Найти» (worker thread): region_probe for found removed apps; {} = not checked."""
 
         return {}
 
@@ -403,6 +417,34 @@ class SessionSource(SourceBase):
             out[str(store_id)] = price
         return out
 
+    def _account_country(self) -> str:
+        try:
+            return str(self.session.service.core.tools.account_country() or "").strip().lower()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def store_offers(self, store_ids: list[str]) -> dict[str, dict[str, object]]:
+        from apprestore_core.license_gate import lookup_offer
+        from apprestore_gui.ui4b.find import offers_from
+
+        country = self._account_country()
+        found: dict[str, dict[str, object] | None] = {}
+        for store_id in store_ids:
+            offer = None
+            if country and str(store_id).isdigit():
+                try:
+                    offer = lookup_offer(str(store_id), (country,))
+                except Exception:  # noqa: BLE001 - unknown price: «Не удалось проверить»
+                    offer = None
+            found[str(store_id)] = offer
+        return offers_from(found)
+
+    def store_statuses(self, store_ids: list[str]) -> dict[str, object]:
+        if not self.online or self.missing_patches():
+            return {}
+        country = self._account_country().upper()
+        return classify_region_ids(load_classifier(), list(store_ids), country or None, online=self.online)
+
     def recheck(self) -> None:
         # Read-only: purchase history and the missing list (lookup). No purchase.
         if self.session.signedIn:
@@ -469,9 +511,33 @@ class Restore4b(QObject):
     signInRequested = Signal()
     _spaceChecked = Signal(object)  # (space, chosen, owned, prices)
 
-    def __init__(self, source: SourceBase, *, onboarded: bool = True, mark_color: str = "#f6ebe4") -> None:
+    #: the archive switch in «Настройки» (window.py stores it in QSettings).
+    archiveSearchChanged = Signal(bool)
+    #: «Проверить обновления» found a newer version: window.py shows the old UpdateDialog.
+    updateAvailable = Signal(object)
+    _updateChecked = Signal(object)
+
+    def __init__(self, source: SourceBase, *, onboarded: bool = True, mark_color: str = "#f6ebe4",
+                 archive_search: bool = ARCHIVE_DEFAULT, update_check: Any = None,
+                 find_options: dict[str, Any] | None = None) -> None:
         super().__init__()
         self.source = source
+        self._archive_search = bool(archive_search)
+        self._update_check = update_check
+        self._settings_open = False
+        self._update_text = ""
+        self._update_busy = False
+        self.finder = Find4b(
+            source,
+            archive_enabled=lambda: self._archive_search,
+            install=self.installFound,
+            open_settings=self.openSettings,
+            component_missing=lambda: bool(self._patches_missing),
+            rejected=lambda: set(self.flow.apple_rejected),
+            **(find_options or {}),
+        )
+        self.finder.changed.connect(self.changed)
+        self._updateChecked.connect(self._on_update_checked)
         self.selection = Selection(mark_color=mark_color)
         self.picker = PickerModel(self)
         self.flow = RestoreFlow(source, self._refresh)
@@ -492,6 +558,7 @@ class Restore4b(QObject):
         self._signout_confirm = False
         self._patches_missing: tuple[str, ...] = ()
         self._component_details = False
+        self._rejected_seen: set[str] = set()
         self._consent_plan: LicensePlan | None = None
         self._consent_space: DeviceSpace = UNKNOWN_SPACE
         source.changed.connect(self._on_source)
@@ -517,6 +584,13 @@ class Restore4b(QObject):
         items = self.source.items()
         if self._patches_missing:
             items = component.mark(items, self.source.owned_store_ids(), self._patches_missing)
+        if self.flow.apple_rejected:
+            # session-only mark, the group stays (not a region problem)
+            items = [
+                replace(it, action=ACTION_NONE, note=APPLE_REJECTED_NOTE)
+                if it.store_id and it.store_id in self.flow.apple_rejected and it.action == ACTION_STORE else it
+                for it in items
+            ]
         self.selection.set_items(items)
         self.selection.set_space(self.source.space())
         self.selection.set_offline(not src.online)
@@ -527,6 +601,10 @@ class Restore4b(QObject):
         self._refresh()
 
     def _refresh(self) -> None:
+        if self.flow.apple_rejected != self._rejected_seen:
+            self._rejected_seen = set(self.flow.apple_rejected)
+            self._on_source()  # re-mark «Apple отказала в выдаче» (memory only)
+            return
         if self.flow.component_blocked and not self._patches_missing:
             self._on_source()  # NEEDS_PATCHED_BUILD mid-run: re-mark the list (needs-component)
             return
@@ -554,6 +632,7 @@ class Restore4b(QObject):
                 relogin=bool(src.relogin or self.flow.needs_signin),
                 store_problem=self.flow.store_problem,
                 store_problem_app=self.flow.store_problem_app,
+                store_problem_name=self.flow.store_problem_name,
                 limit_note=self._limit_note_for_queue(queue)[0],
                 limit_total=self._limit_note_for_queue(queue)[1],
                 component_details=component.details_text(self._patches_missing)
@@ -805,7 +884,7 @@ class Restore4b(QObject):
         state = str(self._home.get("state", ""))
         if state == STATE_DONE:
             self.dismissDone()
-        elif state == STATE_STORE_MISMATCH:
+        elif state in (STATE_STORE_MISMATCH, STATE_APPLE_REJECTED):
             self.flow.dismiss_store_problem()  # «На главный»
         elif state == "signin":
             self.openSignIn()
@@ -981,6 +1060,10 @@ class Restore4b(QObject):
                 self.openSignIn()
         elif action == "picker":
             self.openPicker()
+        elif action == "find":
+            self.finder.openWith("")
+        elif action == "settings":
+            self.openSettings()
         elif action == "howto":
             path = component.howto_path()
             if path is not None:
@@ -1025,6 +1108,70 @@ class Restore4b(QObject):
     def closeSignIn(self) -> None:
         self._signin_open = False
         self._refresh()
+
+    # -- «Найти» and «Настройки» (02-picker §6b) ------------------------------------
+
+    @Property(QObject, constant=True)
+    def find(self) -> QObject:
+        return self.finder
+
+    @Slot()
+    def openSettings(self) -> None:
+        self._settings_open = True
+        self._refresh()
+
+    @Slot()
+    def closeSettings(self) -> None:
+        self._settings_open = False
+        self._refresh()
+
+    @Slot(bool)
+    def setArchiveSearch(self, on: bool) -> None:
+        """Applied at once; off = no request to the Internet Archive at all."""
+
+        if bool(on) == self._archive_search:
+            return
+        self._archive_search = bool(on)
+        self.archiveSearchChanged.emit(self._archive_search)
+        if self.finder.open and self.finder.query:
+            self.finder.search(self.finder.query)
+        self._refresh()
+
+    @Slot()
+    def checkUpdates(self) -> None:
+        """The old window's check (updater.check_for_update) in a worker."""
+
+        if self._update_busy:
+            return
+        self._update_busy = True
+        self._update_text = UPDATE_BUSY
+        check = self._update_check
+        if check is None:
+            from apprestore_gui import updater
+
+            check = updater.check_for_update
+
+        def work() -> None:
+            try:
+                info = check()
+            except Exception:  # noqa: BLE001 - shown as «Не удалось проверить…»
+                info = None
+            self._updateChecked.emit(info)
+
+        threading.Thread(target=work, daemon=True, name="ui4b-update").start()
+        self._refresh()
+
+    def _on_update_checked(self, info: object) -> None:
+        self._update_busy = False
+        self._update_text = update_status(info)
+        self._refresh()
+        if info is not None and getattr(info, "newer", False):
+            self.updateAvailable.emit(info)
+
+    @Property("QVariantMap", notify=changed)
+    def settings(self) -> dict[str, object]:
+        return settings_view(open_=self._settings_open, archive=self._archive_search,
+                             update_text=self._update_text, update_busy=self._update_busy)
 
     # -- «Apple ID» sheet (04-auth §2a): who is signed in, «Выйти» -------------------
 

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQml
 import QtQuick.Dialogs
 import QtQuick.Window
 import "theme"
@@ -34,7 +35,7 @@ Window {
         Keys.onEnterPressed: win.enter()
     }
     function enter() {
-        if (!win.onboarding && !ui.pickerOpen && !ui.signIn.open && !ui.consent.open && !ui.account.open && (win.home.cta || "") !== "")
+        if (!win.onboarding && !ui.pickerOpen && !ui.signIn.open && !ui.consent.open && !ui.account.open && !ui.find.open && !ui.settings.open && (win.home.cta || "") !== "")
             ui.primaryAction()
     }
 
@@ -123,6 +124,33 @@ Window {
         active: !!ui.account.open
         focus: active
         sourceComponent: AccountSheet {}
+    }
+
+    // -- «Найти» (02-picker §6b) ------------------------------------------------------
+    Loader {
+        anchors.fill: parent
+        active: ui.find.open
+        focus: active
+        sourceComponent: FindSheet {}
+    }
+
+    // -- «Настройки»: macOS menu «Настройки…» + ⌘, ; Windows Ctrl+, and a quiet link --
+    Loader {
+        anchors.fill: parent
+        active: !!ui.settings.open
+        focus: active
+        sourceComponent: SettingsSheet {}
+    }
+    Shortcut {
+        // "Ctrl" is ⌘ on macOS; there the menu item carries the same shortcut
+        enabled: Qt.platform.os !== "osx"
+        sequence: "Ctrl+,"
+        onActivated: ui.openSettings()
+    }
+    Instantiator {
+        // a QObject (native menu bar), so not a Loader; created on macOS only
+        model: Qt.platform.os === "osx" ? 1 : 0
+        delegate: MacMenu {}
     }
 
     // -- free licenses: consent before the run -----------------------------------------

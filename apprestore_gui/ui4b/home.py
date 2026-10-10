@@ -41,6 +41,9 @@ STATE_DONE = "done"
 STATE_EMPTY = "empty"
 STATE_NEEDS_COMPONENT = "needs_component"  # ipatool without patch 0001 (variant of missing)
 STATE_STORE_MISMATCH = "store_mismatch"  # -128, temporary look until Ника's part
+#: error-apple-rejected (01 state table, 02 §6b п.4): ErrorCode.APPLE_REJECTED, not -128
+STATE_APPLE_REJECTED = "apple_rejected"
+APPLE_REJECTED_LEAD = "Apple не выдаёт это приложение вашему Apple ID. Остальные приложения можно вернуть как обычно."
 
 #: Up to this many apps (and if they fit) the home screen offers «Вернуть все N»;
 #: more → «Выбрать и вернуть». Mirrors ``Theme.restoreAllMax`` (test keeps them equal).
@@ -81,6 +84,7 @@ class HomeInput:
     #: -128: "" | "mismatch" | "unavailable" (again after signing in again)
     store_problem: str = ""
     store_problem_app: str = ""
+    store_problem_name: str = ""
     #: «Лимит обновится завтра в 14:20» / «Общий лимит 15 исчерпан» / "".
     limit_note: str = ""
     #: The total limit (15) is used up (read_counts): no time, an explanation.
@@ -172,7 +176,9 @@ def link_action(name: str) -> str:
     if name == "Apple ID":
         return "signin"
     if name == "Найти другое приложение":
-        return "picker"
+        return "find"  # the «Найти» sheet (02-picker §6b)
+    if name == "Настройки":
+        return "settings"  # Windows only, last after «Apple ID» (01 §2.2)
     if name == HOWTO_LINK:
         return "howto"  # BUILD-ipatool.md / RUN-FROM-SOURCE.md
     if name == DETAILS_LINK:
@@ -221,6 +227,16 @@ def home_view(inp: HomeInput) -> dict[str, object]:
                 "Нажмите «Доверять» и введите код телефона",
             ],
             links=["Не получается подключить"],
+        )
+    elif inp.store_problem == "rejected" and not (queue is not None and queue.active):
+        state = STATE_APPLE_REJECTED
+        short = inp.store_problem_app or "Приложение"
+        view.update(
+            over=inp.store_problem_name or short,
+            title=f"{short}\nнедоступна",
+            lead=APPLE_REJECTED_LEAD,
+            cta="На главный",  # no sign-in, no retry
+            links=[IPA_LINK],
         )
     elif inp.store_problem and not (queue is not None and queue.active):
         state = STATE_STORE_MISMATCH

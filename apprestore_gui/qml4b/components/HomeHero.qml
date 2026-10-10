@@ -130,7 +130,8 @@ Column {
     Links {
         id: links
         visible: (root.view.links || []).length > 0
-        items: root.view.links || []
+        // Windows: a quiet «Настройки» last, after «Apple ID» (01 §2.2); macOS has the menu
+        items: (root.view.links || []).concat(Theme.isWin && (root.view.links || []).indexOf("Apple ID") >= 0 ? ["Настройки"] : [])
         onActivated: function(name) { root.link(name) }
     }
 }

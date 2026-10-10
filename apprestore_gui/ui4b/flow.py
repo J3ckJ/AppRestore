@@ -30,8 +30,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Protocol
 
-from apprestore_core.ipatool_api import MESSAGES_RU, SESSION_CODES, classify_error
-from apprestore_core.license_gate import is_limit_refusal, is_needs_patched, is_store_mismatch
+from apprestore_core.ipatool_api import MESSAGES_RU, SESSION_CODES, ErrorCode, classify_error
+from apprestore_core.license_gate import is_limit_refusal, is_needs_patched, is_store_mismatch, is_store_refusal
 
 from apprestore_gui.ui4b.catalog import ACTION_IPA, ACTION_OFFLOADED, ACTION_STORE, RestoreItem
 from apprestore_gui.ui4b.queue import CURRENT, LIMIT_ERROR, WAIT, RestoreQueue
@@ -51,6 +51,27 @@ def needs_signin(text: str) -> bool:
         return True
     folded = text.casefold()
     return any(message in folded for message in _SESSION_TEXTS) or "войдите заново" in folded
+
+
+#: Session-only row mark (memory, never on disk): «Что вернуть» and «Найти».
+APPLE_REJECTED_NOTE = "Apple отказала в выдаче"
+
+
+def is_apple_rejected(text: str) -> bool:
+    """ErrorCode.APPLE_REJECTED (2040 and other explicit refusals) — not -128,
+    which has its own two-step path (STORE_MISMATCH)."""
+
+    if not text or is_store_mismatch(text) or is_limit_refusal(text) or is_needs_patched(text):
+        return False
+    from apprestore_gui.errors import STORE_REFUSED_TEXT
+
+    folded = text.casefold()
+    return (
+        STORE_REFUSED_TEXT.casefold() in folded
+        or MESSAGES_RU[ErrorCode.APPLE_REJECTED].casefold() in folded
+        or classify_error(text) is ErrorCode.APPLE_REJECTED
+        or is_store_refusal(text)
+    )
 
 
 class Backend(Protocol):
@@ -78,6 +99,10 @@ class RestoreFlow:
         #: NEEDS_PATCHED_BUILD / PREFLIGHT_BLOCKED seen in this program run (sticky).
         self.component_blocked = False
         self.store_problem_app = ""
+        #: full name for «{Полное имя}» (error-apple-rejected)
+        self.store_problem_name = ""
+        #: store ids Apple refused in this program run (memory only; «Apple отказала в выдаче»)
+        self.apple_rejected: set[str] = set()
         self._relogin_for_store: str | None = None
         self._relogged_for_store: set[str] = set()
 
@@ -166,6 +191,10 @@ class RestoreFlow:
             entry = self.queue._find(store_id) or self.queue.current()
             self.interrupt_for_store_mismatch(entry.item.label if entry else "")
             return
+        if not ok and self.queue.entries and is_apple_rejected(text):
+            entry = self.queue._find(store_id) or self.queue.current()
+            self.interrupt_for_apple_rejected(store_id, entry.item if entry else None)
+            return
         if not ok and self.queue.entries and needs_signin(text):
             self.interrupt_for_signin()
             return
@@ -188,6 +217,7 @@ class RestoreFlow:
 
         self._relogin_for_store = None
         self._relogged_for_store.clear()
+        self.apple_rejected.clear()
         self.store_problem = ""
         self.store_problem_app = ""
         self.account_email = ""
@@ -228,6 +258,20 @@ class RestoreFlow:
         relogged = self.account_email.casefold() in self._relogged_for_store
         self.store_problem = "unavailable" if relogged else "mismatch"
         self.store_problem_app = app
+        self.on_change()
+
+    def interrupt_for_apple_rejected(self, store_id: str, item: RestoreItem | None) -> None:
+        """Apple refused (2040…): drop the run, no retry, no sign-in offer; the app
+        is marked for this session only. Not a region problem: no group change."""
+
+        self.queue = RestoreQueue()
+        self._batch = set()
+        self._started = set()
+        if store_id:
+            self.apple_rejected.add(str(store_id))
+        self.store_problem = "rejected"
+        self.store_problem_app = item.label if item else ""
+        self.store_problem_name = item.name if item else ""
         self.on_change()
 
     def store_relogin_requested(self) -> None:

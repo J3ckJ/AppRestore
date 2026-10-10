@@ -102,12 +102,14 @@ Sheet {
                     Cta {
                         objectName: "signOutCancel"
                         secondary: true
+                        compact: true
                         focus: true
                         text: root.a.confirmCancel || ""
                         onClicked: ui.cancelSignOut()
                     }
                     Cta {
                         objectName: "signOutGo"
+                        compact: true
                         text: root.a.confirmGo || ""
                         onClicked: ui.confirmSignOut()
                     }

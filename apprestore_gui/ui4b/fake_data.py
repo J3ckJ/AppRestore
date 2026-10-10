@@ -199,6 +199,24 @@ class FakeSource(SourceBase):
         self.lookups.append(list(store_ids))  # read-only, kept apart from actions
         return {sid: self.prices.get(sid) for sid in store_ids}
 
+    #: «Найти» (tests/screenshots): {id: {price, developer}} and region_probe answers.
+    find_offers: dict[str, dict[str, object]] = {}
+    find_statuses: dict[str, object] = {}
+    find_store: list[dict[str, str]] = []
+
+    def store_offers(self, store_ids: list[str]) -> dict[str, dict[str, object]]:
+        self.lookups.append(list(store_ids))
+        return {sid: dict(self.find_offers.get(sid) or {"price": None, "developer": ""}) for sid in store_ids}
+
+    def store_statuses(self, store_ids: list[str]) -> dict[str, object]:
+        return {sid: self.find_statuses[sid] for sid in store_ids if sid in self.find_statuses}
+
+    def search_store(self, term: str, purchases: list[dict[str, object]]) -> list[dict[str, str]]:
+        """No App Store here: canned rows whose name contains the words."""
+
+        words = term.strip().casefold()
+        return [dict(r) for r in self.find_store if words and words in str(r.get("name", "")).casefold()]
+
     def license_counts(self) -> tuple[int, int]:
         if self.journal is None:
             return (0, 0)

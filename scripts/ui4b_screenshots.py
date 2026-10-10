@@ -32,6 +32,11 @@ SHOTS: tuple[tuple[str, str, str | None], ...] = (
     ("home-relogin", "relogin", None),
     ("signin-sheet", "relogin", None),
     ("signin-code", "signin", None),
+    ("find-builtin", "missing", None),
+    ("find-archive", "missing", None),
+    ("find-archive-busy", "missing", None),
+    ("settings-sheet", "missing", None),
+    ("home-apple-rejected", "missing", None),
     ("account-sheet", "missing", None),
     ("account-signout", "missing", None),
     ("home-region", "region", "variant-4b-region.png"),
@@ -50,6 +55,44 @@ def prepare(controller, source, scenario: str, name: str = "") -> None:
         source.account_email = "marina@example.com"
         source.auth_status = "Сессия Apple ID истекла. Войдите заново."
         controller.openSignIn()
+        return
+    if name.startswith("find-"):
+        from types import SimpleNamespace
+
+        from apprestore_core.region_probe import RegionStatus
+
+        def hit(tid, title, dev, src="builtin", conf=0.95, snap=None, dib=None):
+            return SimpleNamespace(track_id=tid, name=title, developer=dev, icon_url=None,
+                                   source=SimpleNamespace(value=src), confidence=conf, snapshot=snap,
+                                   brand=None, developer_is_bank=dib)
+
+        def delisted(query, net):
+            if "сир" in query:
+                return [hit(6749962031, "Cириус", "Sergei Smirnov", dib=False)], False
+            return ([hit(1234567890, "Демо Банк Онлайн", "Demo Bank LLC", "wayback", 0.8, "20240312")]
+                    if net else []), False
+
+        busy = name == "find-archive-busy"
+        f = controller.finder
+        f.set_delisted(delisted)
+        f._spawn = (lambda fn: None) if busy else (lambda fn: fn())
+        source.find_statuses = {"6749962031": RegionStatus.DELISTED, "1234567890": RegionStatus.DELISTED}
+        source.find_store = [{"storeId": "564177498", "name": "Сириус ВК", "source": "appstore"}]
+        source.find_offers = {"564177498": {"price": 0.0, "developer": "VK.com"}}
+        if busy:
+            f.openWith("демо банк")
+            f._on_store(f._gen, [], {}, {})
+            f.state.archive_state, f.state.archive_asked = "busy", True
+            f.changed.emit()
+        else:
+            f.openWith("сириус" if name == "find-builtin" else "демо банк")
+        return
+    if name == "settings-sheet":
+        controller.openSettings()
+        return
+    if name == "home-apple-rejected":
+        item = [i for i in controller.selection.items if i.store_id][3]
+        controller.flow.interrupt_for_apple_rejected(item.store_id, item)
         return
     if name in ("account-sheet", "account-signout"):
         source.auth_phase = "in"
