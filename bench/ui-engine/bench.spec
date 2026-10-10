@@ -52,6 +52,28 @@ a = Analysis(
     excludes=excludes,
     noarchive=False,
 )
+# BENCH_TRIM=1: drop Qt modules the app never uses (WebEngine, 3D, PDF, charts,
+# multimedia...). PyInstaller's QML hook collects every QML module otherwise.
+if target == "quick" and os.environ.get("BENCH_TRIM") == "1":
+    import re
+
+    unused = re.compile(
+        r"Qt63D|Scene2D|Scene3D|WebEngine|WebView|WebChannel|WebSockets|Quick3D|Qt3D|3DCore|3DRender|3DInput|3DLogic|3DAnimation|3DExtras"
+        r"|Pdf|Graphs|Charts|DataVisualization|Multimedia|SpatialAudio|Positioning|Location|Sensors|Scxml"
+        r"|StateMachine|RemoteObjects|VirtualKeyboard|Wayland|Qt5Compat|ShaderTools|TextToSpeech|Lottie"
+        r"|Bluetooth|Nfc|SerialPort|Designer|QtHelp|Qt6Help|QuickTest|Qt6Test|QtTest|Sql|Svg Widgets|HttpServer|Protobuf|Grpc",
+        re.IGNORECASE,
+    )
+
+    def _keep(entry):
+        return not unused.search(entry[0]) and not unused.search(entry[1] or "")
+
+    before = len(a.binaries) + len(a.datas)
+    a.binaries = [e for e in a.binaries if _keep(e)]
+    a.datas = [e for e in a.datas if _keep(e)]
+    print(f"BENCH_TRIM: dropped {before - len(a.binaries) - len(a.datas)} entries")
+    name = "bench-quick-trim"
+
 pyz = PYZ(a.pure, a.zipped_data)
 console = target == "sidecar"
 if onefile:

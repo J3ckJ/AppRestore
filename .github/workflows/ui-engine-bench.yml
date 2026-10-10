@@ -56,6 +56,7 @@ jobs:
           for t in quick widgets sidecar; do
             BENCH_TARGET=$t pyinstaller bench/ui-engine/bench.spec --noconfirm --distpath out/py --workpath build/$t
           done
+          BENCH_TARGET=quick BENCH_TRIM=1 pyinstaller bench/ui-engine/bench.spec --noconfirm --distpath out/py --workpath build/quick-trim
           BENCH_TARGET=sidecar BENCH_ONEFILE=1 pyinstaller bench/ui-engine/bench.spec --noconfirm --distpath out/py-onefile --workpath build/onefile
       - name: Tauri build
         working-directory: bench/ui-engine/tauri
@@ -69,6 +70,7 @@ jobs:
           mkdir -p out/cand
           cp -a out/py/bench-quick out/cand/qt-quick
           cp -a out/py/bench-widgets out/cand/qt-widgets
+          cp -a out/py/bench-quick-trim out/cand/qt-quick-trim
           mkdir -p out/cand/tauri-onedir out/cand/tauri-onefile out/cand/tauri-shell
           cp bench/ui-engine/tauri/target/release/bench-tauri$ext out/cand/tauri-onedir/
           cp -a out/py/apprestore-core out/cand/tauri-onedir/apprestore-core
@@ -90,6 +92,7 @@ jobs:
           run=""; [ "$RUNNER_OS" = "Linux" ] && run="xvfb-run -a"
           $run python bench/ui-engine/measure.py --label "$label" --runs 5 --out bench-results \
             --candidate "Qt Quick (PySide6)=out/cand/qt-quick:bench-quick" \
+            --candidate "Qt Quick trimmed (PySide6)=out/cand/qt-quick-trim:bench-quick-trim" \
             --candidate "Qt Widgets (PySide6)=out/cand/qt-widgets:bench-widgets" \
             --candidate "Tauri + sidecar onedir=out/cand/tauri-onedir:bench-tauri" \
             --candidate "Tauri + sidecar onefile=out/cand/tauri-onefile:bench-tauri" \
