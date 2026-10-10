@@ -365,3 +365,31 @@ def test_store_mismatch_keeps_its_own_screen(qapp) -> None:
     src.installSettled.emit(sid, False, MESSAGES_RU[ErrorCode.STORE_MISMATCH])
     assert c.home["state"] == STATE_STORE_MISMATCH and c.home.get("cta2") == "Войти заново"
     assert c.flow.apple_rejected == set()
+
+
+def test_real_module_builtin_level_a_rows_are_data_driven(qapp, monkeypatch) -> None:
+    """Макс's delisted_search offline (BUILTIN_STRICT default untouched): rows come
+    from the module's data; the UI has no app names of its own."""
+
+    def no_network(*a, **k):
+        raise AssertionError("network used")
+
+    monkeypatch.setattr(socket, "create_connection", no_network)
+    mod = F.load_module()
+    if mod is None:
+        pytest.skip("delisted_search not vendored")
+    c, src = controller(delisted=None, archive_search=False)
+    hits, down = F.run_delisted("альфа", False)
+    assert not down and hits
+    by_bank = {h.name: h.developer_is_bank for h in hits}
+    c.finder.openWith("альфа")
+    for row in rows(c):
+        bank_line = F.BANK_LINK_NOTE in row["line3"]
+        assert bank_line == (by_bank.get(row["name"]) is False)
+        assert row["developer"]  # always the real developer
+    from pathlib import Path
+
+    for name in ("find.py", "find_qt.py"):
+        text = (Path(F.__file__).parent / name).read_text(encoding="utf-8")
+        for word in ("ВТБ", "Альфа", "Сириус", "Cириус", "Делим", "Drive Transit", "BUILTIN_STRICT"):
+            assert word not in text, (name, word)
