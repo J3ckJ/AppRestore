@@ -378,11 +378,12 @@ def test_real_module_builtin_level_a_rows_are_data_driven(qapp, monkeypatch) -> 
     mod = F.load_module()
     if mod is None:
         pytest.skip("delisted_search not vendored")
-    c, src = controller(delisted=None, archive_search=False)
+    c, src = controller(delisted=lambda q, net: F.run_delisted(q, net, mod), archive_search=False)
     hits, down = F.run_delisted("альфа", False)
     assert not down and hits
     by_bank = {h.name: h.developer_is_bank for h in hits}
     c.finder.openWith("альфа")
+    assert rows(c), "the real module's builtin rows reach the sheet"
     for row in rows(c):
         bank_line = F.BANK_LINK_NOTE in row["line3"]
         assert bank_line == (by_bank.get(row["name"]) is False)
@@ -391,7 +392,8 @@ def test_real_module_builtin_level_a_rows_are_data_driven(qapp, monkeypatch) -> 
 
     for name in ("find.py", "find_qt.py"):
         text = (Path(F.__file__).parent / name).read_text(encoding="utf-8")
-        for word in ("ВТБ", "Альфа", "Сириус", "Cириус", "Делим", "Drive Transit", "BUILTIN_STRICT"):
+        for word in ("ВТБ", "Альфа", "Сириус", "Cириус", "Делим", "Drive Transit", "BUILTIN_STRICT",
+                     "Сбер", "Тинькофф", "Т-Банк", "492224193", "455652438"):
             assert word not in text, (name, word)
 
 
@@ -411,3 +413,114 @@ def test_same_name_archive_hits_show_each_developer_order_by_score_no_badges(qap
     text = repr(c.finder.view).casefold()
     for word in ("официальн", "настоящ", "оригинал", "проверен"):
         assert word not in text
+
+
+def test_every_builtin_level_a_entry_renders_from_data(qapp, monkeypatch) -> None:
+    """Builtin list is data (now 6 level-A entries incl. Сбербанк Онлайн, Тинькофф):
+    each entry found by its name gives a row with the module's developer; no count
+    is hard-coded in the UI."""
+
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: (_ for _ in ()).throw(AssertionError("net")))
+    mod = F.load_module()
+    if mod is None:
+        pytest.skip("delisted_search not vendored")
+    entries = mod.builtin_entries()
+    assert entries
+    c, src = controller(delisted=lambda q, net: F.run_delisted(q, net, mod), archive_search=False)
+    for e in entries:
+        c.finder.openWith(e.name)
+        got = {r["storeId"]: r for r in rows(c)}
+        assert str(e.track_id) in got, e.name
+        row = got[str(e.track_id)]
+        assert row["developer"] == e.developer
+
+
+# -- «удалённое не на аккаунте» (decision 10.10, Облачко) ------------------------------
+
+def _find_with(statuses, offers=None):
+    src = FakeSource("missing")
+    src.find_store = []
+    src.find_offers = offers or {}
+    src.find_statuses = statuses
+    d = Delisted([hit("11", "Банк Один", "Dev A"), hit("12", "Банк Два", "Dev B"),
+                  hit("13", "Банк Три", "Dev C"), hit("14", "Банк Четыре", "Dev D")])
+    c, _ = controller(source=src, delisted=d)
+    c.finder.openWith("банк")
+    return c, src, {r["storeId"]: r for r in rows(c)}
+
+
+@pytest.fixture
+def attempt_on(monkeypatch):
+    from apprestore_core import delisted_attempt
+
+    delisted_attempt.forget_all()
+    monkeypatch.setattr(delisted_attempt, "enabled", lambda: True)
+    yield
+    delisted_attempt.forget_all()
+
+
+def test_unknown_price_delisted_or_not_in_region_gets_install(qapp, attempt_on) -> None:
+    c, src, by = _find_with(
+        {"11": RegionStatus.DELISTED, "12": RegionStatus.NOT_IN_REGION,
+         "13": RegionStatus.UNKNOWN, "14": RegionStatus.DELISTED},
+        offers={"14": {"price": 4.99, "developer": "Dev D"}},
+    )
+    assert by["11"]["action"] == "Поставить" and by["12"]["action"] == "Поставить"
+    assert by["13"]["action"] == "" and by["13"]["actionNote"] == F.UNKNOWN_PRICE  # UNKNOWN stays
+    assert by["14"]["action"] == "" and by["14"]["actionNote"] == F.PAID_NOTE      # known price>0 stays
+
+
+def test_install_flag_only_from_region_probe_never_from_builtin_list(qapp, attempt_on) -> None:
+    # no region_probe answer: the builtin list alone never makes an app installable
+    c, src, by = _find_with({})
+    assert all(r["action"] == "" for r in by.values())
+    assert {r["actionNote"] for r in by.values()} == {F.UNKNOWN_PRICE}
+
+
+def test_find_install_goes_consent_with_k_then_flag_reaches_gate_registry(qapp, attempt_on) -> None:
+    from apprestore_core import delisted_attempt
+
+    delisted_attempt.forget_all()
+    c, src, by = _find_with({"11": RegionStatus.DELISTED})
+    src.owned = set()
+    src.prices = {}  # lookup in the account country: no price
+    c.finder.install("11", "Банк Один")
+    import time
+
+    deadline = time.monotonic() + 5
+    while not c.consent.get("open") and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert c.consent.get("open"), "consent first: the app counts in K"
+    assert c._consent_plan is not None and [i.store_id for i in c._consent_plan.need] == ["11"]
+    assert delisted_attempt.flag_for("11") == ""  # nothing before the choice
+    assert c.consent["attempt"].startswith("Если приложение окажется платным")
+    c.consentContinue()
+    assert delisted_attempt.flag_for("11") == "delisted"
+    assert delisted_attempt.attempted("11")
+    c.finder.openWith("банк")
+    by = {r["storeId"]: r for r in rows(c)}
+    assert by["11"]["action"] == ""  # one attempt per session: no second button
+    delisted_attempt.forget_all()
+
+
+def test_feature_off_find_keeps_unknown_price_note(qapp) -> None:
+    from apprestore_core import delisted_attempt
+
+    if delisted_attempt.guard_supports():
+        pytest.skip("Макс's guard vendored")
+    c, src, by = _find_with({"11": RegionStatus.DELISTED, "12": RegionStatus.NOT_IN_REGION})
+    assert all(r["action"] == "" and r["actionNote"] == F.UNKNOWN_PRICE for r in by.values())
+
+
+def test_offline_find_builtin_only_install_disabled_no_archive_no_footnote(qapp) -> None:
+    d = Delisted([hit(SIRIUS, "Cириус", "Sergei Smirnov")], archive=[hit(ARCH, "Cириус", "X", "wayback", 0.9, "20250101")])
+    src = FakeSource("missing")
+    src.online = False
+    c, _ = controller(source=src, delisted=d)
+    c._on_source()
+    c.finder.openWith("сириус")
+    v = c.finder.view
+    assert v["banner"] == "Нет интернета. Найденное можно будет поставить, когда он появится"
+    assert rows(c) and all(not r["enabled"] for r in rows(c))
+    assert all(net is False for _, net in d.calls) and v["footnote"] == "" and not v["spinner"]

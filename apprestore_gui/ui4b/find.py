@@ -22,6 +22,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from apprestore_core.delisted_attempt import may_offer
 from apprestore_core.region_probe import RegionStatus
 
 from .component import HOWTO_LINK
@@ -41,7 +42,7 @@ SEARCHING_ARCHIVE = "Ищем среди удалённых…"
 EMPTY_TEXT = "Ничего не нашли. Попробуйте другое название или вставьте ссылку на App Store"
 ARCHIVE_LINK = "Искать и в архиве"
 ARCHIVE_DOWN = "Архив сейчас не отвечает, показываем только найденное в App Store"
-OFFLINE_BANNER = "Нет интернета — поставить найденное можно, когда он появится."
+OFFLINE_BANNER = "Нет интернета. Найденное можно будет поставить, когда он появится"  # Ника, final
 BANK_LINK_NOTE = "Ссылку на это приложение публиковал банк"
 INSTALL = "Поставить"
 PAID_NOTE = "Платное, нет в ваших покупках"
@@ -231,6 +232,8 @@ class FindState:
         if not self.offers_done and sid not in self.offers:
             return none  # price not known yet: nothing for a moment
         price = (self.offers.get(sid) or {}).get("price")
+        if may_offer(sid, self.statuses.get(sid), price):
+            return {**none, "action": INSTALL}  # region_probe flag: consent (K) → gate
         if price is None:
             return {**none, "actionNote": UNKNOWN_PRICE}
         if float(price) == 0:  # type: ignore[arg-type]

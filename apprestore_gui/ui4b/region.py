@@ -59,8 +59,11 @@ def apply_statuses(items: Iterable[RestoreItem], statuses: Mapping[str, object])
             continue
         status = to_status(statuses.get(item.store_id))
         if item.action == ACTION_STORE and status is RegionStatus.NOT_IN_REGION:
-            out.append(replace(item, group=GROUP_REGION, action=ACTION_NONE, note=caption(status)))
-        elif item.group == GROUP_REMOVED and status in (RegionStatus.DELISTED, RegionStatus.UNKNOWN):
+            # decision 10.10 (Облачко): selectable, goes through consent + gate
+            out.append(replace(item, group=GROUP_REGION, note=caption(status), store_status=status.value))
+        elif item.group == GROUP_REMOVED and status is RegionStatus.DELISTED:
+            out.append(replace(item, note=item.note or caption(status), store_status=status.value))
+        elif item.group == GROUP_REMOVED and status is RegionStatus.UNKNOWN:
             out.append(replace(item, note=item.note or caption(status)))
         else:
             out.append(item)

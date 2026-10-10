@@ -69,6 +69,16 @@ Sheet {
             glyph: "info"
             text: root.c.paid || ""
         }
+        Item { width: 1; height: 8; visible: attempt.visible }
+        InfoLine {
+            id: attempt
+            objectName: "consentAttempt"
+            maxWidth: col.width
+            visible: (root.c.attempt || "") !== ""
+            wrap: true
+            glyph: "info"
+            text: root.c.attempt || ""
+        }
         Item { width: 1; height: 24 }
         Row {
             spacing: 9

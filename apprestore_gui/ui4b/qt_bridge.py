@@ -52,6 +52,8 @@ from apprestore_gui.ui4b.onboarding import illustration_tiles, scanning_count, s
 from apprestore_gui.ui4b.scan import ScanCounter
 from apprestore_gui.ui4b.search import SEARCH_HINT, search_store
 from apprestore_gui.ui4b.selection import CHECK_ON, OFFLINE_FOOTER, Selection
+from apprestore_core.delisted_attempt import forget_flags as forget_attempt_flags
+from apprestore_core.delisted_attempt import mark_attempted, record_prices, record_region_probe
 from apprestore_gui.ui4b.find_qt import Find4b
 from apprestore_gui.ui4b.settings import ARCHIVE_DEFAULT, UPDATE_BUSY, settings_view, update_status
 from apprestore_gui.ui4b.space import UNKNOWN_SPACE, DeviceSpace, plan_space, query_device_space
@@ -752,11 +754,12 @@ class Restore4b(QObject):
         self._refresh()
 
     @Slot(str, str)
-    def installFound(self, store_id: str, name: str) -> None:
-        """A found app: the same path as «Вернуть» (fresh space, consent if needed, gate)."""
+    def installFound(self, store_id: str, name: str, store_status: str = "") -> None:
+        """A found app: the same path as «Вернуть» (fresh space, consent if needed, gate).
+        ``store_status`` comes from region_probe only (Find4b passes its answer)."""
 
         item = RestoreItem(key=f"store:{store_id}", name=name or store_id, group=GROUP_REMOVED,
-                           action=ACTION_STORE, store_id=store_id)
+                           action=ACTION_STORE, store_id=store_id, store_status=store_status)
         self._start([item])
 
     @Property(bool, notify=changed)
@@ -829,7 +832,7 @@ class Restore4b(QObject):
 
     @Slot(str)
     def toggleGroup(self, group: str) -> None:
-        if group == GROUP_REGION:
+        if group == GROUP_REGION and not any(i.selectable for i in self.selection.items if i.group == group):
             return
         self.selection.toggle_group(group)
         self._refresh()
@@ -894,7 +897,8 @@ class Restore4b(QObject):
             self.selection.set_rail("all")
             self.selection.set_query("")
             for item in self.selection.items:
-                self.selection.set_selected(item.key, item.selectable)
+                # the home button keeps its count: region apps only from «Что вернуть»
+                self.selection.set_selected(item.key, item.selectable and item.group != GROUP_REGION)
             self.restoreSelected()
 
     @Slot()
@@ -924,6 +928,7 @@ class Restore4b(QObject):
                 raise LookupError("offline: nothing to look up (only offloaded ones go)")
             owned = self.source.owned_store_ids()
             prices = self.source.free_prices(license_candidates(chosen, owned))
+            record_prices(prices)
         except Exception:  # noqa: BLE001 - unknown: the gate decides per app
             owned, prices = None, {}
         self._spaceChecked.emit((space, chosen, owned, prices))
@@ -966,6 +971,11 @@ class Restore4b(QObject):
         self._refresh()
 
     def _begin(self, plan: LicensePlan, choice: str, space: DeviceSpace) -> None:
+        if choice == CONTINUE:
+            # tell the gate (memory only) which unknown-price apps region_probe flagged
+            flagged = {i.store_id: i.store_status for i in plan.need if i.store_status}
+            record_region_probe(flagged)
+            mark_attempted(flagged)  # one attempt per app per session (§1.14)
         skipped = {"paid": [i.label for i in plan.paid]}
         if choice == OWNED_ONLY:
             skipped["no_license"] = [i.label for i in plan.need]
@@ -1207,6 +1217,7 @@ class Restore4b(QObject):
         self._account_open = False
         self._signin_open = False
         self.flow.on_signed_out()
+        forget_attempt_flags()
         self.source.sign_out()
         self._refresh()
 

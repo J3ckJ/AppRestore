@@ -30,6 +30,9 @@ from apprestore_core.license_guard import DEFAULT_DAILY_LIMIT, DEFAULT_TOTAL_LIM
 from .catalog import ACTION_STORE, RestoreItem
 from .formatting import join_names, plural
 
+#: Consent line when K holds region_probe-flagged apps with an unknown price (§1.14).
+ATTEMPT_NOTE = "Если приложение окажется платным, Apple его не выдаст. Отказ Apple лимит не тратит"
+
 CONTINUE = "continue"
 OWNED_ONLY = "owned_only"
 CANCEL = "cancel"
@@ -83,7 +86,9 @@ def plan_licenses(
             rest.append(item)
             continue
         price = _price(prices.get(item.store_id))
-        if price is None:
+        if price is None and item.attemptable:  # delisted_attempt.may_offer (§1.14)
+            need.append(item)  # region_probe: DELISTED / NOT_IN_REGION — attempted, counts in K
+        elif price is None:
             rest.append(item)
         elif price == 0:
             need.append(item)
@@ -126,6 +131,10 @@ def consent_view(
             f"Лимита хватит на {fits}: ещё {rest} {plural(rest, 'приложение', 'приложения', 'приложений')} "
             "не вернём, они будут в итоге списком «не хватило лимита»."
         )
+    attempt = ""
+    if any(i.store_status for i in plan.need):
+        # LEGAL §1.14: unknown price, region_probe flag — say what Apple may do
+        attempt = ATTEMPT_NOTE
     paid = ""
     if plan.paid:
         paid = f"Платные не возвращаем: {join_names([i.label for i in plan.paid])}."
@@ -142,6 +151,7 @@ def consent_view(
         "usedTotal": used_total,
         "warn": warn,
         "paid": paid,
+        "attempt": attempt,
         "go": "Продолжить",
         "owned": "Только уже купленные",
         "ownedEnabled": bool(plan.rest),

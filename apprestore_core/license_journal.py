@@ -122,6 +122,7 @@ def acquire_and_record(
     mode: str | None = "gui",
     journal_path: Path,
     preflight: Callable[[], object] | None = None,
+    **guard_extra: Any,
 ) -> tuple[Verdict, dict[str, Any] | None]:
     """Limit check → ``purchase()`` → journal line, as one locked step.
 
@@ -161,6 +162,7 @@ def acquire_and_record(
         bundle_id=bundle_id,
         storefront=storefront,
         mode=mode,
+        **guard_extra,  # delisted_attempt.guard_kwargs (Макс's pending flag), else nothing
     )
     if result.recorded:
         _private(journal_path)

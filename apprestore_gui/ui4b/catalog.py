@@ -75,10 +75,21 @@ class RestoreItem:
     ipa_path: str = ""
     #: Why it cannot be chosen (region group).
     note: str = ""
+    #: region_probe only: "delisted" / "not_in_region" (apprestore_core.delisted_attempt);
+    #: with an unknown price such an app may be attempted through the gate.
+    store_status: str = ""
+
+    @property
+    def attemptable(self) -> bool:
+        from apprestore_core.delisted_attempt import may_offer
+
+        return self.action == ACTION_STORE and may_offer(self.store_id, self.store_status)
 
     @property
     def selectable(self) -> bool:
-        return self.group != GROUP_REGION and self.action != ACTION_NONE
+        if self.action == ACTION_NONE:
+            return False
+        return self.group != GROUP_REGION or self.attemptable
 
     @property
     def label(self) -> str:

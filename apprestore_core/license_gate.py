@@ -257,6 +257,11 @@ def run_with_free_license(
         "journal_path": path,
         "preflight": preflight,
     }
+    # «удалённое не на аккаунте»: price unknown + region_probe flag → Макс's
+    # explicit license_guard path (pending; {} until his API is vendored).
+    from .delisted_attempt import guard_kwargs
+
+    fields.update(guard_kwargs(store_id, price))
     # Limit check, purchase and its journal line in one atomic step (Макс's
     # acquire_and_record holds <journal>.lock across all three once it lands).
     def purchase() -> None:

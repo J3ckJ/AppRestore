@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -931,9 +933,13 @@ def test_region_adapter_accepts_only_known_statuses() -> None:
         items[3].store_id: "something new",
     }
     out = region.apply_statuses(items, statuses)
-    assert out[0].group == GROUP_REGION and out[0].note == "Нет в App Store вашей страны" and not out[0].selectable
-    assert out[1].group == GROUP_REMOVED and out[1].note == "Удалено из App Store"
+    # decision 10.10: region_probe flag kept on the item; the attempt itself stays OFF
+    # until Макс's license_guard takes it (tests/test_delisted_attempt.py)
+    assert out[0].group == GROUP_REGION and out[0].note == "Нет в App Store вашей страны"
+    assert out[0].store_status == "not_in_region" and not out[0].selectable and not out[0].attemptable
+    assert out[1].group == GROUP_REMOVED and out[1].note == "Удалено из App Store" and out[1].store_status == "delisted"
     assert out[2].group == GROUP_REMOVED and out[2].note == "Не удалось проверить"  # UNKNOWN: stays, no guessing
+    assert out[2].store_status == "" and not out[2].attemptable
     assert out[3].group == GROUP_REMOVED
     assert region.apply_statuses(items, {}) == items
     # no classification → «Нет в регионе» not shown at all (no «0»)
@@ -990,13 +996,18 @@ def test_region_probe_called_only_online_with_country() -> None:
     assert region.classify(lambda i, c: (_ for _ in ()).throw(ValueError("bad")), ["1"], "R", online=True) == {}
 
 
-def test_region_group_has_no_actions() -> None:
+def test_region_group_no_region_links_home_count_unchanged() -> None:
     from apprestore_gui.ui4b import region
+    from apprestore_gui.ui4b.catalog import ACTION_NONE
 
     items = region.apply_statuses(removed4(), {removed4()[3].store_id: "NOT_IN_REGION"})
     rows = selection.Selection(items).rows()
     header = next(r for r in rows if r["kind"] == "header" and r["group"] == GROUP_REGION)
+    # feature OFF (Макс's guard pending) / no flag: caption only, no «buy elsewhere» actions
     assert header["action"] == "" and header["title"] == "Нет в App Store вашей страны"
+    plain = [replace(i, store_status="", action=ACTION_NONE) if i.group == GROUP_REGION else i for i in items]
+    header = next(r for r in selection.Selection(plain).rows() if r["kind"] == "header" and r["group"] == GROUP_REGION)
+    assert header["action"] == ""
     v = home.home_view(home.HomeInput(connected=True, signed_in=True, items=items))
     assert v["links"] == ["Поставить из файла на компьютере…"]
     assert "резервной копии" in v["fine"]

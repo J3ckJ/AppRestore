@@ -326,7 +326,7 @@ class Selection:
                 continue  # Ника: no classification / empty → no group at all (no «0»)
             if group == GROUP_NOPHONE:
                 sub = OFFLINE_RAIL_SUB
-            elif group == GROUP_REGION:
+            elif group == GROUP_REGION and not any(i.selectable for i in in_group):
                 sub = "нельзя выбрать"
             elif not in_group:
                 sub = "—"
@@ -364,8 +364,8 @@ class Selection:
             state = self.group_state(group)
             if group == GROUP_NOPHONE:
                 action = ""
-            elif group == GROUP_REGION:
-                action = ""  # no actions in this group (Лена/Макс): caption only
+            elif group == GROUP_REGION and not any(i.selectable for i in in_group):
+                action = ""  # nothing to attempt here: caption only
             elif searching:
                 action = "Снять найденные" if state == CHECK_ON else "Выбрать найденные"
             elif state == CHECK_ON:

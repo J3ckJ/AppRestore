@@ -193,7 +193,8 @@ def home_view(inp: HomeInput) -> dict[str, object]:
     removed = [item for item in items if item.group == GROUP_REMOVED]
     offloaded = [item for item in items if item.group == GROUP_OFFLOADED]
     region = [item for item in items if item.group == GROUP_REGION]
-    selectable = [item for item in items if item.selectable]
+    # the home screen keeps region apps out of its count (they are chosen in «Что вернуть»)
+    selectable = [item for item in items if item.selectable and item.group != GROUP_REGION]
     queue = inp.queue
     view: dict[str, object] = {
         "over": over,

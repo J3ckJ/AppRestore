@@ -17,6 +17,8 @@ from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 from .find import (
     ARCHIVE_TIMEOUT_S, PLACEHOLDER, TITLE, FindState, Hit, hit_from, load_module, min_confidence, run_delisted,
 )
+from apprestore_core.delisted_attempt import is_attempt_status, record_prices, status_value
+
 from .search import SEARCH_HINT, search_store
 
 
@@ -34,7 +36,7 @@ class Find4b(QObject):
         source: Any,
         *,
         archive_enabled: Callable[[], bool],
-        install: Callable[[str, str], None],
+        install: Callable[[str, str, str], None],
         open_settings: Callable[[], None],
         component_missing: Callable[[], bool] = lambda: False,
         rejected: Callable[[], set[str]] = set,
@@ -134,6 +136,7 @@ class Find4b(QObject):
             rows = source.search_store(query, purchases)
             ids = [str(r.get("storeId")) for r in rows] + builtin_ids
             offers = source.store_offers([i for i in dict.fromkeys(ids) if i not in owned])
+            record_prices({k: (v or {}).get("price") for k, v in dict(offers or {}).items()})
             self._storeDone.emit(gen, rows, offers, statuses)
 
         self._spawn(work)
@@ -145,7 +148,9 @@ class Find4b(QObject):
         self._open = False
         self._gen += 1
         self.changed.emit()
-        self._install(store_id, name)
+        status = self.state.statuses.get(store_id)
+        flag = status_value(status) if is_attempt_status(status) else ""
+        self._install(store_id, name, flag)
 
     @Slot()
     def openSettings(self) -> None:
@@ -176,6 +181,7 @@ class Find4b(QObject):
             ids = [h.store_id for h in hits]
             statuses = source.store_statuses(ids) if ids else {}
             offers = source.store_offers([i for i in ids if i not in owned]) if ids else {}
+            record_prices({k: (v or {}).get("price") for k, v in dict(offers or {}).items()})
             self._archiveDone.emit(gen, hits, bool(down), statuses, offers)
 
         QTimer.singleShot(self._timeout_ms, lambda: self._archive_timeout(gen))
