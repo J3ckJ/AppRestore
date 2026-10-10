@@ -89,7 +89,7 @@ sha256_of() {
 patches=(
   "0001-ipatool-auth-info-country.patch:05d87977a554102c9b036306ec2c125febaa62433d2a080d588527a8225b7fb8"
   "0002-ipatool-list-purchases-all.patch:025d9919871dba636a80559614a3ca402c37cf2be6965fb7a3203f4088e54445"
-  "0003-ipatool-keychain-passphrase-env-stdin.patch:bf4d5d065e699e7467a253e41076674f6b6a626fc445052b11a6738cbf62f392"
+  "0003-ipatool-keychain-passphrase-env-stdin.patch:76fdf028e6e6a5c11b9be9f647ab8281e17c2e4bd6ee1a22fa57c7d1c38e115c"
 )
 for entry in "${patches[@]}"; do
   patch_name="${entry%%:*}"
