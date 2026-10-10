@@ -1212,30 +1212,23 @@ class AppRestoreTools:
             return False
         return True
 
-    def purchase_license(
-        self,
-        *,
-        store_id: str | None = None,
-        bundle_id: str | None = None,
-    ) -> dict[str, Any]:
-        """``ipatool --format json purchase``: take a free license, nothing else.
+    def purchase_license(self, store_id: str, *, grant: object) -> dict[str, Any]:
+        """``ipatool --format json purchase --app-id N``: take a free license.
 
-        This is an App Store transaction that cannot be undone. GUI callers go
-        through ``apprestore_gui.license_gate`` first (price==0 by lookup in
-        the account's country, 5/day + 15 total, journal). Returns ipatool's
-        JSON line (``alreadyOwned``, ``success``); raises ``ToolUnavailable``
-        with ipatool's error text otherwise.
+        This is an App Store transaction that cannot be undone. It runs only
+        with a one-shot ``PurchaseGrant`` for this exact ID, which only
+        ``apprestore_core.license_gate`` issues after the price==0 check in
+        the account's country and the shared 5/day + 15 total limit. Returns
+        ipatool's JSON line; raises ``ToolUnavailable`` with ipatool's error.
         """
 
-        if bool(bundle_id) == bool(store_id):
-            raise ValueError("provide exactly one of bundle_id or store_id")
-        args = self._ipatool_cmd("--format", "json", "purchase")
-        if store_id:
-            if not store_id.isdigit() or int(store_id) <= 0:
-                raise ValueError("store_id must be a positive integer")
-            args.extend(["--app-id", store_id])
-        else:
-            args.extend(["--bundle-identifier", str(bundle_id)])
+        from .purchase_grant import require_grant
+
+        store_id = str(store_id or "").strip()
+        if not store_id.isdigit() or int(store_id) <= 0:
+            raise ValueError("store_id must be a positive integer")
+        require_grant(grant, store_id)
+        args = self._ipatool_cmd("--format", "json", "purchase", "--app-id", store_id)
         result = self.runner.run(
             args,
             capture=True,

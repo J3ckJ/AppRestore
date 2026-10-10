@@ -49,6 +49,7 @@ class GuiService:
 
     def _attach_service(self, service: AppRestoreService) -> AppRestoreService:
         service.tools.runner = KeychainRunner(self.keychain_passphrase)
+        service.license_mode = "gui"  # journal mode for the Widgets window
         if self._keychain_passphrase:
             service.tools._ipatool_session_authenticated = True
         self._service = service

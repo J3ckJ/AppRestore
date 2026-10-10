@@ -65,9 +65,10 @@ DEFAULT_DAILY_LIMIT = 5
 DEFAULT_TOTAL_LIMIT = 15
 JOURNAL_ENV = "APPRESTORE_LICENSE_JOURNAL"
 
-# Статусы, при которых лицензия считается ВЗЯТОЙ (учитывается в лимите). И успешная
-# установка, и «взяли, но скачивание упало» — лицензия на аккаунт уже добавлена.
-ACQUIRED_STATUSES = frozenset({"acquired", "acquired_download_failed"})
+# Статусы, при которых лицензия считается ВЗЯТОЙ (учитывается в лимите): успешная
+# сделка, «взяли, но скачивание упало», и «purchase упал по сети/таймауту и неясно,
+# прошла ли сделка» — при сомнении безопаснее считать (лицензия могла добавиться).
+ACQUIRED_STATUSES = frozenset({"acquired", "acquired_download_failed", "purchase_uncertain"})
 
 
 def default_journal_path() -> Path:
@@ -210,7 +211,7 @@ def record_acquire(track_id: Any, bundle_id: str | None = None,
       app_id     — алиас track_id (совместимость со старым bench);
       bundle_id  — bundle, если известен, иначе "";
       storefront — витрина/страна, если известна, иначе "";
-      status     — "acquired" | "acquired_download_failed";
+      status     — "acquired" | "acquired_download_failed" | "purchase_uncertain";
       price      — цена из lookup (обычно 0.0) или null;
       mode       — "gui" | "mock" | "real" | ... или null.
 

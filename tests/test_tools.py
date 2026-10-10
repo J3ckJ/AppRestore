@@ -136,36 +136,48 @@ class ToolArgumentTests(unittest.TestCase):
                 self.tools.download_ipa(output, store_id="123", purchase=True)  # type: ignore[call-arg]
 
     @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
-    def test_purchase_is_its_own_json_command(self, _resolve: object) -> None:
+    def test_purchase_is_its_own_json_command_and_needs_a_grant(self, _resolve: object) -> None:
+        from apprestore_core.purchase_grant import PurchaseGrant, PurchaseNotAllowed, _mint
+
         self.runner.stdout = '{"alreadyOwned":false,"level":"info","success":true}\n'
-        payload = self.tools.purchase_license(store_id="1234567890")
+        payload = self.tools.purchase_license("1234567890", grant=_mint("1234567890"))
         args = self.runner.calls[-1][0]
         self.assertEqual(
             args, ("ipatool", "--format", "json", "purchase", "--app-id", "1234567890")
         )
         self.assertNotIn("download", args)
         self.assertIs(payload["success"], True)
+        calls = len(self.runner.calls)
 
-        self.tools.purchase_license(bundle_id="com.example.alpha")
-        self.assertEqual(self.runner.calls[-1][0][-2:], ("--bundle-identifier", "com.example.alpha"))
-        with self.assertRaises(ValueError):
-            self.tools.purchase_license()
+        with self.assertRaises(PurchaseNotAllowed):
+            self.tools.purchase_license("1234567890", grant=None)
+        with self.assertRaises(PurchaseNotAllowed):
+            self.tools.purchase_license("1234567890", grant=_mint("999"))
+        with self.assertRaises(PurchaseNotAllowed):
+            PurchaseGrant("1234567890", _key=object())
+        grant = _mint("1234567890")
+        self.tools.purchase_license("1234567890", grant=grant)
+        with self.assertRaises(PurchaseNotAllowed):  # one-shot
+            self.tools.purchase_license("1234567890", grant=grant)
+        self.assertEqual(len(self.runner.calls), calls + 1)
 
     @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
     def test_purchase_failure_keeps_ipatool_error(self, _resolve: object) -> None:
+        from apprestore_core.purchase_grant import _mint
+
         self.runner.returncode = 1
         self.runner.stdout = (
             '{"error":"failed to purchase item with param \'STDQ\': failed to purchase app",'
             '"level":"error","success":false}\n'
         )
         with self.assertRaises(ToolUnavailable) as caught:
-            self.tools.purchase_license(store_id="1")
+            self.tools.purchase_license("1", grant=_mint("1"))
         self.assertIn("failed to purchase", str(caught.exception))
 
         self.runner.returncode = 0
         self.runner.stdout = '{"success":false,"error":"license is required"}'
         with self.assertRaises(ToolUnavailable):
-            self.tools.purchase_license(store_id="1")
+            self.tools.purchase_license("1", grant=_mint("1"))
 
     @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
     def test_download_failure_keeps_the_tool_text(self, _resolve: object) -> None:

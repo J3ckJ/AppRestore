@@ -17,8 +17,8 @@ pytest.importorskip("PySide6")
 from apprestore_core.models import DeviceAppState, InstalledApp  # noqa: E402
 from apprestore_core.service import AppRestoreService  # noqa: E402
 from apprestore_core.tools import InstallRequestState, ToolUnavailable  # noqa: E402
-from apprestore_gui import license_gate  # noqa: E402
-from apprestore_gui.license_gate import LICENSE_NOTICE, LicenseDenied  # noqa: E402
+from apprestore_core import license_gate  # noqa: E402
+from apprestore_core.license_gate import LICENSE_NOTICE, LicenseDenied  # noqa: E402
 from apprestore_gui.quick_session import QuickSession  # noqa: E402
 from tests.helpers import make_ipa  # noqa: E402
 
@@ -41,8 +41,11 @@ class StoreTools:
     def account_country(self) -> str:
         return self.country
 
-    def purchase_license(self, *, store_id=None, bundle_id=None) -> dict:
-        self.purchases.append(str(store_id or bundle_id))
+    def purchase_license(self, store_id, *, grant) -> dict:
+        from apprestore_core.purchase_grant import require_grant
+
+        require_grant(grant, store_id)
+        self.purchases.append(str(store_id))
         self.owned = True
         return {"success": True}
 

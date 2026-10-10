@@ -28,7 +28,7 @@ from apprestore_gui.account_vault import (
 from apprestore_gui.auth_pty import AppleLogin, AuthResult, keychain_has_saved_account, probe_keychain
 from apprestore_gui.device_form import device_form, device_noun
 from apprestore_gui.errors import NOT_OWNED_TEXT, explain_user_error, is_license_missing
-from apprestore_gui.license_gate import LicenseDenied, run_with_free_license
+from apprestore_core.license_gate import LicenseDenied, run_with_free_license
 from apprestore_gui.popular_apps import POPULAR_APPS
 from apprestore_gui.service_adapter import GuiService
 from apprestore_gui.shelf_probe import probe_store
@@ -1045,6 +1045,7 @@ class QuickSession(QObject):
             tools=core.tools,
             acquire=acquire,
             notify=lambda text: self.installProgress.emit(-1, text),
+            mode="gui",
         )
 
     def _download_copy_gated(self, app: InstalledApp) -> object:
@@ -1055,6 +1056,7 @@ class QuickSession(QObject):
             tools=service.core.tools,
             acquire=True,
             notify=lambda text: self._set_files_note(f"{app.name}: {text}", busy=True),
+            mode="gui",
         )
 
     def _emit_files_note(self) -> None:

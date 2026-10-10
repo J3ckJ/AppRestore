@@ -11,7 +11,7 @@ import pytest
 
 from apprestore_core.license_guard import read_counts
 from apprestore_core.tools import ToolUnavailable
-from apprestore_gui.license_gate import LICENSE_NOTICE, LicenseDenied, run_with_free_license
+from apprestore_core.license_gate import LICENSE_NOTICE, LicenseDenied, run_with_free_license
 
 STORE = "1234567890"
 MISSING = (
@@ -21,17 +21,23 @@ MISSING = (
 
 
 class Tools:
-    def __init__(self, *, country: str = "", purchase_ok: bool = True) -> None:
+    def __init__(self, *, country: str = "", purchase_ok: bool = True, error: BaseException | None = None) -> None:
         self.country = country
         self.purchase_ok = purchase_ok
+        self.error = error
         self.purchases: list[str] = []
         self.licensed = False
 
     def account_country(self) -> str:
         return self.country
 
-    def purchase_license(self, *, store_id: str | None = None, bundle_id: str | None = None) -> dict:
+    def purchase_license(self, store_id: str, *, grant: object) -> dict:
+        from apprestore_core.purchase_grant import require_grant
+
+        require_grant(grant, store_id)
         self.purchases.append(str(store_id))
+        if self.error is not None:
+            raise self.error
         if not self.purchase_ok:
             raise ToolUnavailable("failed to purchase app")
         self.licensed = True
@@ -221,3 +227,68 @@ def test_other_errors_are_not_a_reason_to_purchase(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="TLS"):
         run_with_free_license(STORE, attempt, tools=tools, lookup=lookup, journal=tmp_path / "j")
     assert tools.purchases == [] and lookup.calls == []
+
+
+# ---------------------------------------------------------------- purchase_uncertain
+
+
+def _uncertain_errors():
+    from apprestore_core.command import CommandError
+    from apprestore_core.models import CommandResult
+
+    timeout = CommandError(CommandResult(("ipatool",), 124, "", ""), "command timed out: ipatool")
+    return [
+        ToolUnavailable("net/http: TLS handshake timeout"),
+        ToolUnavailable("dial tcp: i/o timeout"),
+        ToolUnavailable("context deadline exceeded"),
+        timeout,
+        ToolUnavailable("ipatool purchase failed"),  # no answer at all: unknown
+    ]
+
+
+@pytest.mark.parametrize("error", _uncertain_errors(), ids=lambda e: str(e)[:24])
+def test_network_or_timeout_on_purchase_is_journaled_as_uncertain(tmp_path: Path, error) -> None:
+    from apprestore_core.license_guard import check_can_acquire
+
+    journal = tmp_path / "j.jsonl"
+    tools = Tools(error=error)
+    with pytest.raises(type(error)):
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(0), journal=journal)
+    [entry] = _entries(journal)
+    assert entry["status"] == "purchase_uncertain"
+    assert entry["track_id"] == STORE and entry["app_id"] == STORE
+    # Макс's own counters count it (ACQUIRED_STATUSES includes purchase_uncertain).
+    assert read_counts(journal) == (1, 1)
+    verdict = check_can_acquire("999", 0, journal_path=journal)
+    assert verdict.used_today == 1 and verdict.used_total == 1
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "purchasing paid apps is not supported",
+        "failed to purchase item with param 'GAME': item is temporarily unavailable",
+        "ipatool is not authenticated",
+        "keychain passphrase is required",
+        "failed to purchase app",
+        "app not found",
+    ],
+)
+def test_explicit_refusal_on_purchase_is_not_journaled(tmp_path: Path, message: str) -> None:
+    journal = tmp_path / "j.jsonl"
+    tools = Tools(error=ToolUnavailable(message))
+    with pytest.raises(ToolUnavailable):
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(0), journal=journal)
+    assert not journal.exists()
+
+
+def test_uncertain_lines_count_toward_the_daily_limit(tmp_path: Path) -> None:
+    journal = tmp_path / "j.jsonl"
+    _fill(journal, today=4)
+    with journal.open("a", encoding="utf-8") as handle:
+        now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        handle.write(json.dumps({"time": now, "track_id": "3", "status": "purchase_uncertain"}) + "\n")
+    tools = Tools()
+    with pytest.raises(LicenseDenied, match="5/5"):
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(0), journal=journal)
+    assert tools.purchases == []

@@ -11,6 +11,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Callable, TypeVar
 
 from .catalog import (
     installed_bundle_ids,
@@ -44,6 +45,9 @@ from .paths import (
 from .tools import AppRestoreTools, InstallRequestState, ToolUnavailable
 
 
+_T = TypeVar("_T")
+
+
 class AppRestoreError(RuntimeError):
     pass
 
@@ -56,6 +60,9 @@ class AppRestoreService:
     REDOWNLOAD_START_TIMEOUT = 15.0
     REDOWNLOAD_COMPLETE_TIMEOUT = 300.0
     INSTALL_VERIFY_TIMEOUT = 90.0
+    # Journal "mode" for licenses taken through this service: None (null) for
+    # the CLI; GuiService sets "gui" for both windows.
+    license_mode: str | None = None
 
     def __init__(
         self,
@@ -303,9 +310,12 @@ class AppRestoreService:
         store_id: str | None,
         *,
         lookup_store_id: bool = True,
-        acquire_license: bool = False,
     ) -> list[tuple[str, str, bool]]:
-        """Return (kind, value, purchase) attempts in priority order."""
+        """Return read-only (kind, value, False) attempts in priority order.
+
+        A license is never an attempt here: ``acquire_license`` goes through
+        ``apprestore_core.license_gate`` (price, limit, journal) instead.
+        """
         resolved = store_id
         if not resolved and lookup_store_id:
             print(f"  looking up App Store ID for {bundle_id}…")
@@ -324,12 +334,6 @@ class AppRestoreService:
         if resolved:
             attempts.append(("store", resolved, False))
         attempts.append(("bundle", bundle_id, False))
-        # `--purchase` changes the Apple account's license history, so it must
-        # never be an implicit retry.
-        if acquire_license:
-            if resolved:
-                attempts.append(("store", resolved, True))
-            attempts.append(("bundle", bundle_id, True))
         return attempts
 
     def _verified_download(
@@ -339,7 +343,6 @@ class AppRestoreService:
         store_id: str | None,
         temp_dir: Path,
         lookup_store_id: bool = True,
-        acquire_license: bool = False,
     ) -> tuple[Path, VerifiedIpa, str | None]:
         expected = validate_bundle_id(bundle_id)
         if not self.tools.ipatool_authenticated():
@@ -349,7 +352,6 @@ class AppRestoreService:
             expected,
             store_id,
             lookup_store_id=lookup_store_id,
-            acquire_license=acquire_license,
         )
         errors: list[str] = []
         identity_mismatches: set[tuple[str, str]] = set()
@@ -370,14 +372,6 @@ class AppRestoreService:
             attempt_dir.mkdir(mode=0o700)
             output = attempt_dir / "download.ipa"
             try:
-                if purchase:
-                    # R2: the license is its own `ipatool purchase` step; the
-                    # download below never carries --purchase. The label keeps
-                    # "with --purchase" so errors.py can tell the two apart.
-                    self.tools.purchase_license(
-                        store_id=value if kind == "store" else None,
-                        bundle_id=value if kind == "bundle" else None,
-                    )
                 ok = self.tools.download_ipa(
                     output,
                     store_id=value if kind == "store" else None,
@@ -914,6 +908,28 @@ class AppRestoreService:
             time.sleep(delay)
             delay = min(delay * 1.6, 4.0)
 
+    def _license_gated(
+        self,
+        store_id: str | None,
+        attempt: Callable[[], _T],
+        *,
+        acquire_license: bool,
+    ) -> _T:
+        """``attempt()`` read-only; with ``acquire_license`` via the license gate."""
+
+        if not acquire_license:
+            return attempt()
+        from .license_gate import run_with_free_license
+
+        return run_with_free_license(
+            store_id or "",
+            attempt,
+            tools=self.tools,
+            acquire=True,
+            notify=lambda text: print(f"  {text}"),
+            mode=self.license_mode,
+        )
+
     def download(
         self,
         bundle_id: str,
@@ -922,6 +938,22 @@ class AppRestoreService:
         lookup_store_id: bool = True,
         acquire_license: bool = False,
     ) -> Path:
+        if acquire_license:
+            expected = validate_bundle_id(bundle_id)
+            resolved = parse_app_store_id(str(store_id)) if store_id is not None else None
+            if store_id is not None and not resolved:
+                raise AppRestoreError("store_id must be an 8-12 digit positive integer")
+            if not resolved and lookup_store_id:
+                resolved = lookup_itunes_store_id(expected)
+            return self._license_gated(
+                resolved,
+                lambda: self.download(
+                    expected,
+                    resolved,
+                    lookup_store_id=lookup_store_id and not resolved,
+                ),
+                acquire_license=True,
+            )
         expected = validate_bundle_id(bundle_id)
         if store_id is not None:
             parsed_store_id = parse_app_store_id(str(store_id))
@@ -939,7 +971,6 @@ class AppRestoreService:
                 store_id=store_id,
                 temp_dir=Path(temporary_dir),
                 lookup_store_id=lookup_store_id,
-                acquire_license=acquire_license,
             )
 
             target, committed = self._commit_downloaded_ipa(
@@ -968,6 +999,12 @@ class AppRestoreService:
         resolved = parse_app_store_id(str(store_id))
         if not resolved:
             raise AppRestoreError("store_id must be an 8-12 digit positive integer")
+        if acquire_license:
+            return self._license_gated(
+                resolved,
+                lambda: self.download_by_store_id(resolved),
+                acquire_license=True,
+            )
         if not self.tools.ipatool_authenticated():
             raise AppRestoreError("ipatool is not authenticated; run `apprestore auth`")
 
@@ -979,7 +1016,7 @@ class AppRestoreService:
             errors: list[str] = []
             temporary: Path | None = None
             downloaded: VerifiedIpa | None = None
-            purchase_modes = (False, True) if acquire_license else (False,)
+            purchase_modes = (False,)  # a license is the gate's job, never a retry here
             for attempt_number, purchase in enumerate(purchase_modes, 1):
                 label = (
                     f"store={resolved}"
@@ -990,9 +1027,6 @@ class AppRestoreService:
                 attempt_dir.mkdir(mode=0o700)
                 output = attempt_dir / "download.ipa"
                 try:
-                    if purchase:
-                        # R2: separate `ipatool purchase`, then a plain download.
-                        self.tools.purchase_license(store_id=resolved)
                     ok = self.tools.download_ipa(
                         output,
                         store_id=resolved,

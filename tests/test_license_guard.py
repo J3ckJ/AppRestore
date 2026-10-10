@@ -179,3 +179,23 @@ def test_default_journal_path_from_env(tmp_path, monkeypatch):
 def test_default_journal_path_without_env(monkeypatch):
     monkeypatch.delenv(lg.JOURNAL_ENV, raising=False)
     assert lg.default_journal_path() == Path.home() / ".apprestore" / "licenses_acquired.jsonl"
+
+
+def test_purchase_uncertain_counts_toward_limit(tmp_path):
+    """purchase упал по сети/таймауту — при сомнении считаем лицензию взятой."""
+    path = tmp_path / "j.jsonl"
+    _seed(path, [
+        {"time": (FIXED - dt.timedelta(hours=1)).isoformat(), "track_id": "1", "status": "acquired"},
+        {"time": (FIXED - dt.timedelta(hours=1)).isoformat(), "track_id": "2",
+         "status": "purchase_uncertain"},
+    ])
+    assert lg.read_counts(path, now=_now) == (2, 2)
+    assert "purchase_uncertain" in lg.ACQUIRED_STATUSES
+
+
+def test_record_purchase_uncertain_status(tmp_path):
+    path = tmp_path / "j.jsonl"
+    entry = lg.record_acquire("389801252", status="purchase_uncertain",
+                              price=0.0, mode="mock", journal_path=path, now=_now)
+    assert entry["status"] == "purchase_uncertain"
+    assert lg.read_counts(path, now=_now) == (1, 1)
