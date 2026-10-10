@@ -113,7 +113,7 @@ def test_record_aligned_fields(tmp_path):
     assert entry["price"] == 0.0
     assert entry["mode"] == "gui"
     line = json.loads(path.read_text(encoding="utf-8").strip())
-    assert set(line.keys()) == {"time", "track_id", "app_id", "bundle_id",
+    assert set(line.keys()) == {"id", "time", "track_id", "app_id", "bundle_id",
                                 "storefront", "status", "price", "mode"}
 
 
@@ -274,3 +274,334 @@ def test_parallel_acquire_respects_limit(tmp_path):
     assert lg.read_counts(path, now=_now) == (2, 2)
     # В журнале ровно 2 строки.
     assert len([ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]) == 2
+
+
+# -------------------------------------------------------------- APPEND-ONLY: voided
+
+def _append_raw(path, entry):
+    import json as _j
+    with path.open("a", encoding="utf-8") as h:
+        h.write(_j.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def test_voided_pair_counts_zero(tmp_path):
+    """Исходная (purchase_uncertain) + voided со ссылкой -> счёт 0, обе строки видны."""
+    journal = tmp_path / "licenses_acquired.jsonl"
+    orig = {"time": "2026-10-10T15:16:42+00:00", "track_id": "492224193",
+            "app_id": "492224193", "bundle_id": "", "storefront": "us",
+            "status": "purchase_uncertain", "price": 0.0, "mode": "real"}
+    _append_raw(journal, orig)
+    assert lg.read_counts(journal) == (1, 1)          # до гашения считается
+    lg.record_void(None, "erroneous: 2040", legacy_match=(orig["time"], orig["track_id"]), journal_path=journal)
+    assert lg.read_counts(journal) == (0, 0)          # после гашения — 0/0
+    lines = [l for l in journal.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(lines) == 2                            # обе строки на месте (append-only)
+
+
+def test_void_without_ref_does_not_break_counts(tmp_path):
+    """voided без корректного `voids` ничего не гасит и сам не считается."""
+    journal = tmp_path / "licenses_acquired.jsonl"
+    good = {"time": "2026-10-10T10:00:00+00:00", "track_id": "111", "status": "acquired"}
+    _append_raw(journal, good)
+    _append_raw(journal, {"time": "2026-10-10T10:05:00+00:00", "track_id": "999",
+                          "status": "voided"})                 # без поля voids
+    _append_raw(journal, {"time": "2026-10-10T10:06:00+00:00", "track_id": "999",
+                          "status": "voided", "voids": {"time": "nope", "track_id": "nope"}})
+    assert lg.read_counts(journal) == (1, 1)          # считается только 'good'
+
+
+def test_void_matches_only_same_time_and_track(tmp_path):
+    """voided гасит ровно одну исходную по паре (time, track_id)."""
+    journal = tmp_path / "licenses_acquired.jsonl"
+    a = {"time": "2026-10-10T09:00:00+00:00", "track_id": "111", "status": "acquired"}
+    b = {"time": "2026-10-10T09:30:00+00:00", "track_id": "111", "status": "acquired"}
+    _append_raw(journal, a)
+    _append_raw(journal, b)
+    assert lg.read_counts(journal) == (2, 2)
+    lg.record_void(None, "fix", legacy_match=(a["time"], a["track_id"]), journal_path=journal)
+    assert lg.read_counts(journal) == (1, 1)          # погашена только a, b осталась
+
+
+# -------------------------------------------------------------- id + void по id
+
+def test_new_record_has_uuid_id(tmp_path):
+    journal = tmp_path / "licenses_acquired.jsonl"
+    e = lg.record_acquire("389801252", bundle_id="com.x", storefront="us", journal_path=journal)
+    import uuid as _uuid
+    assert "id" in e and isinstance(e["id"], str)
+    _uuid.UUID(e["id"])                       # валидный uuid4 (иначе бросит)
+
+
+def test_void_by_id_cancels_exactly_that_entry(tmp_path):
+    journal = tmp_path / "licenses_acquired.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=journal)
+    assert lg.read_counts(journal) == (1, 1)
+    lg.record_void(e["id"], "mistake", track_id="389801252", journal_path=journal)
+    assert lg.read_counts(journal) == (0, 0)
+    # ссылка записана как id-строка, не словарь
+    lines = journal.read_text(encoding="utf-8").splitlines()
+    import json as _j
+    void = _j.loads(lines[-1])
+    assert void["status"] == "voided" and void["voids"] == e["id"]
+
+
+def test_two_same_second_same_track_voided_individually_by_id(tmp_path):
+    """Две записи одного track_id в ту же секунду -> гасятся поотдельно по id."""
+    journal = tmp_path / "licenses_acquired.jsonl"
+    fixed = dt.datetime(2026, 10, 10, 12, 0, 0, tzinfo=dt.timezone.utc)
+    a = lg.record_acquire("492224193", status="purchase_uncertain",
+                          journal_path=journal, now=lambda: fixed)
+    b = lg.record_acquire("492224193", status="purchase_uncertain",
+                          journal_path=journal, now=lambda: fixed)
+    assert a["id"] != b["id"]
+    assert a["time"] == b["time"] and a["track_id"] == b["track_id"]  # неотличимы по паре
+    assert lg.read_counts(journal, now=lambda: fixed) == (2, 2)
+    lg.record_void(a["id"], "only A", track_id="492224193", journal_path=journal)
+    # погашена ровно A, B осталась (пара бы погасила обе — здесь нет)
+    assert lg.read_counts(journal, now=lambda: fixed) == (1, 1)
+
+
+def test_amends_to_voided_status_counts_zero(tmp_path):
+    """`amends` НЕ алиас voids: это смена статуса; последний статус voided -> 0."""
+    journal = tmp_path / "licenses_acquired.jsonl"
+    e = lg.record_acquire("389801252", status="acquired", journal_path=journal)
+    assert lg.read_counts(journal) == (1, 1)
+    _append_raw(journal, {"id": "void-x", "time": "2026-10-10T13:00:00+00:00",
+                          "track_id": "389801252", "status": "voided", "amends": e["id"],
+                          "reason": "via update_status"})
+    assert lg.read_counts(journal) == (0, 0)
+
+
+def test_legacy_pair_still_works_without_id(tmp_path):
+    """Старая запись без id + voided-словарь по паре -> 0/0 (обратная совместимость)."""
+    journal = tmp_path / "licenses_acquired.jsonl"
+    _append_raw(journal, {"time": "2026-10-10T15:16:42+00:00", "track_id": "492224193",
+                          "status": "purchase_uncertain", "price": 0.0})   # без id
+    assert lg.read_counts(journal) == (1, 1)
+    lg.record_void(None, "legacy fix",
+                   legacy_match=("2026-10-10T15:16:42+00:00", "492224193"), journal_path=journal)
+    assert lg.read_counts(journal) == (0, 0)
+
+
+# -------------------------------------------------------------- цепочки amends
+
+
+def _amend_raw(path, target, status, *, link_id, track="389801252", when="2026-10-10T12:00:05+00:00"):
+    _append_raw(path, {"id": link_id, "time": when, "track_id": track,
+                       "status": status, "amends": target, "reason": "test"})
+
+
+def test_amend_uncertain_to_acquired_counts_one(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    link = lg.record_amend(e["id"], "acquired", "verified via list-purchases",
+                           track_id="389801252", journal_path=j, now=_now)
+    assert link["amends"] == e["id"] and link["status"] == "acquired"
+    assert link["id"] != e["id"]
+    import uuid as _uuid
+    _uuid.UUID(link["id"])
+    assert lg.read_counts(j, now=_now) == (1, 1)
+
+
+def test_amend_uncertain_to_refused_counts_zero(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (1, 1)
+    lg.record_amend(e["id"], "refused", "-128 Account Not In This Store", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (0, 0)
+    assert lg.check_can_acquire("1", 0, journal_path=j, daily_limit=1, now=_now).allowed
+
+
+def test_amend_chain_of_two_last_status_wins(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    a1 = lg.record_amend(e["id"], "refused", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (0, 0)
+    a2 = lg.record_amend(a1["id"], "acquired", journal_path=j, now=_now)   # amends на amends
+    assert a2["amends"] == a1["id"]
+    assert lg.read_counts(j, now=_now) == (1, 1)                           # не 2 и не 3
+    lg.record_amend(e["id"], "acquired_download_failed", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (1, 1)
+
+
+def test_amend_then_void_root_counts_zero_and_stays_voided(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    lg.record_amend(e["id"], "acquired", journal_path=j, now=_now)
+    lg.record_void(e["id"], "mistake", track_id="389801252", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (0, 0)
+    lg.record_amend(e["id"], "acquired", journal_path=j, now=_now)   # не оживляет
+    assert lg.read_counts(j, now=_now) == (0, 0)
+
+
+def test_void_of_amend_line_reverts_only_that_amend(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    bad = lg.record_amend(e["id"], "refused", "wrong guess", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (0, 0)
+    lg.record_void(bad["id"], "amend was wrong", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (1, 1)    # снова purchase_uncertain
+
+
+def test_amend_keeps_original_time_for_daily_window(tmp_path):
+    j = tmp_path / "j.jsonl"
+    old = FIXED - dt.timedelta(days=2)
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=lambda: old)
+    lg.record_amend(e["id"], "acquired", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (0, 1)
+
+
+def test_amend_unknown_id_writes_nothing(tmp_path):
+    j = tmp_path / "j.jsonl"
+    lg.record_acquire("389801252", journal_path=j, now=_now)
+    size = j.stat().st_size
+    assert lg.record_amend("no-such-id", "refused", journal_path=j, now=_now) is None
+    assert lg.record_amend("", "refused", journal_path=j, now=_now) is None
+    assert j.stat().st_size == size
+    _amend_raw(j, "no-such-id", "acquired", link_id="x")   # чужая строка на неизвестный id
+    assert lg.read_counts(j, now=_now) == (1, 1)
+
+
+def test_amend_empty_status_rejected(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", journal_path=j, now=_now)
+    with pytest.raises(ValueError):
+        lg.record_amend(e["id"], "", journal_path=j, now=_now)
+
+
+def test_record_amend_is_append_only(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    before = j.read_bytes()
+    lg.record_amend(e["id"], "acquired", journal_path=j, now=_now)
+    assert j.read_bytes().startswith(before)
+    assert len(j.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_mixed_legacy_and_new_format(tmp_path):
+    """Старые строки без id + новые с id/amends/voids в одном журнале."""
+    j = tmp_path / "j.jsonl"
+    # legacy: без status (=взята) и purchase_uncertain без id
+    _append_raw(j, {"time": "2026-10-10T09:00:00+00:00", "track_id": "111"})
+    _append_raw(j, {"time": "2026-10-10T10:00:00+00:00", "track_id": "222",
+                    "status": "purchase_uncertain", "price": 0.0})
+    a = lg.record_acquire("333", status="purchase_uncertain", journal_path=j, now=_now)
+    b = lg.record_acquire("444", status="purchase_uncertain", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (4, 4)
+    lg.record_amend(a["id"], "acquired", journal_path=j, now=_now)         # 333: 1
+    lg.record_amend(b["id"], "refused", journal_path=j, now=_now)          # 444: 0
+    # legacy-строку amends-словарь не меняет (по паре только voids)
+    _append_raw(j, {"id": "x", "time": "2026-10-10T12:00:01+00:00", "track_id": "222",
+                    "status": "refused",
+                    "amends": {"time": "2026-10-10T10:00:00+00:00", "track_id": "222"}})
+    assert lg.read_counts(j, now=_now) == (3, 3)
+    lg.record_void(None, "legacy fix", legacy_match=("2026-10-10T10:00:00+00:00", "222"),
+                   journal_path=j, now=_now)                                 # 222: 0
+    assert lg.read_counts(j, now=_now) == (2, 2)                            # 111 + 333
+
+
+def test_amend_lines_never_double_count_with_limit(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    for status in ("acquired", "acquired_download_failed", "acquired"):
+        lg.record_amend(e["id"], status, journal_path=j, now=_now)
+    v = lg.check_can_acquire("999", 0, journal_path=j, daily_limit=2, total_limit=2, now=_now)
+    assert v.allowed and (v.used_today, v.used_total) == (1, 1)
+
+
+# -------------------------------------------------------------- next_daily_slot
+
+
+def _row(hours_ago, track, status="acquired", eid=None):
+    row = {"time": (FIXED - dt.timedelta(hours=hours_ago)).isoformat(timespec="seconds"),
+           "track_id": str(track), "status": status}
+    if eid:
+        row["id"] = eid
+    return row
+
+
+def test_next_daily_slot_none_when_slot_free(tmp_path):
+    j = tmp_path / "j.jsonl"
+    assert lg.next_daily_slot(journal_path=j, now=_now) is None          # пустой журнал
+    _seed(j, [_row(h, h) for h in (1, 2, 3, 4)])                          # 4 из 5
+    assert lg.next_daily_slot(journal_path=j, now=_now) is None
+    assert "next_daily_slot" in lg.__all__
+
+
+def test_next_daily_slot_five_in_window_returns_oldest_plus_24h(tmp_path):
+    j = tmp_path / "j.jsonl"
+    _seed(j, [_row(h, h) for h in (1, 20, 5, 3, 2)])                      # порядок в файле не важен
+    when = lg.next_daily_slot(journal_path=j, now=_now)
+    assert when == FIXED + dt.timedelta(hours=4)                          # (FIXED-20ч)+24ч
+    assert when.tzinfo is not None and when.utcoffset() == dt.timedelta(0)
+    # согласовано с read_counts: сразу после when слот есть
+    later = lambda: when + dt.timedelta(seconds=1)  # noqa: E731
+    assert lg.read_counts(j, now=later)[0] == 4
+    assert lg.next_daily_slot(journal_path=j, now=later) is None
+
+
+def test_next_daily_slot_returns_utc_for_offset_times(tmp_path):
+    j = tmp_path / "j.jsonl"
+    msk = dt.timezone(dt.timedelta(hours=3))
+    rows = [{"time": (FIXED - dt.timedelta(hours=h)).astimezone(msk).isoformat(),
+             "track_id": str(h), "status": "acquired"} for h in (1, 2, 3, 4, 10)]
+    _seed(j, rows)
+    when = lg.next_daily_slot(journal_path=j, now=_now)
+    assert when == FIXED + dt.timedelta(hours=14)
+    assert when.tzinfo == dt.timezone.utc
+
+
+def test_next_daily_slot_over_limit_needs_several_to_expire(tmp_path):
+    j = tmp_path / "j.jsonl"
+    _seed(j, [_row(h, h) for h in (23, 22, 21, 2, 1, 0)])                 # 6 в окне
+    # нужно, чтобы выпали 2 самые старые: слот — после (FIXED-22ч)+24ч
+    assert lg.next_daily_slot(journal_path=j, now=_now) == FIXED + dt.timedelta(hours=2)
+
+
+def test_next_daily_slot_ignores_old_voided_and_amended(tmp_path):
+    j = tmp_path / "j.jsonl"
+    rows = [
+        _row(30, 100),                                         # старше 24ч — не в окне
+        _row(23, 101, eid="void-me"),                          # погашена voids
+        {"status": "voided", "voids": "void-me", "track_id": "101",
+         "time": FIXED.isoformat()},
+        _row(22, 102, status="purchase_uncertain", eid="ref"),  # amend -> refused: 0
+        {"status": "refused", "amends": "ref", "id": "a1", "track_id": "102",
+         "time": FIXED.isoformat()},
+        _row(21, 103, status="refused"),                       # не взята
+        _row(19, 104, status="purchase_uncertain", eid="unc"),  # amend -> acquired: 1, время исходной
+        {"status": "acquired", "amends": "unc", "id": "a2", "track_id": "104",
+         "time": FIXED.isoformat()},
+        _row(5, 105), _row(4, 106), _row(3, 107),
+    ]
+    _seed(j, rows)
+    assert lg.read_counts(j, now=_now)[0] == 4
+    assert lg.next_daily_slot(journal_path=j, now=_now) is None
+    with j.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_row(1, 108)) + "\n")
+    assert lg.read_counts(j, now=_now)[0] == 5
+    # самая старая считающаяся — 104 (время ИСХОДНОЙ записи 19ч назад, не время amend)
+    assert lg.next_daily_slot(journal_path=j, now=_now) == FIXED + dt.timedelta(hours=5)
+
+
+def test_next_daily_slot_boundary_exactly_24h(tmp_path):
+    j = tmp_path / "j.jsonl"
+    _seed(j, [_row(24, 1), _row(4, 2), _row(3, 3), _row(2, 4), _row(1, 5)])
+    # запись ровно 24ч назад ещё в окне (как read_counts) -> слот освобождается сразу после now
+    assert lg.read_counts(j, now=_now)[0] == 5
+    assert lg.next_daily_slot(journal_path=j, now=_now) == FIXED
+    later = lambda: FIXED + dt.timedelta(seconds=1)  # noqa: E731
+    assert lg.next_daily_slot(journal_path=j, now=later) is None
+
+
+def test_next_daily_slot_undated_rows_block_forever(tmp_path):
+    j = tmp_path / "j.jsonl"
+    _seed(j, [{"time": "garbage", "track_id": str(i)} for i in range(5)])
+    assert lg.next_daily_slot(journal_path=j, now=_now) is lg.NEVER
+
+
+def test_next_daily_slot_respects_custom_limit(tmp_path):
+    j = tmp_path / "j.jsonl"
+    _seed(j, [_row(10, 1), _row(2, 2)])
+    assert lg.next_daily_slot(journal_path=j, daily_limit=2, now=_now) == FIXED + dt.timedelta(hours=14)
+    assert lg.next_daily_slot(journal_path=j, daily_limit=3, now=_now) is None

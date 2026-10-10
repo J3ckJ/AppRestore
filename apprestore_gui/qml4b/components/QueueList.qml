@@ -25,7 +25,7 @@ Column {
             AppIcon {
                 anchors.verticalCenter: body.verticalCenter
                 width: Theme.rowIconSize; height: Theme.rowIconSize
-                radius: Theme.rowIconRadius
+                radius: Theme.radiusQueueIcon
                 storeId: row.modelData.storeId
                 bundleId: row.modelData.bundleId
                 iconOpacity: row.wait ? 0.45 : 1

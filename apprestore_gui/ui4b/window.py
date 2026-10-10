@@ -52,7 +52,7 @@ def main() -> int:
         items: list[tuple[str, str, str]] = []
         for item in controller.selection.items:
             items.append((item.store_id, item.bundle_id, ""))
-        # phone tiles too: artwork from icons_cache, otherwise a #D3D1CA square
+        # phone tiles too: artwork from icons_cache, otherwise a Theme.iconPlaceholder square
         for app in source.phone_apps():
             items.append((app.store_id, app.bundle_id, ""))
         icon_book.consider_async(items)

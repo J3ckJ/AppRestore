@@ -17,7 +17,7 @@ def test_record_then_update_keeps_one_line(tmp_path: Path) -> None:
     assert [row["track_id"] for row in rows] == ["111", "222"]
     assert rows[0]["status"] == "acquired" and rows[0]["time"] == other["time"]
     assert rows[1]["status"] == "acquired_download_failed"
-    assert set(rows[1]) <= {"time", "track_id", "app_id", "bundle_id", "storefront", "price", "mode", "status"}
+    assert set(rows[1]) <= {"id", "time", "track_id", "app_id", "bundle_id", "storefront", "price", "mode", "status"}
     assert read_counts(journal)[1] == 2
 
 

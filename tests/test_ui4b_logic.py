@@ -574,14 +574,14 @@ def _sized(n: int, size_mb: int = 100) -> list[RestoreItem]:
 def test_restore_all_max_matches_theme() -> None:
     text = (_QML / "theme" / "Theme.qml").read_text(encoding="utf-8")
     value = int(_re.search(r"restoreAllMax:\s*(\d+)", text).group(1))
-    assert value == home.RESTORE_ALL_MAX == 12
+    assert value == home.RESTORE_ALL_MAX == home.DIRECT_LIMIT == 8
 
 
-def test_return_all_up_to_12_if_it_fits() -> None:
+def test_return_all_up_to_8_if_it_fits() -> None:
     roomy = space.DeviceSpace(128 * GB, 50 * GB)
-    v12 = home.home_view(home.HomeInput(connected=True, signed_in=True, items=_sized(12), space=roomy))
-    assert v12["state"] == home.STATE_MISSING and v12["cta"] == "Вернуть все 12"
-    v13 = home.home_view(home.HomeInput(connected=True, signed_in=True, items=_sized(13), space=roomy))
+    v12 = home.home_view(home.HomeInput(connected=True, signed_in=True, items=_sized(8), space=roomy))
+    assert v12["state"] == home.STATE_MISSING and v12["cta"] == "Вернуть все 8"
+    v13 = home.home_view(home.HomeInput(connected=True, signed_in=True, items=_sized(9), space=roomy))
     assert v13["state"] == home.STATE_MANY and v13["cta"] == "Выбрать и вернуть"
     assert v13["hint"] == "Сначала покажем список, отметите нужные."
     tight = space.DeviceSpace(128 * GB, 500 * 1000 * 1000)
@@ -658,8 +658,9 @@ def test_qml4b_uses_no_letter_placeholders() -> None:
         assert "placeholder_pixmap" not in text and "modelData.mark" not in text, path
         assert "5E5CE6" not in text.upper(), path
     theme = (_QML / "theme" / "Theme.qml").read_text(encoding="utf-8")
-    assert _re.search(r"iconPlaceholder:\s*track", theme)
-    assert '"#D3D1CA"' in theme
+    # Ника, полная спека: заглушка — palette.iconPlaceholder (#E2E0DA), без буквы
+    assert _re.search(r"iconPlaceholder:\s*\"#E2E0DA\"", theme)
+    assert "Theme.iconPlaceholder" in (_QML / "components" / "AppIcon.qml").read_text(encoding="utf-8")
 
 
 

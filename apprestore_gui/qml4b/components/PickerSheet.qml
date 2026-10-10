@@ -164,7 +164,7 @@ Item {
                     anchors.right: parent.right
                     anchors.rightMargin: 14
                     anchors.verticalCenter: parent.verticalCenter
-                    token: "note"
+                    token: "rowNote"
                     color: Theme.ink3
                     text: "Esc — очистить"
                 }
@@ -410,10 +410,10 @@ Item {
                     anchors.rightMargin: 12
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 10
-                    T { token: "note"; color: Theme.ink3; text: row.note }
+                    T { token: "rowNote"; color: Theme.ink3; text: row.note }
                     T {
                         visible: row.hasIpaHint
-                        token: "note"; font.weight: 550; color: Theme.ink2
+                        token: "rowNote"; font.weight: 550; color: Theme.ink2
                         font.underline: true
                         text: "Есть файл IPA"
                     }

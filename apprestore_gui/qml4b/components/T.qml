@@ -9,7 +9,7 @@ Text {
     readonly property var st: Theme.style(token)
     font.family: Theme.isDisplay(token) ? Theme.fontDisplay : Theme.fontText
     font.pointSize: st.size * 72 / (Screen.logicalPixelDensity * 25.4)
-    font.weight: st.weight
+    font.weight: Theme.weightFor(st.weight)
     font.letterSpacing: st.ls
     color: Theme.ink
     textFormat: Text.PlainText

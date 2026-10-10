@@ -48,6 +48,23 @@
 
 Проверка лимита + purchase + запись проходят под одной блокировкой, поэтому GUI и
 bench на одном журнале не превысят лимит.
+
+Поправки и гашения (журнал только дописывается):
+
+    record_amend(entry["id"], "acquired")                  # uncertain -> acquired: 1
+    record_amend(entry["id"], "refused")                   # uncertain -> refused: 0
+    record_amend(entry["id"], "acquired_download_failed")  # acquired -> dl failed: 1
+    record_void(entry["id"], "ошибочная запись")           # цепочка: 0, окончательно
+
+Когда освободится суточный слот (для экрана согласия / «Не хватило лимита»):
+
+    from license_guard import next_daily_slot, NEVER
+    when = next_daily_slot()        # None — слот есть сейчас; иначе datetime UTC aware
+    # слот освободится сразу после `when` (время самой старой записи в окне + 24 ч);
+    # NEVER — окно держат записи без даты. Общий лимит 15 тут не учитывается.
+
+В лимит идёт только ПОСЛЕДНИЙ статус цепочки amends (и только из ACQUIRED_STATUSES);
+voids исходной гасит всю цепочку. Подробно — комментарий у VOID_STATUS.
 """
 
 from __future__ import annotations
@@ -57,6 +74,7 @@ import datetime as dt
 import json
 import os
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -73,17 +91,47 @@ except ImportError:  # pragma: no cover - не-Windows
 
 __all__ = ["Verdict", "AcquireResult", "check_can_acquire", "record_acquire",
            "read_counts", "acquire_and_record", "journal_lock",
-           "default_journal_path", "DEFAULT_DAILY_LIMIT", "DEFAULT_TOTAL_LIMIT",
-           "ACQUIRED_STATUSES"]
+           "default_journal_path", "record_void", "record_amend", "DEFAULT_DAILY_LIMIT",
+           "DEFAULT_TOTAL_LIMIT", "ACQUIRED_STATUSES", "VOID_STATUS",
+           "next_daily_slot", "NEVER"]
 
 DEFAULT_DAILY_LIMIT = 5
 DEFAULT_TOTAL_LIMIT = 15
 JOURNAL_ENV = "APPRESTORE_LICENSE_JOURNAL"
+# next_daily_slot(): «слот не освободится сам» (окно держат записи без даты).
+NEVER = dt.datetime.max.replace(tzinfo=dt.timezone.utc)
 
 # Статусы, при которых лицензия считается ВЗЯТОЙ (учитывается в лимите): успешная
 # сделка, «взяли, но скачивание упало», и «purchase упал по сети/таймауту и неясно,
 # прошла ли сделка» — при сомнении безопаснее считать (лицензия могла добавиться).
 ACQUIRED_STATUSES = frozenset({"acquired", "acquired_download_failed", "purchase_uncertain"})
+
+# Журнал только APPEND-ONLY (требование Лены): строки не удаляем и не правим.
+# Исходная запись лицензии (record_acquire / acquire_and_record) начинает ЦЕПОЧКУ.
+# Дальше к ней только ДОПИСЫВАЮТСЯ строки-ссылки (сами в лимит не идут никогда):
+#
+#   * ``voids``  (status="voided") — ГАСИТ ошибочную запись.
+#       - ``voids: <id исходной>`` -> цепочка не считается, окончательно (поздние
+#         amends её не оживляют);
+#       - ``voids: <id amends-строки>`` -> отменяется ТОЛЬКО эта поправка, цепочка
+#         возвращается к предыдущему статусу (ошибочную поправку гасим, а не лицензию);
+#       - ``voids: {"time","track_id"}`` -> legacy: гасит старые строки БЕЗ id по паре.
+#   * ``amends: <id>`` + ``status`` — МЕНЯЕТ статус цепочки (например
+#     purchase_uncertain -> acquired / refused, acquired -> acquired_download_failed).
+#     ``<id>`` — id исходной ИЛИ id другой amends-строки той же цепочки (amends на
+#     amends). В лимит идёт ПОСЛЕДНИЙ действующий статус цепочки (по порядку строк
+#     в файле = по времени, т.к. запись под journal_lock), и только если он в
+#     ACQUIRED_STATUSES. Промежуточные статусы и сами amends-строки не считаются.
+#     Время для суточного окна — время ИСХОДНОЙ записи.
+#     Только по id: старые строки без id поправками не меняются (amends-словарь
+#     игнорируется — по паре не догадываемся, только явный voids).
+#
+# Ссылка на несуществующий id игнорируется (и сама строка не считается).
+# Порядок подсчёта: сначала свернуть каждую цепочку до последнего статуса (с учётом
+# отменённых поправок), затем применить voids исходных, затем фильтр ACQUIRED_STATUSES.
+VOID_STATUS = "voided"
+AMEND_FIELD = "amends"
+VOID_FIELD = "voids"
 
 
 def default_journal_path() -> Path:
@@ -216,22 +264,151 @@ def _counts_toward_limit(entry: dict[str, Any]) -> bool:
     return str(status) in ACQUIRED_STATUSES
 
 
-def _read_counts_unlocked(path: Path, now: Callable[[], dt.datetime]) -> tuple[int, int]:
-    entries = [e for e in _read_entries_unlocked(path) if _counts_toward_limit(e)]
-    since = now() - dt.timedelta(hours=24)
-    used_today = 0
+def _entry_key(entry: dict[str, Any]) -> tuple[str, str]:
+    """Legacy-ключ строки для погашения: (time, track_id) как строки.
+
+    Используется ТОЛЬКО для старых записей без поля ``id``.
+    """
+
+    return (str(entry.get("time", "")), str(entry.get("track_id", "")))
+
+
+def _is_link(entry: dict[str, Any]) -> bool:
+    """Строка-ссылка (гашение или поправка), а не исходная запись лицензии.
+
+    Любая строка с ``voids``/``amends`` или со status="voided" (даже без корректной
+    ссылки) — ссылка: в лимит сама не идёт.
+    """
+
+    return (VOID_FIELD in entry or AMEND_FIELD in entry
+            or str(entry.get("status") or "") == VOID_STATUS)
+
+
+def _live_entries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Исходные записи, идущие в лимит, после сворачивания цепочек voids/amends.
+
+    Возвращает КОПИИ исходных строк с итоговым статусом цепочки (поле ``status``),
+    порядок — как в файле. Строки-ссылки сами никогда не возвращаются.
+    """
+
+    roots: list[dict[str, Any]] = []
+    by_id: dict[str, int] = {}                     # id исходной -> индекс
+    by_pair: dict[tuple[str, str], list[int]] = {}  # legacy (без id) -> индексы
+    links: list[dict[str, Any]] = []
+    for e in rows:
+        if _is_link(e):
+            links.append(e)
+            continue
+        index = len(roots)
+        roots.append(dict(e))
+        eid = e.get("id")
+        if isinstance(eid, str) and eid:
+            by_id.setdefault(eid, index)
+        else:
+            by_pair.setdefault(_entry_key(e), []).append(index)
+
+    link_root: dict[str, int] = {}      # id строки-ссылки -> индекс исходной
+    amend_ids: set[str] = set()         # id amends-строк (их можно отменить через voids)
+    history: dict[int, list[tuple[str, str]]] = {}  # индекс -> [(id поправки, статус)]
+    cancelled: set[str] = set()         # id отменённых поправок
+    voided: set[int] = set()            # погашенные исходные
+
+    def target(ref: Any) -> int | None:
+        if isinstance(ref, str) and ref:
+            if ref in by_id:
+                return by_id[ref]
+            return link_root.get(ref)
+        return None
+
+    for e in links:
+        index: int | None = None
+        if VOID_FIELD in e:
+            ref = e.get(VOID_FIELD)
+            if isinstance(ref, dict):
+                key = (str(ref.get("time", "")), str(ref.get("track_id", "")))
+                hit = by_pair.get(key, []) if key != ("", "") else []
+                voided.update(hit)
+                index = hit[0] if hit else None
+            elif isinstance(ref, str) and ref in amend_ids:
+                cancelled.add(ref)               # гасим ошибочную поправку, не лицензию
+                index = link_root.get(ref)
+            else:
+                index = target(ref)
+                if index is not None and isinstance(ref, str) and ref in by_id:
+                    voided.add(index)
+                # voids на id другой void-строки: ничего не меняем
+        elif AMEND_FIELD in e:
+            index = target(e.get(AMEND_FIELD))   # словарь (legacy) намеренно не понимаем
+            status = str(e.get("status") or "")
+            lid = e.get("id")
+            if index is not None and status:
+                key = lid if isinstance(lid, str) and lid else f"#anon{len(amend_ids)}"
+                history.setdefault(index, []).append((key, status))
+                if isinstance(lid, str) and lid:
+                    amend_ids.add(lid)
+        # status="voided" без ссылки — ничего не гасит
+        lid = e.get("id")
+        if index is not None and isinstance(lid, str) and lid:
+            link_root.setdefault(lid, index)
+
+    live: list[dict[str, Any]] = []
+    for i, root in enumerate(roots):
+        if i in voided:
+            continue
+        for amend_id, status in reversed(history.get(i, [])):
+            if amend_id not in cancelled:
+                root["status"] = status
+                break
+        if _counts_toward_limit(root):
+            live.append(root)
+    return live
+
+
+def _window_times(entries: list[dict[str, Any]],
+                  since: dt.datetime) -> tuple[list[dt.datetime], int]:
+    """Разбор времени живых записей для суточного окна (единый источник для подсчёта).
+
+    Возвращает (отсортированные по возрастанию UTC-времена записей, попавших в окно
+    ``time >= since``; число записей без/с битой датой). Битые записи всегда считаются
+    свежими (лимит строже) и из окна не выпадают никогда.
+    """
+
+    times: list[dt.datetime] = []
+    undated = 0
     for item in entries:
         raw = str(item.get("time", ""))
         try:
             when = dt.datetime.fromisoformat(raw)
         except ValueError:
-            used_today += 1  # битая/без даты запись считается свежей: лимит строже
+            undated += 1
             continue
         if when.tzinfo is None:
             when = when.replace(tzinfo=dt.timezone.utc)
         if when >= since:
-            used_today += 1
-    return used_today, len(entries)
+            times.append(when.astimezone(dt.timezone.utc))
+    times.sort()
+    return times, undated
+
+
+def _read_counts_unlocked(path: Path, now: Callable[[], dt.datetime]) -> tuple[int, int]:
+    entries = _live_entries(_read_entries_unlocked(path))
+    times, undated = _window_times(entries, now() - dt.timedelta(hours=24))
+    return len(times) + undated, len(entries)
+
+
+def _next_daily_slot_unlocked(path: Path, daily_limit: int,
+                              now: Callable[[], dt.datetime]) -> dt.datetime | None:
+    entries = _live_entries(_read_entries_unlocked(path))
+    times, undated = _window_times(entries, now() - dt.timedelta(hours=24))
+    used_today = len(times) + undated
+    if used_today < daily_limit:
+        return None
+    # Чтобы освободился 1 слот, из окна должны выпасть (used_today - daily_limit + 1)
+    # самых старых записей; слот появится, когда выпадет последняя из них.
+    k = used_today - daily_limit + 1
+    if k > len(times):  # окно держат записи без даты — сами не выпадут никогда
+        return NEVER
+    return times[k - 1] + dt.timedelta(hours=24)
 
 
 def _coerce_price(price: Any) -> float | None:
@@ -272,6 +449,7 @@ def _record_unlocked(track_id: Any, bundle_id: str | None, storefront: str | Non
     track = str(track_id) if track_id is not None else ""
     alias = str(app_id) if app_id is not None else track
     entry = {
+        "id": str(uuid.uuid4()),
         "time": now().isoformat(timespec="seconds"),
         "track_id": track,
         "app_id": alias,
@@ -297,6 +475,32 @@ def read_counts(journal_path: Path | str | None = None, *,
     path = _resolve(journal_path)
     with journal_lock(path):
         return _read_counts_unlocked(path, now)
+
+
+def next_daily_slot(*, journal_path: Path | str | None = None,
+                    daily_limit: int = DEFAULT_DAILY_LIMIT,
+                    now: Callable[[], dt.datetime] = _now_utc) -> dt.datetime | None:
+    """Когда освободится следующий слот по СУТОЧНОМУ лимиту. Не меняет журнал. Под блокировкой.
+
+    * ``None`` — слот есть прямо сейчас (used_today < daily_limit, как в read_counts).
+    * ``datetime`` (UTC, aware) — момент, когда самая старая из считающихся в окне
+      записей выйдет из 24-часового окна: время её ИСХОДНОЙ записи + 24 ч. Если в
+      окне больше daily_limit записей, берётся та, после выпадения которой
+      used_today станет daily_limit - 1. Граница окна включительная (как в
+      read_counts: запись ровно 24 ч назад ещё считается), поэтому слот доступен
+      сразу ПОСЛЕ возвращённого момента; значение может совпасть с now().
+    * ``NEVER`` (datetime.max, UTC) — окно держат записи без/с битой датой, сами
+      они не выпадут (на практике не бывает: record_* всегда пишут time).
+
+    Источник счёта тот же, что у read_counts/check_can_acquire (_live_entries:
+    свёрнутые amends, без voided, только ACQUIRED_STATUSES). Общий лимит
+    (total_limit) здесь НЕ учитывается: если исчерпан он, суточный слот не поможет —
+    проверяйте read_counts()/check_can_acquire().
+    """
+
+    path = _resolve(journal_path)
+    with journal_lock(path):
+        return _next_daily_slot_unlocked(path, daily_limit, now)
 
 
 def check_can_acquire(track_id: Any, price: Any, *,
@@ -325,6 +529,8 @@ def record_acquire(track_id: Any, bundle_id: str | None = None,
     """Дописать взятую лицензию в журнал (под блокировкой). Возвращает строку.
 
     Единый формат строки (для GUI и bench):
+      id         — uuid4 записи (строка); на него ссылаются `voids` (гашение,
+                   record_void) и `amends` (смена статуса, record_amend);
       time       — ISO 8601, UTC;
       track_id   — основной ключ (числовой App Store ID, строкой);
       app_id     — алиас track_id (совместимость со старым bench);
@@ -341,6 +547,113 @@ def record_acquire(track_id: Any, bundle_id: str | None = None,
     with journal_lock(path):
         return _record_unlocked(track_id, bundle_id, storefront, path, status,
                                 price, mode, app_id, now)
+
+
+def record_void(target_id: Any = None, reason: str = "", *,
+                track_id: Any = None,
+                legacy_match: tuple[Any, Any] | None = None,
+                journal_path: Path | str | None = None,
+                now: Callable[[], dt.datetime] = _now_utc) -> dict[str, Any]:
+    """Дописать APPEND-ONLY строку status="voided", гасящую ошибочную запись.
+
+    Исходную строку НЕ трогаем (журнал только дописывается). При подсчёте не
+    считается ни сама voided-строка, ни погашенная исходная.
+
+    Основной путь (новые записи с ``id``):
+        record_void(target_id, reason, track_id=<для читаемости>)
+      -> ссылка `voids` = <id исходной> (строка). Погашение однозначно даже если
+      две попытки одного track_id записаны в ту же секунду.
+
+    Legacy-путь (старые записи БЕЗ ``id``):
+        record_void(None, reason, legacy_match=(orig_time, orig_track_id))
+      -> ссылка `voids` = {"time", "track_id"} (словарь), сопоставление по паре.
+
+    Схема voided-строки (для GUI/Димы):
+      id       — uuid4 самой voided-строки;
+      time     — ISO 8601 UTC, когда погасили;
+      track_id — track_id исходной (для читаемости);
+      status   — "voided";
+      voids    — <id исходной> (строка) ЛИБО {"time","track_id"} (legacy-словарь);
+                 <id amends-строки> отменяет только эту поправку;
+                 `amends` — НЕ алиас voids: это смена статуса, см. record_amend();
+      reason   — человекочитаемая причина.
+    """
+
+    if target_id is None and legacy_match is None:
+        raise ValueError("record_void: нужен target_id (новый путь) или legacy_match=(time, track_id)")
+
+    path = _resolve(journal_path)
+    if target_id is not None:
+        voids: Any = str(target_id)
+        tid = str(track_id) if track_id is not None else ""
+    else:
+        orig_time, orig_track_id = legacy_match  # type: ignore[misc]
+        voids = {"time": str(orig_time), "track_id": str(orig_track_id)}
+        tid = str(track_id if track_id is not None else orig_track_id)
+    entry = {
+        "id": str(uuid.uuid4()),
+        "time": now().isoformat(timespec="seconds"),
+        "track_id": tid,
+        "status": VOID_STATUS,
+        "voids": voids,
+        "reason": reason,
+    }
+    with journal_lock(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return entry
+
+
+def record_amend(target_id: Any, new_status: str, reason: str = "", *,
+                 track_id: Any = None,
+                 journal_path: Path | str | None = None,
+                 now: Callable[[], dt.datetime] = _now_utc) -> dict[str, Any] | None:
+    """Дописать APPEND-ONLY строку ``amends: <id>`` с новым статусом цепочки.
+
+    Пример: purchase упал по таймауту (purchase_uncertain), потом выяснили исход:
+        record_amend(entry["id"], "acquired")   # лицензия есть -> считается 1
+        record_amend(entry["id"], "refused")    # Apple отказала -> не считается
+
+    ``target_id`` — id исходной записи ИЛИ id другой amends-строки той же
+    цепочки. В лимит идёт последний статус цепочки (если он в ACQUIRED_STATUSES),
+    сама поправка не считается; суточное окно — по времени исходной записи.
+    Исходную строку НЕ трогаем. Только для записей с ``id``: если ``target_id``
+    пуст или такого id в журнале нет — ничего не пишем и возвращаем None (старые
+    строки без id меняются только гашением record_void(..., legacy_match=...)).
+    Проверка id и запись — под одной journal_lock.
+
+    Схема amends-строки:
+      id       — uuid4 самой поправки (на неё можно сослаться amends/voids);
+      time     — ISO 8601 UTC, когда поправили;
+      track_id — track_id исходной (для читаемости) или "";
+      status   — новый статус цепочки (любой непустой; в лимит — ACQUIRED_STATUSES);
+      amends   — <id цели> (строка);
+      reason   — человекочитаемая причина.
+    """
+
+    if target_id is None or not str(target_id):
+        return None
+    status = str(new_status or "").strip()
+    if not status:
+        raise ValueError("record_amend: нужен непустой new_status")
+    path = _resolve(journal_path)
+    entry = {
+        "id": str(uuid.uuid4()),
+        "time": now().isoformat(timespec="seconds"),
+        "track_id": str(track_id) if track_id is not None else "",
+        "status": status,
+        AMEND_FIELD: str(target_id),
+        "reason": reason,
+    }
+    with journal_lock(path):
+        known = {e.get("id") for e in _read_entries_unlocked(path)}
+        if str(target_id) not in known:
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return entry
 
 
 def _status_from_purchase(outcome: Any) -> str | None:

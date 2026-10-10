@@ -40,7 +40,7 @@ STATE_STORE_MISMATCH = "store_mismatch"  # -128, temporary look until Ника's
 
 #: Up to this many apps (and if they fit) the home screen offers «Вернуть все N»;
 #: more → «Выбрать и вернуть». Mirrors ``Theme.restoreAllMax`` (test keeps them equal).
-RESTORE_ALL_MAX = 12
+RESTORE_ALL_MAX = 8
 DIRECT_LIMIT = RESTORE_ALL_MAX
 PHONE_TILES = 16
 #: Page dots on the phone: ceil(total / 24), at most 11.
