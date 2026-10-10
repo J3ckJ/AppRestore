@@ -1,0 +1,81 @@
+{
+  "ipatool_version": "2.6.0 (apprestore cde7d00)",
+  "defaults": {
+    "auth_info": {"returncode": 0, "seconds": 0.4,
+      "stdout": "{\"level\":\"info\",\"authenticated\":true,\"success\":true}"},
+    "install": {"returncode": 0, "seconds": 9.0}
+  },
+  "apps": {
+    "com.happy.free": {
+      "lookup": {"status": 200, "seconds": 0.3,
+        "body": {"resultCount": 1, "results": [
+          {"trackId": 1001, "bundleId": "com.happy.free", "price": 0,
+           "currency": "USD", "fileSizeBytes": "52428800",
+           "minimumOsVersion": "14.0", "kind": "software"}]}},
+      "download": {"returncode": 0, "seconds": 5.0, "bytes": 52428800,
+        "stdout": "{\"level\":\"info\",\"output\":\"/tmp/x.ipa\",\"success\":true}"}
+    },
+    "com.paid.app": {
+      "lookup": {"status": 200, "seconds": 0.3,
+        "body": {"resultCount": 1, "results": [
+          {"trackId": 2002, "bundleId": "com.paid.app", "price": 9.99,
+           "currency": "USD", "fileSizeBytes": "104857600"}]}},
+      "download": {"returncode": 1, "seconds": 1.1,
+        "stderr": "{\"level\":\"error\",\"error\":\"license is required\",\"success\":false}"}
+    },
+    "com.needs.license": {
+      "lookup": {"status": 200, "seconds": 0.3,
+        "body": {"resultCount": 1, "results": [
+          {"trackId": 3003, "bundleId": "com.needs.license", "price": 0,
+           "fileSizeBytes": "20971520"}]}},
+      "download": [
+        {"returncode": 1, "seconds": 1.0,
+         "stderr": "{\"level\":\"error\",\"error\":\"license is required\",\"success\":false}"},
+        {"returncode": 0, "seconds": 3.0, "bytes": 20971520,
+         "stdout": "{\"level\":\"info\",\"success\":true}"}],
+      "purchase": {"returncode": 0, "seconds": 1.4,
+        "stdout": "{\"level\":\"info\",\"alreadyOwned\":false,\"success\":true}"}
+    },
+    "com.flaky.net": {
+      "lookup": {"status": 200, "seconds": 0.3,
+        "body": {"resultCount": 1, "results": [
+          {"trackId": 4004, "bundleId": "com.flaky.net", "price": 0,
+           "fileSizeBytes": "83886080"}]}},
+      "download": [
+        {"returncode": 1, "seconds": 8.0,
+         "stderr": "{\"level\":\"error\",\"error\":\"dial tcp: connection reset by peer\",\"success\":false}"},
+        {"returncode": 1, "seconds": 8.0,
+         "stderr": "{\"level\":\"error\",\"error\":\"request failed: unexpected EOF\",\"success\":false}"},
+        {"returncode": 0, "seconds": 6.0, "bytes": 83886080,
+         "stdout": "{\"level\":\"info\",\"success\":true}"}]
+    },
+    "com.delisted.old": {
+      "lookup": {"status": 200, "seconds": 0.3,
+        "body": {"resultCount": 1, "results": [
+          {"trackId": 5005, "bundleId": "com.delisted.old", "price": 0,
+           "fileSizeBytes": "31457280", "minimumOsVersion": "18.0"}]}},
+      "download": [
+        {"returncode": 1, "seconds": 1.2,
+         "stderr": "{\"level\":\"error\",\"error\":\"app is incompatible with this device (minimumOSVersion)\",\"success\":false}"},
+        {"returncode": 0, "seconds": 4.0, "bytes": 31457280,
+         "stdout": "{\"level\":\"info\",\"success\":true}"}],
+      "download_version": {"returncode": 0, "seconds": 4.0, "bytes": 31457280,
+        "stdout": "{\"level\":\"info\",\"success\":true}"},
+      "list_versions": {"returncode": 0, "seconds": 0.8,
+        "stdout": "{\"level\":\"info\",\"externalVersionIdentifiers\":[\"800\",\"900\",\"1000\"],\"success\":true}"}
+    },
+    "com.gone.everywhere": {
+      "lookup": {"status": 200, "seconds": 0.3, "body": {"resultCount": 0, "results": []}},
+      "lookup:us": {"status": 200, "seconds": 0.3, "body": {"resultCount": 0, "results": []}},
+      "lookup:ru": {"status": 200, "seconds": 0.3, "body": {"resultCount": 0, "results": []}},
+      "download": {"returncode": 1, "seconds": 1.0,
+        "stderr": "{\"level\":\"error\",\"error\":\"app not found\",\"success\":false}"},
+      "list_versions": {"returncode": 1, "seconds": 0.5,
+        "stderr": "{\"level\":\"error\",\"error\":\"app not found\",\"success\":false}"}
+    },
+    "com.no.session": {
+      "auth_info": {"returncode": 1, "seconds": 0.3,
+        "stderr": "{\"level\":\"error\",\"error\":\"keychain passphrase is required\",\"success\":false}"}
+    }
+  }
+}

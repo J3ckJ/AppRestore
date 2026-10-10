@@ -40,3 +40,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# bench artifacts (M-1)
+licenses_acquired.jsonl
