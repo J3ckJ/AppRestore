@@ -7,25 +7,23 @@ the GUI offers «Поставить»: consent screen (the app counts in K), the
 license gate (limit 5/24 h, 15 total), Apple's refusal → error-apple-rejected,
 no retry.
 
-The price rule itself lives in Макс's ``license_guard`` (``_check_unlocked``
-refuses ``price is None``). Макс adds an explicit path there: price unknown +
-delisted/not-in-region flag → attempt allowed, limit counted, journal line only
-if Apple grants. Until his ``license_guard`` with that path is vendored:
-
-* :func:`guard_kwargs` returns ``{}`` — nothing changes in the gate, the guard
-  still refuses unknown prices («цена не подтверждена…»);
-* the only call site is ``license_gate.run_with_free_license`` →
-  ``license_journal.acquire_and_record(**fields)`` →
-  ``license_guard.acquire_and_record(...)``; the keyword name below is a
-  placeholder until Макс posts his API.
+The price rule itself lives in Макс's ``license_guard`` (license_guard-1.14
+handoff): ``acquire_and_record(track_id, None, region_unavailable=True,
+region_session=RegionAttemptSession())`` — attempt allowed, limit counted, the
+journal line (``price: null``, ``price_source: "apple_fixed_0"``) only if Apple
+grants or the answer is unclear; an explicit refusal → ``code="apple_refused"``,
+no line, no limit. The only call site is ``license_gate.run_with_free_license`` →
+``license_journal.acquire_and_record(**fields)`` → ``license_guard.acquire_and_record``;
+:func:`guard_kwargs` adds the two keywords there.
 
 Conditions (LEGAL §1.14, Лена ok):
 
 * flag only from region_probe DELISTED / NOT_IN_REGION;
 * if ANY lookup (account or reference storefront) showed price > 0 → no button,
   no attempt (:func:`record_prices` collects every price the GUI saw);
-* one attempt per app per session (:func:`mark_attempted`, memory only);
-* the feature is OFF until Макс's guard takes the flag (:func:`enabled`).
+* one attempt per app per Apple ID session (:func:`mark_attempted` in the GUI and
+  Макс's ``RegionAttemptSession`` in the guard; both reset on «Выйти» / account switch);
+* the feature is on only with a guard that knows ``region_unavailable`` (:func:`enabled`).
 
 The registry is memory only (never on disk).
 """
@@ -38,13 +36,27 @@ from collections.abc import Mapping
 
 #: region_probe statuses (``RegionStatus.value``) that allow the attempt.
 ATTEMPT_STATUSES = frozenset({"delisted", "not_in_region"})
-#: PLACEHOLDER keyword for Макс's license_guard.acquire_and_record (pending).
-GUARD_PARAM = "store_status"
+#: Макс's license_guard.acquire_and_record keyword (§1.14); passed exactly True.
+GUARD_PARAM = "region_unavailable"
 
 _lock = threading.Lock()
 _flags: dict[str, str] = {}
 _paid_seen: set[str] = set()
 _attempted: set[str] = set()
+_account = ""
+_session: object | None = None
+
+
+def session() -> object:
+    """The one RegionAttemptSession of this Apple ID session (memory only)."""
+
+    global _session
+    with _lock:
+        if _session is None:
+            from apprestore_core.license_guard import RegionAttemptSession
+
+            _session = RegionAttemptSession()
+        return _session
 
 
 def status_value(status: object) -> str:
@@ -101,18 +113,35 @@ def attempted(store_id: str) -> bool:
         return str(store_id) in _attempted
 
 
-def forget_flags() -> None:
-    """Sign out: the gate flags go; «already attempted» stays for the session."""
+def reset_session() -> None:
+    """«Выйти» / another Apple ID: flags, attempts and the guard's session go.
+    Prices seen stay (a price > 0 is a fact about the app, not the account)."""
 
     with _lock:
         _flags.clear()
+        _attempted.clear()
+        if _session is not None:
+            _session.reset()  # type: ignore[attr-defined]
+
+
+def on_account(account: str | None) -> None:
+    """Called with the signed-in Apple ID (or None): a switch resets the session."""
+
+    global _account
+    key = str(account or "").strip().casefold()
+    with _lock:
+        changed = key != _account
+        _account = key
+    if changed:
+        reset_session()
 
 
 def forget_all() -> None:
+    global _account
+    reset_session()
     with _lock:
-        _flags.clear()
         _paid_seen.clear()
-        _attempted.clear()
+        _account = ""
 
 
 def enabled() -> bool:
@@ -149,6 +178,6 @@ def guard_kwargs(store_id: str, price: object) -> dict[str, str]:
     if price is not None:
         return {}
     flag = flag_for(store_id)
-    if not flag or not guard_supports():
+    if not flag or paid_seen(store_id) or not guard_supports():
         return {}
-    return {GUARD_PARAM: flag}
+    return {GUARD_PARAM: True, "region_session": session()}

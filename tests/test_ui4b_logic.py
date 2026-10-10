@@ -933,10 +933,9 @@ def test_region_adapter_accepts_only_known_statuses() -> None:
         items[3].store_id: "something new",
     }
     out = region.apply_statuses(items, statuses)
-    # decision 10.10: region_probe flag kept on the item; the attempt itself stays OFF
-    # until Макс's license_guard takes it (tests/test_delisted_attempt.py)
+    # LEGAL §1.14: region_probe flag → may be attempted (tests/test_delisted_attempt.py)
     assert out[0].group == GROUP_REGION and out[0].note == "Нет в App Store вашей страны"
-    assert out[0].store_status == "not_in_region" and not out[0].selectable and not out[0].attemptable
+    assert out[0].store_status == "not_in_region" and out[0].selectable and out[0].attemptable
     assert out[1].group == GROUP_REMOVED and out[1].note == "Удалено из App Store" and out[1].store_status == "delisted"
     assert out[2].group == GROUP_REMOVED and out[2].note == "Не удалось проверить"  # UNKNOWN: stays, no guessing
     assert out[2].store_status == "" and not out[2].attemptable
@@ -1003,8 +1002,8 @@ def test_region_group_no_region_links_home_count_unchanged() -> None:
     items = region.apply_statuses(removed4(), {removed4()[3].store_id: "NOT_IN_REGION"})
     rows = selection.Selection(items).rows()
     header = next(r for r in rows if r["kind"] == "header" and r["group"] == GROUP_REGION)
-    # feature OFF (Макс's guard pending) / no flag: caption only, no «buy elsewhere» actions
-    assert header["action"] == "" and header["title"] == "Нет в App Store вашей страны"
+    # attemptable: an ordinary «Выбрать все» — still no «buy elsewhere» actions
+    assert header["action"] == "Выбрать все 1" and header["title"] == "Нет в App Store вашей страны"
     plain = [replace(i, store_status="", action=ACTION_NONE) if i.group == GROUP_REGION else i for i in items]
     header = next(r for r in selection.Selection(plain).rows() if r["kind"] == "header" and r["group"] == GROUP_REGION)
     assert header["action"] == ""

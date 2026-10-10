@@ -52,7 +52,8 @@ from apprestore_gui.ui4b.onboarding import illustration_tiles, scanning_count, s
 from apprestore_gui.ui4b.scan import ScanCounter
 from apprestore_gui.ui4b.search import SEARCH_HINT, search_store
 from apprestore_gui.ui4b.selection import CHECK_ON, OFFLINE_FOOTER, Selection
-from apprestore_core.delisted_attempt import forget_flags as forget_attempt_flags
+from apprestore_core.delisted_attempt import on_account as attempt_account
+from apprestore_core.delisted_attempt import reset_session as reset_attempt_session
 from apprestore_core.delisted_attempt import mark_attempted, record_prices, record_region_probe
 from apprestore_gui.ui4b.find_qt import Find4b
 from apprestore_gui.ui4b.settings import ARCHIVE_DEFAULT, UPDATE_BUSY, settings_view, update_status
@@ -578,6 +579,8 @@ class Restore4b(QObject):
     def _on_source(self) -> None:
         src = self.source
         self.flow.observe_account(src.signed_in, src.auth_phase, src.relogin, src.account_email)
+        if src.signed_in and src.account_email:
+            attempt_account(src.account_email)  # another Apple ID → new §1.14 session
         if self._signin_open and src.signed_in and src.auth_phase == "in" and not src.relogin:
             self._signin_open = False
         self._patches_missing = tuple(self.source.missing_patches()) or (
@@ -1217,7 +1220,7 @@ class Restore4b(QObject):
         self._account_open = False
         self._signin_open = False
         self.flow.on_signed_out()
-        forget_attempt_flags()
+        reset_attempt_session()  # §1.14: one attempt per Apple ID session
         self.source.sign_out()
         self._refresh()
 

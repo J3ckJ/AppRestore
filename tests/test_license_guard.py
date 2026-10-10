@@ -631,3 +631,265 @@ def test_preflight_pass_keeps_normal_path(tmp_path, gate):
     res = lg.acquire_and_record("1", 0, purchase=lambda: "acquired", preflight=lambda: gate,
                                 journal_path=journal)
     assert res.recorded and res.code is None and res.used_total == 1
+
+
+# -------------------------------------------------------------- LEGAL.md §1.14
+# Удалённое приложение (region_probe: DELISTED / NOT_IN_REGION) с неизвестной ценой.
+
+
+def _lines(path: Path):
+    if not path.is_file():
+        return []
+    return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+
+
+def _region(path, outcome="acquired", *, price=None, session=None, flag=True, **kw):
+    calls = []
+
+    def purchase():
+        calls.append(1)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    sess = lg.RegionAttemptSession() if session is None else session
+    res = lg.acquire_and_record("555000111", price, purchase=purchase, journal_path=path,
+                                region_unavailable=flag, region_session=sess,
+                                bundle_id="ru.bank.app", storefront="143469", mode="gui",
+                                now=_now, **kw)
+    return res, calls, sess
+
+
+def test_region_flag_off_unknown_price_still_refused(tmp_path):
+    path = tmp_path / "j.jsonl"
+    v = lg.check_can_acquire("555000111", None, journal_path=path, now=_now)
+    assert not v.allowed and "цена не подтверждена" in v.reason
+    assert v.region_exception is False
+    res, calls, _ = _region(path, flag=False)
+    assert not res.allowed and not res.recorded and calls == []
+    assert "цена не подтверждена" in res.reason
+    assert not path.exists() or _lines(path) == []
+
+
+@pytest.mark.parametrize("truthy", [1, "true", "DELISTED", object()])
+def test_region_flag_must_be_strictly_true(tmp_path, truthy):
+    v = lg.check_can_acquire("555000111", None, journal_path=tmp_path / "j.jsonl",
+                             region_unavailable=truthy, now=_now)
+    assert not v.allowed and "цена не подтверждена" in v.reason
+
+
+def test_region_flag_on_unknown_price_allowed(tmp_path):
+    v = lg.check_can_acquire("555000111", None, journal_path=tmp_path / "j.jsonl",
+                             region_unavailable=True, now=_now)
+    assert v.allowed and v.reason == "ok" and v.region_exception is True
+
+
+@pytest.mark.parametrize("price", [0.99, 1, "149", 379.0])
+def test_region_flag_on_known_paid_price_refused(tmp_path, price):
+    path = tmp_path / "j.jsonl"
+    v = lg.check_can_acquire("555000111", price, journal_path=path,
+                             region_unavailable=True, now=_now)
+    assert not v.allowed and "платное" in v.reason and v.region_exception is False
+    res, calls, sess = _region(path, price=price)
+    assert not res.allowed and "платное" in res.reason and calls == []
+    assert len(sess) == 0  # попытки не было — сессия не тратится
+
+
+@pytest.mark.parametrize("price", ["abc", float("nan"), float("inf"), True])
+def test_region_garbage_price_does_not_open_exception(tmp_path, price):
+    path = tmp_path / "j.jsonl"
+    res, calls, _ = _region(path, price=price)
+    assert not res.allowed and calls == []
+    assert "цена не подтверждена" in res.reason
+
+
+def test_nan_price_no_longer_passes_as_free(tmp_path):
+    v = lg.check_can_acquire("123", float("nan"), journal_path=tmp_path / "j.jsonl", now=_now)
+    assert not v.allowed and "цена не подтверждена" in v.reason
+
+
+def test_region_known_zero_price_is_normal_path_without_price_source(tmp_path):
+    path = tmp_path / "j.jsonl"
+    res, calls, sess = _region(path, price=0)
+    assert res.recorded and res.status == "acquired" and calls == [1]
+    assert "price_source" not in res.entry and res.entry["price"] == 0.0
+    assert len(sess) == 0  # обычный путь сессию §1.14 не трогает
+
+
+def test_region_granted_records_acquired_with_price_source(tmp_path):
+    path = tmp_path / "j.jsonl"
+    res, calls, sess = _region(path, "acquired")
+    assert res.allowed and res.recorded and res.status == "acquired" and calls == [1]
+    assert res.entry["price_source"] == "apple_fixed_0" == lg.PRICE_SOURCE_APPLE_FIXED_0
+    assert res.entry["price"] is None
+    assert res.used_today == 1 and res.used_total == 1
+    [line] = _lines(path)
+    assert line["status"] == "acquired" and line["price_source"] == "apple_fixed_0"
+    assert line["track_id"] == "555000111" and line["price"] is None
+    assert lg.read_counts(path, now=_now) == (1, 1)
+    assert sess.attempted("555000111")
+
+
+@pytest.mark.parametrize("outcome", [True, "ok", "success", "ACQUIRED"])
+def test_region_success_variants(tmp_path, outcome):
+    res, _, _ = _region(tmp_path / "j.jsonl", outcome)
+    assert res.recorded and res.status == "acquired"
+
+
+@pytest.mark.parametrize("outcome", [False, "refused", "failed", "apple_refused", "Rejected"])
+def test_region_explicit_refusal_not_recorded_not_counted(tmp_path, outcome):
+    path = tmp_path / "j.jsonl"
+    res, calls, sess = _region(path, outcome)
+    assert res.allowed and not res.recorded and res.status is None and calls == [1]
+    assert res.code == lg.APPLE_REFUSED and res.entry is None
+    assert _lines(path) == []
+    assert lg.read_counts(path, now=_now) == (0, 0)
+    # повтора нет: вторая попытка в той же сессии отклоняется без purchase()
+    res2, calls2, _ = _region(path, "acquired", session=sess)
+    assert not res2.allowed and res2.code == lg.REGION_ALREADY_ATTEMPTED and calls2 == []
+    assert _lines(path) == []
+
+
+@pytest.mark.parametrize("outcome", [None, "purchase_uncertain", "uncertain", "timeout", "", "weird"])
+def test_region_unclear_records_uncertain_and_counts(tmp_path, outcome):
+    path = tmp_path / "j.jsonl"
+    res, _, _ = _region(path, outcome)
+    assert res.recorded and res.status == "purchase_uncertain"
+    assert res.entry["price_source"] == "apple_fixed_0"
+    assert lg.read_counts(path, now=_now) == (1, 1)
+
+
+def test_region_exception_in_purchase_records_uncertain_and_reraises(tmp_path):
+    path = tmp_path / "j.jsonl"
+    sess = lg.RegionAttemptSession()
+    with pytest.raises(TimeoutError):
+        _region(path, TimeoutError("ipatool timeout"), session=sess)
+    [line] = _lines(path)
+    assert line["status"] == "purchase_uncertain" and line["price_source"] == "apple_fixed_0"
+    assert lg.read_counts(path, now=_now) == (1, 1)
+    assert sess.attempted("555000111")
+
+
+def test_region_uncertain_can_be_amended_like_any_entry(tmp_path):
+    path = tmp_path / "j.jsonl"
+    res, _, _ = _region(path, None)
+    lg.record_amend(res.entry["id"], "refused", "история покупок: нет", journal_path=path, now=_now)
+    assert lg.read_counts(path, now=_now) == (0, 0)
+
+
+def test_region_one_attempt_per_app_per_session(tmp_path):
+    path = tmp_path / "j.jsonl"
+    sess = lg.RegionAttemptSession()
+    first, _, _ = _region(path, "acquired", session=sess)
+    assert first.recorded
+    again, calls, _ = _region(path, "acquired", session=sess)
+    assert not again.allowed and again.code == lg.REGION_ALREADY_ATTEMPTED and calls == []
+    v = lg.check_can_acquire("555000111", None, journal_path=path, region_unavailable=True,
+                             region_session=sess, now=_now)
+    assert not v.allowed and v.code == lg.REGION_ALREADY_ATTEMPTED
+    # другое приложение в той же сессии — можно
+    other = lg.acquire_and_record("555000222", None, purchase=lambda: "acquired",
+                                  journal_path=path, region_unavailable=True,
+                                  region_session=sess, now=_now)
+    assert other.recorded
+    # новая сессия (после «Выйти») — снова можно
+    sess.reset()
+    third, calls3, _ = _region(path, "acquired", session=sess)
+    assert third.recorded and calls3 == [1]
+    assert lg.read_counts(path, now=_now) == (3, 3)
+
+
+def test_region_session_not_marked_when_checks_refuse(tmp_path):
+    path = tmp_path / "j.jsonl"
+    _seed(path, [{"time": (FIXED - dt.timedelta(hours=1)).isoformat(), "track_id": str(i)}
+                 for i in range(5)])
+    sess = lg.RegionAttemptSession()
+    res, calls, _ = _region(path, session=sess)
+    assert not res.allowed and "сутки" in res.reason and calls == []
+    assert not sess.attempted("555000111")
+
+
+def test_region_requires_session_object(tmp_path):
+    path = tmp_path / "j.jsonl"
+    called = []
+    res = lg.acquire_and_record("555000111", None, purchase=lambda: called.append(1),
+                                preflight=lambda: called.append("pf"),
+                                journal_path=path, region_unavailable=True, now=_now)
+    assert not res.allowed and res.code == lg.REGION_SESSION_REQUIRED and called == []
+    assert not path.exists()
+
+
+def test_region_daily_limit_enforced(tmp_path):
+    path = tmp_path / "j.jsonl"
+    _seed(path, [{"time": (FIXED - dt.timedelta(hours=2)).isoformat(), "track_id": str(i)}
+                 for i in range(5)])
+    res, calls, _ = _region(path)
+    assert not res.allowed and "сутки" in res.reason and calls == []
+    assert len(_lines(path)) == 5
+
+
+def test_region_total_limit_enforced(tmp_path):
+    path = tmp_path / "j.jsonl"
+    _seed(path, [{"time": (FIXED - dt.timedelta(days=3 + i)).isoformat(), "track_id": str(i)}
+                 for i in range(15)])
+    res, calls, _ = _region(path)
+    assert not res.allowed and "всего" in res.reason and calls == []
+
+
+def test_region_entries_count_toward_limit_for_normal_path(tmp_path):
+    path = tmp_path / "j.jsonl"
+    sess = lg.RegionAttemptSession()
+    for i in range(3):
+        lg.acquire_and_record(f"70000{i}", None, purchase=lambda: "acquired", journal_path=path,
+                              region_unavailable=True, region_session=sess, now=_now)
+    for i in range(2):
+        lg.acquire_and_record(f"80000{i}", None, purchase=lambda: None, journal_path=path,
+                              region_unavailable=True, region_session=sess, now=_now)
+    assert lg.read_counts(path, now=_now) == (5, 5)
+    v = lg.check_can_acquire("389801252", 0, journal_path=path, now=_now)
+    assert not v.allowed and "сутки" in v.reason
+
+
+def test_region_preflight_still_runs_first(tmp_path):
+    path = tmp_path / "j.jsonl"
+    res, calls, sess = _region(path, preflight=lambda: "нужен патченый ipatool")
+    assert not res.allowed and res.code == lg.PREFLIGHT_BLOCKED and calls == []
+    assert res.reason == "нужен патченый ipatool"
+    assert not path.exists() and not sess.attempted("555000111")
+
+
+def test_region_never_substitutes_price(tmp_path):
+    """Гард не передаёт цену в purchase(): колбэк без аргументов, price в записи — null."""
+    path = tmp_path / "j.jsonl"
+    res, _, _ = _region(path, "acquired")
+    assert res.entry["price"] is None and res.entry["price_source"] == "apple_fixed_0"
+
+
+def test_normal_entries_have_no_price_source(tmp_path):
+    path = tmp_path / "j.jsonl"
+    res = lg.acquire_and_record("389801252", 0, purchase=lambda: "acquired",
+                                journal_path=path, now=_now)
+    assert "price_source" not in res.entry
+    e = lg.record_acquire("389801253", journal_path=path, price=0, now=_now)
+    assert "price_source" not in e
+
+
+def test_parallel_region_attempts_respect_limit(tmp_path):
+    import threading
+
+    path = tmp_path / "j.jsonl"
+    sess = lg.RegionAttemptSession()
+    results = []
+
+    def worker(i):
+        results.append(lg.acquire_and_record(f"9000{i:02d}", None, purchase=lambda: "acquired",
+                                             journal_path=path, region_unavailable=True,
+                                             region_session=sess, daily_limit=5, now=_now))
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sum(r.recorded for r in results) == 5
+    assert lg.read_counts(path, now=_now) == (5, 5)

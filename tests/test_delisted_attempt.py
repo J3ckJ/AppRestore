@@ -1,10 +1,6 @@
-"""«удалённое не на аккаунте» (decision 10.10, Облачко): the GUI side and the
-isolated adapter to Макс's pending license_guard path.
-
-The tests marked xfail(strict) need Макс's license_guard (price unknown +
-region_probe flag → attempt allowed, limit counted, journal only if Apple
-grants). They turn into failures (XPASS strict) the moment his API lands, so
-the marks must be removed together with vendoring it.
+"""«удалённое не на аккаунте» (LEGAL §1.14): the GUI side, the delisted_attempt
+adapter and Макс's license_guard path (region_unavailable=True + RegionAttemptSession).
+No real purchase anywhere: purchase_license is a fake (tests.test_license_gate.Tools).
 """
 
 from __future__ import annotations
@@ -15,177 +11,210 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from apprestore_core import delisted_attempt, license_journal  # noqa: E402
+from apprestore_core import delisted_attempt, license_guard, license_journal  # noqa: E402
 from apprestore_core.license_gate import LicenseDenied, run_with_free_license  # noqa: E402
 from apprestore_core.region_probe import RegionStatus  # noqa: E402
+from apprestore_core.tools import ToolUnavailable  # noqa: E402
 from apprestore_gui.ui4b import home, licenses, region, selection  # noqa: E402
 from apprestore_gui.ui4b.catalog import ACTION_STORE, GROUP_REGION, GROUP_REMOVED, RestoreItem  # noqa: E402
-
 from tests.test_license_gate import STORE, Download, Lookup, Tools, _entries  # noqa: E402
 
-PENDING = pytest.mark.xfail(
-    strict=True,
-    reason="Макс's license_guard path (price unknown + region_probe DELISTED/NOT_IN_REGION → "
-    "attempt allowed, limit counted, journal only if Apple grants) is not vendored yet; "
-    "call site: license_gate.run_with_free_license → license_journal.acquire_and_record "
-    "→ license_guard.acquire_and_record(..., <flag>)",
-)
+CONSENT_LINE = "Если приложение окажется платным, Apple его не выдаст. Отказ Apple лимит не тратит"
 
 
 @pytest.fixture(autouse=True)
-def _clean_flags():
+def _clean():
     delisted_attempt.forget_all()
     yield
     delisted_attempt.forget_all()
 
 
-@pytest.fixture
-def feature_on(monkeypatch):
-    """The GUI side as it will run once Макс's guard takes the flag."""
-
-    monkeypatch.setattr(delisted_attempt, "enabled", lambda: True)
+def item(sid: str, group: str = GROUP_REMOVED) -> RestoreItem:
+    return RestoreItem(key=f"store:{sid}", name=f"App {sid}", group=group, action=ACTION_STORE, store_id=sid)
 
 
-def item(sid: str, group: str = GROUP_REMOVED, status: str = "") -> RestoreItem:
-    return RestoreItem(key=f"store:{sid}", name=f"App {sid}", group=group, action=ACTION_STORE,
-                       store_id=sid, store_status=status)
+def flagged(status=RegionStatus.DELISTED, sid: str = STORE) -> None:
+    delisted_attempt.record_region_probe({sid: status})
 
 
-# -- GUI side (works today) ----------------------------------------------------------
+# -- switch ---------------------------------------------------------------------------
 
-def test_plan_counts_flagged_unknown_price_in_k_known_paid_stays_paid(feature_on) -> None:
-    items = [item("1", status="delisted"), item("2", GROUP_REGION, "not_in_region"),
-             item("3"), item("4", status="delisted"), item("5")]
+def test_feature_is_on_with_vendored_guard() -> None:
+    assert delisted_attempt.guard_supports() and delisted_attempt.enabled()
+
+
+# -- flag only from region_probe ------------------------------------------------------
+
+def test_only_region_probe_sets_the_flag() -> None:
+    out = region.apply_statuses([item("1"), item("2"), item("3"), item("4")],
+                                {"1": RegionStatus.DELISTED, "2": RegionStatus.NOT_IN_REGION,
+                                 "3": RegionStatus.UNKNOWN, "4": RegionStatus.AVAILABLE})
+    assert [(i.group, i.store_status, i.attemptable) for i in out] == [
+        (GROUP_REMOVED, "delisted", True), (GROUP_REGION, "not_in_region", True),
+        (GROUP_REMOVED, "", False), (GROUP_REMOVED, "", False)]
+    assert not item("9").attemptable  # builtin list / a GUI guess never sets it
+
+
+def test_plan_counts_flagged_unknown_price_in_k_known_paid_stays_paid() -> None:
+    items = region.apply_statuses([item("1"), item("2"), item("3"), item("4"), item("5")],
+                                  {"1": RegionStatus.DELISTED, "2": RegionStatus.NOT_IN_REGION,
+                                   "4": RegionStatus.DELISTED})
     plan = licenses.plan_licenses(items, owned=set(), prices={"4": 2.99, "5": 0.0})
     assert [i.store_id for i in plan.need] == ["1", "2", "5"]  # K = 3
-    assert [i.store_id for i in plan.paid] == ["4"]              # price>0 never attempted
-    assert [i.store_id for i in plan.rest] == ["3"]              # no flag: as before (gate refuses)
-    # already on the account: no license, no K
-    assert licenses.plan_licenses([item("1", status="delisted")], owned={"1"}, prices={}).k == 0
+    assert [i.store_id for i in plan.paid] == ["4"]
+    assert [i.store_id for i in plan.rest] == ["3"]  # no flag: the gate refuses as before
+    assert licenses.plan_licenses(items[:1], owned={"1"}, prices={}).k == 0  # on the account
 
 
-def test_only_region_probe_sets_the_flag(feature_on) -> None:
-    items = [item("1"), item("2"), item("3")]
-    out = region.apply_statuses(items, {"1": RegionStatus.DELISTED, "2": RegionStatus.NOT_IN_REGION,
-                                        "3": RegionStatus.UNKNOWN})
-    assert [(i.group, i.store_status, i.attemptable) for i in out] == [
-        (GROUP_REMOVED, "delisted", True), (GROUP_REGION, "not_in_region", True), (GROUP_REMOVED, "", False)]
-    # a plain RestoreItem (builtin list, GUI guess) has no flag
-    assert not item("9").attemptable
-
-
-def test_picker_region_row_selectable_home_count_unchanged(feature_on) -> None:
-    base = [item("1"), item("2"), item("3")]
-    items = region.apply_statuses(base, {"3": RegionStatus.NOT_IN_REGION})
+def test_picker_region_row_selectable_home_count_unchanged() -> None:
+    items = region.apply_statuses([item("1"), item("2"), item("3")], {"3": RegionStatus.NOT_IN_REGION})
     sel = selection.Selection(items)
     if "store:3" in {i.key for i in sel.selected_items()}:
         sel.toggle("store:3")
     assert sel.toggle("store:3") and "3" in {i.store_id for i in sel.selected_items()}
-    rail = {r["key"]: r for r in sel.rail_rows()}
-    assert rail[GROUP_REGION]["sub"] == "выбрано 1"  # an ordinary group now
+    assert {r["key"]: r for r in sel.rail_rows()}[GROUP_REGION]["sub"] == "выбрано 1"
     v = home.home_view(home.HomeInput(connected=True, signed_in=True, items=items))
     assert v["state"] == "region" and v["cta"] == "Вернуть 2"  # home keeps region apps out
 
 
-def test_adapter_registry_and_no_kwargs_without_maks_api() -> None:
-    delisted_attempt.record_region_probe({"1": RegionStatus.DELISTED, "2": RegionStatus.AVAILABLE,
-                                          "3": "not_in_region"})
-    assert delisted_attempt.flag_for("1") == "delisted" and delisted_attempt.flag_for("3") == "not_in_region"
-    assert delisted_attempt.flag_for("2") == ""
-    delisted_attempt.record_region_probe({"1": RegionStatus.UNKNOWN})
-    assert delisted_attempt.flag_for("1") == ""
-    assert delisted_attempt.guard_kwargs("3", 0.0) == {}  # known price: never
-
-
-def test_gate_passes_flag_only_for_unknown_price_when_guard_takes_it(tmp_path, monkeypatch) -> None:
-    seen: list[dict] = []
-
-    def fake_acquire(track_id, price, purchase, *, preflight=None, journal_path=None,
-                     bundle_id="", storefront="", mode=None, store_status=None):
-        seen.append({"price": price, "store_status": store_status})
-        from types import SimpleNamespace
-        return SimpleNamespace(allowed=False, recorded=False, reason="test", used_today=0, used_total=0, code=None)
-
-    monkeypatch.setattr(license_journal.license_guard, "acquire_and_record", fake_acquire)
-    assert delisted_attempt.guard_supports()
-    delisted_attempt.record_region_probe({STORE: RegionStatus.DELISTED})
+def test_gate_without_flag_still_refuses_unknown_price(tmp_path) -> None:
     tools = Tools()
+    with pytest.raises(LicenseDenied, match="не показывает его цену"):
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=tmp_path / "j")
+    assert tools.purchases == [] and not (tmp_path / "j").exists()
+    flagged(RegionStatus.UNKNOWN)
     with pytest.raises(LicenseDenied):
         run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=tmp_path / "j")
-    with pytest.raises(LicenseDenied):
-        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(1.99), journal=tmp_path / "j")
-    assert seen == [{"price": None, "store_status": "delisted"}, {"price": 1.99, "store_status": None}]
     assert tools.purchases == []
 
 
-def test_today_unknown_price_still_refused_by_guard_nothing_journaled(tmp_path) -> None:
-    """Without Макс's path the vendored guard refuses an unknown price: no purchase."""
+def test_gate_passes_exactly_true_and_the_session(tmp_path, monkeypatch) -> None:
+    seen: list[dict] = []
+    real = license_guard.acquire_and_record
+    import functools
 
-    if delisted_attempt.guard_supports():
-        pytest.skip("Макс's path is vendored")
-    delisted_attempt.record_region_probe({STORE: RegionStatus.DELISTED})
+    @functools.wraps(real)  # keeps the signature guard_supports() looks at
+    def spy(*a, **k):
+        seen.append({"price": a[1], "flag": k.get("region_unavailable"), "session": k.get("region_session")})
+        return real(*a, **k)
+
+    monkeypatch.setattr(license_journal.license_guard, "acquire_and_record", spy)
+    flagged()
+    tools = Tools()
+    run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=tmp_path / "j")
+    assert seen[0]["price"] is None and seen[0]["flag"] is True
+    assert seen[0]["session"] is delisted_attempt.session()
+    assert isinstance(seen[0]["session"], license_guard.RegionAttemptSession)
+
+
+# -- price > 0 blocks even with the flag ----------------------------------------------
+
+def test_price_above_zero_blocks_even_with_flag(tmp_path) -> None:
+    flagged()
+    tools = Tools()
+    with pytest.raises(LicenseDenied, match="платное"):
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(1.99), journal=tmp_path / "j")
+    assert tools.purchases == []
+    # a reference-storefront lookup said paid earlier: no flag passed, no button
+    delisted_attempt.record_prices({STORE: 0.99})
+    assert delisted_attempt.guard_kwargs(STORE, None) == {}
+    assert not delisted_attempt.may_offer(STORE, RegionStatus.DELISTED)
+    with pytest.raises(LicenseDenied, match="не показывает его цену"):
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=tmp_path / "j")
+    assert tools.purchases == []
+
+
+# -- outcomes on Макс's path ----------------------------------------------------------
+
+def test_granted_records_price_source_apple_fixed_0_then_plain_download(tmp_path) -> None:
+    journal = tmp_path / "j.jsonl"
+    flagged()
+    tools = Tools()
+    download = Download(tools)
+    assert run_with_free_license(STORE, download, tools=tools, lookup=Lookup(found=False), journal=journal) == "installed"
+    assert tools.purchases == [STORE] and download.calls == 2
+    [entry] = _entries(journal)
+    assert entry["track_id"] == STORE and entry["price"] is None
+    assert entry["price_source"] == license_guard.PRICE_SOURCE_APPLE_FIXED_0
+    assert entry["status"] == "acquired"
+
+
+def test_apple_refusal_no_journal_no_limit_and_no_second_attempt(tmp_path) -> None:
+    journal = tmp_path / "j.jsonl"
+    flagged(RegionStatus.NOT_IN_REGION)
+    tools = Tools(purchase_ok=False)
+    with pytest.raises(ToolUnavailable):  # the original error → error-apple-rejected in 4b
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=journal)
+    assert tools.purchases == [STORE]
+    assert not journal.exists() and license_guard.read_counts(journal) == (0, 0)
+    with pytest.raises(LicenseDenied):  # REGION_ALREADY_ATTEMPTED: purchase not called again
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=journal)
+    assert tools.purchases == [STORE]
+
+
+def test_unclear_answer_is_uncertain_and_counted(tmp_path) -> None:
+    journal = tmp_path / "j.jsonl"
+    flagged()
+    tools = Tools(error=ToolUnavailable("net/http: TLS handshake timeout"))
+    with pytest.raises(ToolUnavailable):
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=journal)
+    [entry] = _entries(journal)
+    assert entry["status"] == "purchase_uncertain" and entry["price_source"] == "apple_fixed_0"
+    assert license_guard.read_counts(journal) == (1, 1)
+
+
+def test_limit_still_applies(tmp_path) -> None:
+    from tests.test_license_gate import _fill
+
+    journal = tmp_path / "j.jsonl"
+    _fill(journal, today=5)
+    flagged()
     tools = Tools()
     with pytest.raises(LicenseDenied):
-        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=tmp_path / "j")
-    assert tools.purchases == [] and not (tmp_path / "j").exists()
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=journal)
+    assert tools.purchases == []
 
 
-def test_feature_off_by_default_until_maks_guard() -> None:
-    if delisted_attempt.guard_supports():
-        pytest.skip("Макс's guard vendored: remove the xfail marks below")
-    assert not delisted_attempt.enabled()
-    items = region.apply_statuses([item("1"), item("2")], {"1": RegionStatus.DELISTED, "2": RegionStatus.NOT_IN_REGION})
-    assert not any(i.attemptable for i in items) and not items[1].selectable
-    plan = licenses.plan_licenses(items, owned=set(), prices={})
-    assert plan.k == 0  # nothing attempted, gate refuses unknown price as before
+# -- one attempt per session, reset on «Выйти» / account switch ------------------------
+
+def test_one_attempt_per_session_and_reset_on_signout_and_account_switch(tmp_path) -> None:
+    it = region.apply_statuses([item("1")], {"1": RegionStatus.DELISTED})[0]
+    assert it.attemptable
+    delisted_attempt.mark_attempted(["1"])
+    assert not it.attemptable  # GUI: no second button
+    delisted_attempt.reset_session()  # «Выйти»
+    assert it.attemptable
+    # guard session too
+    delisted_attempt.on_account("a@example.com")  # signed in as a
+    journal = tmp_path / "j.jsonl"
+    flagged()
+    tools = Tools(purchase_ok=False)
+    with pytest.raises(ToolUnavailable):
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=journal)
+    assert delisted_attempt.session().attempted(STORE)
+    delisted_attempt.on_account("a@example.com")
+    delisted_attempt.on_account("a@example.com")  # same account: nothing changes
+    flagged()
+    with pytest.raises(LicenseDenied):
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=journal)
+    delisted_attempt.on_account("b@example.com")  # another Apple ID: new session
+    assert not delisted_attempt.session().attempted(STORE) and delisted_attempt.flag_for(STORE) == ""
+    flagged()
+    with pytest.raises(ToolUnavailable):
+        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=journal)
+    assert tools.purchases == [STORE, STORE]
 
 
-def test_any_paid_lookup_blocks_and_one_attempt_per_session(feature_on) -> None:
+def test_any_paid_lookup_blocks_offer() -> None:
     it = region.apply_statuses([item("1"), item("2")], {"1": RegionStatus.DELISTED, "2": RegionStatus.DELISTED})
-    assert all(i.attemptable for i in it)
-    delisted_attempt.record_prices({"1": 0.99, "2": None})  # e.g. a reference storefront said paid
+    delisted_attempt.record_prices({"1": 0.99, "2": None})
     assert not it[0].attemptable and it[1].attemptable
     assert licenses.plan_licenses(it, owned=set(), prices={}).k == 1
-    delisted_attempt.mark_attempted(["2"])
-    assert not it[1].attemptable  # one attempt per app per session
-    delisted_attempt.forget_flags()  # sign out keeps «already attempted»
-    assert not it[1].attemptable
 
 
-def test_consent_line_only_when_k_has_flagged_apps_never_says_free_app(feature_on) -> None:
-    flagged = region.apply_statuses([item("1")], {"1": RegionStatus.DELISTED})
-    v = licenses.consent_view(licenses.plan_licenses(flagged + [item("2")], set(), {"2": 0.0}), (0, 0))
-    assert v["attempt"] == "Если приложение окажется платным, Apple его не выдаст. Отказ Apple лимит не тратит"
-    assert "бесплатное" not in v["attempt"] and "бесплатно " not in v["attempt"]
+def test_consent_line_only_when_k_has_flagged_apps() -> None:
+    fl = region.apply_statuses([item("1")], {"1": RegionStatus.DELISTED})
+    v = licenses.consent_view(licenses.plan_licenses(fl + [item("2")], set(), {"2": 0.0}), (0, 0))
+    assert v["attempt"] == CONSENT_LINE
     v = licenses.consent_view(licenses.plan_licenses([item("2")], set(), {"2": 0.0}), (0, 0))
     assert v["attempt"] == ""
-
-
-# -- needs Макс's license_guard -------------------------------------------------------
-
-@PENDING
-def test_feature_is_on_with_vendored_guard() -> None:
-    assert delisted_attempt.enabled()
-
-
-@PENDING
-def test_flagged_unknown_price_attempt_counts_limit_and_journals_on_grant(tmp_path) -> None:
-    journal = tmp_path / "j.jsonl"
-    delisted_attempt.record_region_probe({STORE: RegionStatus.DELISTED})
-    tools = Tools()
-    assert run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False),
-                                 journal=journal) == "installed"
-    assert tools.purchases == [STORE]
-    [entry] = _entries(journal)
-    assert entry["track_id"] == STORE
-
-
-@PENDING
-def test_flagged_unknown_price_apple_refusal_no_journal(tmp_path) -> None:
-    journal = tmp_path / "j.jsonl"
-    delisted_attempt.record_region_probe({STORE: RegionStatus.NOT_IN_REGION})
-    tools = Tools(purchase_ok=False)
-    with pytest.raises(Exception):
-        run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=journal)
-    assert tools.purchases == [STORE]  # attempted once (no retry) …
-    assert not journal.exists() or _entries(journal) == []  # … nothing journaled

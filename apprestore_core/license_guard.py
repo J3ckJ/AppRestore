@@ -66,6 +66,32 @@ bench на одном журнале не превысят лимит.
 
 В лимит идёт только ПОСЛЕДНИЙ статус цепочки amends (и только из ACQUIRED_STATUSES);
 voids исходной гасит всю цепочку. Подробно — комментарий у VOID_STATUS.
+
+LEGAL.md §1.14 — удалённое приложение с НЕИЗВЕСТНОЙ ценой (узкое исключение):
+
+    session = RegionAttemptSession()          # одна на сессию Apple ID; новая после «Выйти»
+    res = acquire_and_record(track_id, None,  # price=None: ни один lookup цену не дал
+                             region_unavailable=True,   # ТОЛЬКО если region_probe дал
+                                                        # DELISTED / NOT_IN_REGION
+                             region_session=session,
+                             purchase=do_purchase,      # патченый ipatool, price=0 фикс.
+                             preflight=client.license_preflight, ...)
+
+  * Исключение срабатывает только при price is None И region_unavailable is True
+    (строго bool True). Без флага неизвестная цена — отказ, как раньше.
+  * Если ЛЮБОЙ lookup (витрина аккаунта или эталонная) показал цену > 0 — передайте
+    эту цену: гард откажет как «платное» и с флагом тоже.
+  * Цена в запросе — фиксированный 0 у ipatool; гард цену не подставляет, в журнал
+    пишет ``price: null`` и ``price_source: "apple_fixed_0"``.
+  * Согласие/шлюз (preflight) и лимиты 5/сутки, 15/всего — до попытки, как обычно.
+  * Исход purchase() на этом пути:
+      "acquired"/True              -> запись "acquired" (+ price_source), считается;
+      "refused"/"failed"/False     -> явный отказ Apple (FailureType): НЕ пишем, НЕ
+                                      считаем, повтор в этой сессии запрещён;
+      всё остальное (None, "purchase_uncertain", неизвестная строка, исключение)
+                                   -> "purchase_uncertain" (+ price_source), считается.
+  * Одна попытка на track_id за сессию: RegionAttemptSession (только в памяти,
+    в журнал не пишется). Повтор -> allowed=False, code=REGION_ALREADY_ATTEMPTED.
 """
 
 from __future__ import annotations
@@ -73,6 +99,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import json
+import math
 import os
 import time
 import uuid
@@ -94,13 +121,24 @@ __all__ = ["Verdict", "AcquireResult", "check_can_acquire", "record_acquire",
            "read_counts", "acquire_and_record", "journal_lock",
            "default_journal_path", "record_void", "record_amend", "DEFAULT_DAILY_LIMIT",
            "DEFAULT_TOTAL_LIMIT", "ACQUIRED_STATUSES", "VOID_STATUS",
-           "next_daily_slot", "NEVER", "PREFLIGHT_BLOCKED"]
+           "next_daily_slot", "NEVER", "PREFLIGHT_BLOCKED",
+           "RegionAttemptSession", "PRICE_SOURCE_APPLE_FIXED_0", "APPLE_REFUSED",
+           "REGION_ALREADY_ATTEMPTED", "REGION_SESSION_REQUIRED"]
 
 DEFAULT_DAILY_LIMIT = 5
 #: AcquireResult.code, когда preflight (например, IpatoolClient.license_preflight)
 #: запретил покупку: purchase не вызывался, журнал не открывался.
 PREFLIGHT_BLOCKED = "preflight_blocked"
 DEFAULT_TOTAL_LIMIT = 15
+#: LEGAL.md §1.14: price_source записи, взятой при неизвестной цене удалённого
+#: приложения: ipatool шлёт фиксированный price=0, авторитет цены — сервер Apple.
+PRICE_SOURCE_APPLE_FIXED_0 = "apple_fixed_0"
+#: AcquireResult.code: Apple явно отказала на пути §1.14 (запись не делается).
+APPLE_REFUSED = "apple_refused"
+#: AcquireResult/Verdict.code: для этого track_id попытка §1.14 в этой сессии уже была.
+REGION_ALREADY_ATTEMPTED = "region_already_attempted"
+#: AcquireResult.code: acquire_and_record(region_unavailable=True) без region_session.
+REGION_SESSION_REQUIRED = "region_session_required"
 JOURNAL_ENV = "APPRESTORE_LICENSE_JOURNAL"
 # next_daily_slot(): «слот не освободится сам» (окно держат записи без даты).
 NEVER = dt.datetime.max.replace(tzinfo=dt.timezone.utc)
@@ -212,9 +250,42 @@ class Verdict:
     reason: str
     used_today: int
     used_total: int
+    #: REGION_ALREADY_ATTEMPTED и т.п.; None для обычных отказов/успеха.
+    code: str | None = None
+    #: True, если разрешение дано по исключению §1.14 (цена неизвестна + флаг).
+    region_exception: bool = False
 
     def __bool__(self) -> bool:
         return self.allowed
+
+
+class RegionAttemptSession:
+    """Учёт «одна попытка §1.14 на приложение за сессию» (только в памяти).
+
+    GUI создаёт ОДИН объект на сессию Apple ID и пересоздаёт (или зовёт reset())
+    при «Выйти»/смене аккаунта. В журнал ничего не пишется: это состояние
+    сессии, а не лицензии. Попытка отмечается непосредственно перед вызовом
+    purchase() — при любом исходе (взяли, отказ, неясно, исключение).
+    """
+
+    def __init__(self) -> None:
+        self._attempted: set[str] = set()
+
+    def attempted(self, track_id: Any) -> bool:
+        return _track_key(track_id) in self._attempted
+
+    def mark(self, track_id: Any) -> None:
+        self._attempted.add(_track_key(track_id))
+
+    def reset(self) -> None:
+        self._attempted.clear()
+
+    def __len__(self) -> int:
+        return len(self._attempted)
+
+
+def _track_key(track_id: Any) -> str:
+    return str(track_id).strip() if track_id is not None else ""
 
 
 @dataclass
@@ -420,38 +491,56 @@ def _next_daily_slot_unlocked(path: Path, daily_limit: int,
 def _coerce_price(price: Any) -> float | None:
     if price is None:
         return None
+    if isinstance(price, bool):  # True/False — не цена
+        return None
     try:
-        return float(price)
+        value = float(price)
     except (TypeError, ValueError):
         return None
+    if math.isnan(value) or math.isinf(value):
+        return None  # NaN/inf не подтверждают «бесплатно»
+    return value
 
 
 def _check_unlocked(track_id: Any, price: Any, path: Path, daily_limit: int,
-                    total_limit: int, now: Callable[[], dt.datetime]) -> Verdict:
+                    total_limit: int, now: Callable[[], dt.datetime], *,
+                    region_unavailable: bool = False,
+                    region_session: RegionAttemptSession | None = None) -> Verdict:
     used_today, used_total = _read_counts_unlocked(path, now)
-    track = str(track_id).strip() if track_id is not None else ""
+    track = _track_key(track_id)
     if not track or not track.isdigit():
         return Verdict(False, "нет числового App Store ID (track_id) для purchase",
                        used_today, used_total)
     value = _coerce_price(price)
+    region_exception = False
     if value is None:
-        return Verdict(False, "цена не подтверждена через lookup — лицензию не берём",
-                       used_today, used_total)
-    if value > 0:
+        # §1.14: ТОЛЬКО цена ровно None (ни один lookup её не дал) + явный флаг
+        # region_probe (строго True). Мусорная/NaN-цена исключение не открывает.
+        if price is None and region_unavailable is True:
+            region_exception = True
+        else:
+            return Verdict(False, "цена не подтверждена через lookup — лицензию не берём",
+                           used_today, used_total)
+    elif value > 0:
         return Verdict(False, f"приложение платное (price={value}) — лицензию не берём",
                        used_today, used_total)
+    if region_exception and region_session is not None and region_session.attempted(track):
+        return Verdict(False, "попытка для этого приложения в этой сессии уже была — "
+                              "повторно не пробуем", used_today, used_total,
+                       code=REGION_ALREADY_ATTEMPTED, region_exception=True)
     if used_total >= total_limit:
         return Verdict(False, f"лимит лицензий исчерпан: всего {used_total}/{total_limit}",
-                       used_today, used_total)
+                       used_today, used_total, region_exception=region_exception)
     if used_today >= daily_limit:
         return Verdict(False, f"лимит лицензий за сутки исчерпан: {used_today}/{daily_limit}",
-                       used_today, used_total)
-    return Verdict(True, "ok", used_today, used_total)
+                       used_today, used_total, region_exception=region_exception)
+    return Verdict(True, "ok", used_today, used_total, region_exception=region_exception)
 
 
 def _record_unlocked(track_id: Any, bundle_id: str | None, storefront: str | None,
                      path: Path, status: str, price: Any, mode: str | None,
-                     app_id: Any, now: Callable[[], dt.datetime]) -> dict[str, Any]:
+                     app_id: Any, now: Callable[[], dt.datetime],
+                     price_source: str | None = None) -> dict[str, Any]:
     track = str(track_id) if track_id is not None else ""
     alias = str(app_id) if app_id is not None else track
     entry = {
@@ -465,6 +554,8 @@ def _record_unlocked(track_id: Any, bundle_id: str | None, storefront: str | Non
         "price": _coerce_price(price),
         "mode": mode,
     }
+    if price_source:  # только §1.14; у обычных записей поля нет (формат прежний)
+        entry["price_source"] = str(price_source)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -513,8 +604,17 @@ def check_can_acquire(track_id: Any, price: Any, *,
                       journal_path: Path | str | None = None,
                       daily_limit: int = DEFAULT_DAILY_LIMIT,
                       total_limit: int = DEFAULT_TOTAL_LIMIT,
-                      now: Callable[[], dt.datetime] = _now_utc) -> Verdict:
+                      now: Callable[[], dt.datetime] = _now_utc,
+                      region_unavailable: bool = False,
+                      region_session: RegionAttemptSession | None = None) -> Verdict:
     """Можно ли взять лицензию прямо сейчас. Не меняет журнал. Под блокировкой.
+
+    ``region_unavailable=True`` — region_probe дал DELISTED/NOT_IN_REGION (§1.14):
+    тогда price=None не отказ, а разрешение с ``Verdict.region_exception=True``.
+    Известная цена > 0 — отказ «платное» и с флагом. ``region_session`` (если
+    передан) — отказ code=REGION_ALREADY_ATTEMPTED, если попытка уже была.
+    Для показа кнопки «Поставить» этого достаточно; саму попытку делайте
+    через acquire_and_record().
 
     Внимание о гонке: отдельный check + отдельный purchase + отдельный record НЕ
     атомарны между собой. Для атомарности используйте acquire_and_record().
@@ -522,7 +622,9 @@ def check_can_acquire(track_id: Any, price: Any, *,
 
     path = _resolve(journal_path)
     with journal_lock(path):
-        return _check_unlocked(track_id, price, path, daily_limit, total_limit, now)
+        return _check_unlocked(track_id, price, path, daily_limit, total_limit, now,
+                               region_unavailable=region_unavailable,
+                               region_session=region_session)
 
 
 def record_acquire(track_id: Any, bundle_id: str | None = None,
@@ -544,7 +646,10 @@ def record_acquire(track_id: Any, bundle_id: str | None = None,
       storefront — витрина/страна, если известна, иначе "";
       status     — "acquired" | "acquired_download_failed" | "purchase_uncertain";
       price      — цена из lookup (обычно 0.0) или null;
-      mode       — "gui" | "mock" | "real" | ... или null.
+      mode       — "gui" | "mock" | "real" | ... или null;
+      price_source — ТОЛЬКО у записей §1.14: "apple_fixed_0" (цена неизвестна,
+                   ipatool слал фиксированный 0, price=null). У обычных записей
+                   поля нет.
 
     Никаких Apple ID, паролей, токенов, UDID.
     """
@@ -684,6 +789,33 @@ def _status_from_purchase(outcome: Any) -> str | None:
     return None  # "failed", "refused" и прочее — лицензия не взята
 
 
+_REFUSAL_OUTCOMES = frozenset({"failed", "refused", "apple_refused", "rejected"})
+
+
+def _region_status_from_purchase(outcome: Any) -> str | None:
+    """Исход purchase() на пути §1.14: "acquired" | "purchase_uncertain" | None (отказ).
+
+    Явный отказ — ТОЛЬКО False или строки "refused"/"failed"/"apple_refused"/
+    "rejected" (колбэк возвращает их, когда ipatool_api.classify_failure() дал код,
+    т.е. Apple прислала непустой FailureType). Явный успех — True/"ok"/"success"/
+    "acquired". Всё остальное, включая None и незнакомые строки, — неясно:
+    "purchase_uncertain" (считается в лимит).
+    """
+
+    if outcome is True:
+        return "acquired"
+    if outcome is False:
+        return None
+    if outcome is None:
+        return "purchase_uncertain"
+    text = str(outcome).strip().lower()
+    if text in ("ok", "success", "acquired"):
+        return "acquired"
+    if text in _REFUSAL_OUTCOMES:
+        return None
+    return "purchase_uncertain"
+
+
 def acquire_and_record(track_id: Any, price: Any, *,
                        purchase: Callable[[], Any],
                        preflight: Callable[[], Any] | None = None,
@@ -694,7 +826,9 @@ def acquire_and_record(track_id: Any, price: Any, *,
                        storefront: str | None = None,
                        mode: str | None = None,
                        app_id: Any = None,
-                       now: Callable[[], dt.datetime] = _now_utc) -> AcquireResult:
+                       now: Callable[[], dt.datetime] = _now_utc,
+                       region_unavailable: bool = False,
+                       region_session: RegionAttemptSession | None = None) -> AcquireResult:
     """Атомарно: проверить лимит → purchase() → записать. Всё под одной блокировкой.
 
     `purchase` — колбэк, выполняющий реальный `ipatool purchase` (или mock).
@@ -708,7 +842,23 @@ def acquire_and_record(track_id: Any, price: Any, *,
     purchase не вызывается, журнал не трогается, лимит не тратится
     (used_today/used_total = -1: журнал не читали). Исключение из preflight
     пробрасывается, журнал тоже не тронут.
+
+    LEGAL.md §1.14 (``region_unavailable=True`` и ``price is None``):
+    ``region_session`` ОБЯЗАТЕЛЕН (иначе отказ code=REGION_SESSION_REQUIRED, до
+    preflight и журнала). Порядок прежний: preflight → блокировка → цена/лимиты →
+    отметка попытки в сессии → purchase(). Исход трактует
+    _region_status_from_purchase(): взяли → "acquired", неясно → "purchase_uncertain"
+    (обе с price_source="apple_fixed_0", считаются); явный отказ → без записи,
+    allowed=True, recorded=False, code=APPLE_REFUSED. Исключение из purchase() →
+    запись "purchase_uncertain", затем исключение пробрасывается.
+    Если цена известна (0), флаг ничего не меняет: обычный путь без price_source.
     """
+
+    region_path = price is None and region_unavailable is True
+    if region_path and region_session is None:
+        return AcquireResult(False, False, None,
+                             "для удалённого приложения нужна сессия попыток (region_session)",
+                             -1, -1, None, code=REGION_SESSION_REQUIRED)
 
     if preflight is not None:
         gate = preflight()
@@ -718,10 +868,17 @@ def acquire_and_record(track_id: Any, price: Any, *,
 
     path = _resolve(journal_path)
     with journal_lock(path):
-        verdict = _check_unlocked(track_id, price, path, daily_limit, total_limit, now)
+        verdict = _check_unlocked(track_id, price, path, daily_limit, total_limit, now,
+                                  region_unavailable=region_unavailable,
+                                  region_session=region_session)
         if not verdict.allowed:
             return AcquireResult(False, False, None, verdict.reason,
-                                 verdict.used_today, verdict.used_total, None)
+                                 verdict.used_today, verdict.used_total, None,
+                                 code=verdict.code)
+        if verdict.region_exception:
+            return _region_attempt_unlocked(track_id, price, path, verdict, purchase,
+                                            region_session, bundle_id, storefront,
+                                            mode, app_id, now)
         outcome = purchase()
         status = _status_from_purchase(outcome)
         if status is None:
@@ -732,3 +889,30 @@ def acquire_and_record(track_id: Any, price: Any, *,
                                  price, mode, app_id, now)
         used_today, used_total = _read_counts_unlocked(path, now)
         return AcquireResult(True, True, status, "ok", used_today, used_total, entry)
+
+
+def _region_attempt_unlocked(track_id: Any, price: Any, path: Path, verdict: Verdict,
+                             purchase: Callable[[], Any],
+                             region_session: RegionAttemptSession | None,
+                             bundle_id: str | None, storefront: str | None,
+                             mode: str | None, app_id: Any,
+                             now: Callable[[], dt.datetime]) -> AcquireResult:
+    """Попытка §1.14 (вызывается под journal_lock после всех проверок)."""
+
+    assert region_session is not None  # проверено в acquire_and_record
+    region_session.mark(track_id)        # одна попытка за сессию при любом исходе
+    try:
+        outcome = purchase()
+    except BaseException:
+        _record_unlocked(track_id, bundle_id, storefront, path, "purchase_uncertain",
+                         price, mode, app_id, now, PRICE_SOURCE_APPLE_FIXED_0)
+        raise
+    status = _region_status_from_purchase(outcome)
+    if status is None:
+        return AcquireResult(True, False, None, "Apple не выдала лицензию",
+                             verdict.used_today, verdict.used_total, None,
+                             code=APPLE_REFUSED)
+    entry = _record_unlocked(track_id, bundle_id, storefront, path, status,
+                             price, mode, app_id, now, PRICE_SOURCE_APPLE_FIXED_0)
+    used_today, used_total = _read_counts_unlocked(path, now)
+    return AcquireResult(True, True, status, "ok", used_today, used_total, entry)

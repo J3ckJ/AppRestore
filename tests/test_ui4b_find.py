@@ -450,11 +450,10 @@ def _find_with(statuses, offers=None):
 
 
 @pytest.fixture
-def attempt_on(monkeypatch):
+def attempt_on():
     from apprestore_core import delisted_attempt
 
     delisted_attempt.forget_all()
-    monkeypatch.setattr(delisted_attempt, "enabled", lambda: True)
     yield
     delisted_attempt.forget_all()
 
@@ -504,13 +503,15 @@ def test_find_install_goes_consent_with_k_then_flag_reaches_gate_registry(qapp, 
     delisted_attempt.forget_all()
 
 
-def test_feature_off_find_keeps_unknown_price_note(qapp) -> None:
+def test_signout_in_4b_resets_attempts_so_find_offers_again(qapp, attempt_on) -> None:
     from apprestore_core import delisted_attempt
 
-    if delisted_attempt.guard_supports():
-        pytest.skip("Макс's guard vendored")
-    c, src, by = _find_with({"11": RegionStatus.DELISTED, "12": RegionStatus.NOT_IN_REGION})
-    assert all(r["action"] == "" and r["actionNote"] == F.UNKNOWN_PRICE for r in by.values())
+    c, src, by = _find_with({"11": RegionStatus.DELISTED})
+    delisted_attempt.mark_attempted(["11"])
+    c.finder.search("банк")
+    assert {r["storeId"]: r for r in rows(c)}["11"]["action"] == ""
+    c.confirmSignOut()
+    assert not delisted_attempt.attempted("11")
 
 
 def test_offline_find_builtin_only_install_disabled_no_archive_no_footnote(qapp) -> None:
