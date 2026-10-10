@@ -188,7 +188,7 @@ Sheet {
             anchors.verticalCenter: parent.verticalCenter
             x: 14
             token: "sheetSub"
-            color: Theme.ink3
+            color: Theme.ink3Text
             text: f.placeholder
         }
     }

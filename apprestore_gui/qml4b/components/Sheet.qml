@@ -50,7 +50,7 @@ Item {
                 anchors.leftMargin: 14
                 anchors.baseline: titleText.baseline
                 token: "sheetSub"
-                color: Theme.ink3
+                color: Theme.ink3Text
                 text: root.subtitle
             }
             T {

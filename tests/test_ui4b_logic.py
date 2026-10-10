@@ -1052,3 +1052,40 @@ def test_quick_ui_runs_on_real_sources_fakes_only_behind_flags() -> None:
         assert call in ss, call
     base = inspect.getsource(qt_bridge.SourceBase)
     assert "read_counts(journal_path())" in base and "next_slot(path)" in base
+
+
+def test_shortfall_rounds_up_to_a_tenth_of_a_gb() -> None:
+    from apprestore_gui.ui4b.catalog import RestoreItem
+    from apprestore_gui.ui4b.space import DeviceSpace
+
+    from apprestore_gui.ui4b.formatting import format_size
+
+    gb = 1_000_000_000
+    assert format_size(int(3.21 * gb), ceil=True) == "3,3 ГБ"
+    assert format_size(int(3.2 * gb), ceil=True) == "3,2 ГБ"
+    assert format_size(3_000_000_001, ceil=True) == "3,1 ГБ"
+    assert format_size(350_400_000, ceil=True) == "351 МБ"
+    plan = space.plan_space([RestoreItem(key="a", name="A", group="removed", action="store", size_bytes=int(5.21 * gb))],
+                            DeviceSpace(total_bytes=64 * gb, free_bytes=2 * gb))
+    assert "не хватает 3,3 ГБ" in plan.warning()[0]
+
+
+def test_search_hint_has_the_vk_number_example() -> None:
+    from apprestore_gui.ui4b.search import SEARCH_HINT, parse_query
+
+    assert "ВКонтакте" in SEARCH_HINT and "564177498" in SEARCH_HINT
+    assert "архив" not in SEARCH_HINT
+    assert parse_query("564177498")[1] == "564177498"
+
+
+def test_onboarding_step1_illustration_and_step4_gradual() -> None:
+    from apprestore_gui.ui4b.onboarding import illustration_tiles, scanning_count, scanning_tiles
+
+    tiles = illustration_tiles()
+    assert len(tiles) == 16 and {t["kind"] for t in tiles} == {"slot"} and not any(t["storeId"] for t in tiles)
+    phone = [{"kind": "app", "storeId": str(i)} for i in range(10)]
+    half = scanning_tiles(phone, 0.3)
+    assert [t["pending"] for t in half] == [False] * 3 + [True] * 7
+    assert all(not t["pending"] for t in scanning_tiles(phone, 1.0))
+    assert scanning_count(40, 0.25, False) == 10 and scanning_count(40, 0.25, True) == 40
+    assert scanning_count(40, 0.0, False) == 0

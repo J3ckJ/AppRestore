@@ -36,7 +36,7 @@ Item {
                 anchors.leftMargin: 14
                 anchors.baseline: title.baseline
                 token: "sheetSub"
-                color: Theme.ink3
+                color: Theme.ink3Text
                 text: ui.pickerSubtitle
             }
             T {
@@ -94,7 +94,7 @@ Item {
                             x: 14
                             y: railTitle.y + railTitle.height + 2
                             token: "railSmall"
-                            color: Theme.ink3
+                            color: Theme.ink2
                             text: modelData.sub
                         }
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: ui.setRail(modelData.key) }
@@ -155,7 +155,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !sbox.typed
                     token: "search"
-                    color: Theme.ink3
+                    color: Theme.ink3Text
                     text: "Название, разработчик или номер из App Store"
                 }
                 T {
@@ -165,7 +165,7 @@ Item {
                     anchors.rightMargin: 14
                     anchors.verticalCenter: parent.verticalCenter
                     token: "rowNote"
-                    color: Theme.ink3
+                    color: Theme.ink3Text
                     text: "Esc — очистить"
                 }
             }
@@ -278,7 +278,7 @@ Item {
                     color: "transparent"
                     border.width: 1
                     border.color: Theme.ink
-                    T { id: storeLabel; anchors.centerIn: parent; token: "link"; font.weight: 600; text: "Искать «" + ui.query + "»" }
+                    T { id: storeLabel; anchors.centerIn: parent; token: "link"; font.weight: 600; text: "Искать «" + ui.query + "» в App Store и в покупках" }
                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: ui.searchStore(ui.query) }
                 }
                 // App Store / purchases results: «Поставить» goes the usual way (space, consent, gate)
@@ -327,7 +327,7 @@ Item {
                 anchors.leftMargin: 8
                 anchors.baseline: sTitle.baseline
                 token: "groupCount"
-                color: Theme.ink3
+                color: Theme.ink3Text
                 text: sticky.hdr ? sticky.hdr.countText : ""
             }
             T {
@@ -363,7 +363,7 @@ Item {
                     anchors.leftMargin: 8
                     anchors.baseline: gTitle.baseline
                     token: "groupCount"
-                    color: Theme.ink3
+                    color: Theme.ink3Text
                     text: row.countText
                 }
                 T {
@@ -419,7 +419,7 @@ Item {
                     width: Math.max(0, noteRow.x - 12 - x)
                     elide: Text.ElideRight
                     token: "rowDev"
-                    color: Theme.ink3
+                    color: Theme.ink3Text
                     text: row.developer
                 }
                 Row {
@@ -428,7 +428,7 @@ Item {
                     anchors.rightMargin: 12
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 10
-                    T { token: "rowNote"; color: Theme.ink3; text: row.note }
+                    T { token: "rowNote"; color: Theme.ink3Text; text: row.note }
                     T {
                         visible: row.hasIpaHint
                         token: "rowNote"; font.weight: 550; color: Theme.ink2
@@ -502,7 +502,7 @@ Item {
                     font.pixelSize: Math.round(Theme.style("warn").size)
                     lineHeightMode: Text.FixedHeight
                     lineHeight: 13.5 * 1.4
-                    color: ui.footer.warnBold !== "" ? Theme.ink : Theme.ink3
+                    color: ui.footer.warnBold !== "" ? Theme.ink : Theme.ink3Text
                     text: (ui.footer.warnBold ? "<b>" + ui.footer.warnBold + "</b> " : "") + ui.footer.warnText
                 }
             }

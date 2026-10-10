@@ -40,7 +40,8 @@ Item {
         bundleId: root.tile.bundleId || ""
         visible: root.kind !== "slot"
         // opacity у иконки, не у плитки: подпись не гаснет (спека §6)
-        iconOpacity: root.busy ? 0.55
+        iconOpacity: root.tile.pending ? 0.6
+                   : root.busy ? 0.55
                    : root.kind === "waiting" ? 0.35
                    : root.kind === "unavailable" ? 0.3
                    : root.kind === "offloaded" ? 0.6 : 1.0
@@ -49,7 +50,7 @@ Item {
     // пустое место: пунктир (у Rectangle.border пунктира нет)
     Shape {
         width: root.icon; height: root.icon
-        visible: root.kind === "slot"
+        visible: root.kind === "slot" && !root.tile.pending
         preferredRendererType: Shape.CurveRenderer
         ShapePath {
             strokeColor: Theme.slotDash

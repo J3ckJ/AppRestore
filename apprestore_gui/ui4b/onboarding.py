@@ -41,3 +41,30 @@ class Onboarding:
             state = "ok" if index < current else ("on" if index == current else "todo")
             out.append({"n": index, "title": title, "state": state})
         return out
+
+
+#: Step 1 illustration: a home screen with empty places (static, not data).
+ILLUSTRATION_TILES = 16
+
+
+def illustration_tiles(count: int = ILLUSTRATION_TILES) -> list[dict[str, object]]:
+    return [
+        {"name": "", "app": "", "storeId": "", "bundleId": "", "kind": "slot", "progress": -1}
+        for _ in range(count)
+    ]
+
+
+def scanning_tiles(tiles: list[dict[str, object]], fraction: float) -> list[dict[str, object]]:
+    """Step 4 (03-onboarding §1/§5): tiles show up as the check goes; the ones not
+    checked yet are ``pending`` (icon at opacity .6, empty places not drawn yet)."""
+
+    shown = round(max(0.0, min(1.0, fraction)) * len(tiles))
+    return [dict(tile, pending=index >= shown) for index, tile in enumerate(tiles)]
+
+
+def scanning_count(count: int, fraction: float, done: bool) -> int:
+    """Counters grow with the check instead of jumping to the final number."""
+
+    if done:
+        return count
+    return min(count, int(max(0.0, min(1.0, fraction)) * count))

@@ -8,7 +8,10 @@ from collections.abc import Callable, Iterable, Mapping
 
 from .selection import parse_query
 
-SEARCH_HINT = "Поищем в App Store, по названию или номеру, и в покупках вашего Apple ID."
+SEARCH_HINT = (
+    "Поищем в App Store — по названию или номеру — и в покупках вашего Apple ID. "
+    "Например, ВКонтакте по названию находится плохо, а по номеру 564177498 находится сразу."
+)
 
 
 def search_store(

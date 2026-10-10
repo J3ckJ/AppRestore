@@ -26,7 +26,7 @@ Row {
                     width: 24; height: 24; radius: 12
                     color: modelData.state === "on" ? Theme.ink : (modelData.state === "ok" ? Theme.stepOkBg : "transparent")
                     border.width: modelData.state === "todo" ? 1.5 : 0
-                    border.color: Theme.stepTodoBorder
+                    border.color: Theme.ink3
                     T {
                         anchors.centerIn: parent
                         visible: modelData.state !== "ok"
@@ -39,7 +39,7 @@ Row {
                 T {
                     anchors.verticalCenter: parent.verticalCenter
                     token: "stepper"
-                    color: modelData.state === "on" ? Theme.ink : (modelData.state === "ok" ? Theme.ink2 : Theme.ink3)
+                    color: modelData.state === "on" ? Theme.ink : Theme.ink2
                     text: modelData.title
                 }
             }

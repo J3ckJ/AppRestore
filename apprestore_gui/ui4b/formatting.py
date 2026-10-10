@@ -48,10 +48,11 @@ def _decimal(value: float) -> str:
     return f"{value:.1f}".replace(".", ",")
 
 
-def format_size(size: int | None, *, floor: bool = False) -> str:
+def format_size(size: int | None, *, floor: bool = False, ceil: bool = False) -> str:
     """Decimal units, the way iOS Settings shows storage: «351 МБ», «2,0 ГБ».
 
-    ``floor`` rounds down (used for free space, so we never promise more).
+    ``floor`` rounds down (used for free space, so we never promise more);
+    ``ceil`` rounds up to the shown step, 1 МБ / 0,1 ГБ (a shortfall: never less).
     Unknown or non-positive size is «—».
     """
 
@@ -59,14 +60,16 @@ def format_size(size: int | None, *, floor: bool = False) -> str:
         return "—"
     if size < _GB:
         mb = size / _MB
-        value = math.floor(mb) if floor else round(mb)
+        value = math.floor(mb) if floor else math.ceil(mb - 1e-9) if ceil else round(mb)
         return f"{max(1, int(value))} МБ"
     gb = size / _GB
     if gb >= 100:
         # Capacities: «128 ГБ», not «128,0 ГБ».
-        return f"{math.floor(gb) if floor else round(gb)} ГБ"
+        return f"{math.floor(gb) if floor else math.ceil(gb - 1e-9) if ceil else round(gb)} ГБ"
     if floor:
         gb = math.floor(gb * 10 + 1e-9) / 10
+    elif ceil:
+        gb = math.ceil(gb * 10 - 1e-9) / 10
     return f"{_decimal(gb)} ГБ"
 
 

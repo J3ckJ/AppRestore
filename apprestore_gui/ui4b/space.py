@@ -162,7 +162,7 @@ class SpacePlan:
 
         if self.verdict == SPACE_OVER:
             return (
-                f"Не поместится: не хватает {format_size(self.shortfall_bytes)}.",
+                f"Не поместится: не хватает {format_size(self.shortfall_bytes, ceil=True)}.",
                 f"Снимите часть отметок или освободите место на {noun}: "
                 f"Настройки → Основные → Хранилище {noun}.",
             )

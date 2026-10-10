@@ -11,6 +11,7 @@ The probe is ``ipatool --help``: no secret is involved, and the child gets
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -66,3 +67,47 @@ def reset_cache() -> None:
 
     with _LOCK:
         _HELP.clear()
+        _MARKS.clear()
+
+
+#: AppRestore's ipatool patches the license path depends on, and a string that
+#: exists in the binary only with that patch (build-ipatool.sh checks the same).
+PATCH_MARKERS: dict[str, bytes] = {
+    "0001": b"appstore.CountryCodeFromStoreFront",  # auth info: account country
+    "0003": b"keychain-passphrase-stdin",  # keychain passphrase via stdin
+}
+_MARKS: dict[tuple[str, int, int], tuple[str, ...]] = {}
+
+
+def missing_patches(binary: str | None) -> tuple[str, ...]:
+    """Patches (``"0001"``, ``"0003"``) whose marker is not in ``binary``.
+
+    No binary at all = all of them. Cached per (path, size, mtime); reads the
+    file in chunks, starts nothing.
+    """
+
+    if not binary:
+        return tuple(PATCH_MARKERS)
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return tuple(PATCH_MARKERS)
+    key = (str(binary), st.st_size, int(st.st_mtime))
+    with _LOCK:
+        if key in _MARKS:
+            return _MARKS[key]
+    found: set[str] = set()
+    tail = b""
+    keep = max(len(m) for m in PATCH_MARKERS.values())
+    try:
+        with open(binary, "rb") as fh:
+            while chunk := fh.read(1 << 20):
+                block = tail + chunk
+                found.update(name for name, mark in PATCH_MARKERS.items() if mark in block)
+                tail = block[-keep:]
+    except OSError:
+        found = set()
+    result = tuple(name for name in PATCH_MARKERS if name not in found)
+    with _LOCK:
+        _MARKS[key] = result
+    return result

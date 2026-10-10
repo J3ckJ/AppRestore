@@ -97,7 +97,8 @@ Window {
         accessibleText: win.home.phoneA11y || ""
         alert: win.onboarding && ui.onboardingStep === 2 ? "trust"
                : win.onboarding && ui.onboardingStep === 3 ? "code" : ""
-        off: !win.home.pillOn && alert === ""
+        // step 1: an illustration (home screen with empty places), not a dark screen
+        off: !win.home.pillOn && alert === "" && !(win.onboarding && ui.onboardingStep === 1)
         pageDots: win.home.pages || 0
     }
 

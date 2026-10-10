@@ -91,6 +91,11 @@ STORE_MISMATCH_TEXT = f"{STORE_MISMATCH_SHORT} Выйдите из аккаун�
 STORE_MISMATCH_CLI_HINT = (
     "Подсказка: apprestore auth --revoke, затем apprestore auth --email <ваш Apple ID>"
 )
+#: The gate's preflight refusal on an ipatool without AppRestore's patches.
+NEEDS_PATCHED_IPATOOL_TEXT = (
+    "Нужен дополнительный компонент: сборка ipatool с патчами AppRestore "
+    "(страна аккаунта и пароль связки ключей). Как установить — docs/RUN-FROM-SOURCE.md."
+)
 #: Start of refusal_text() for the limit: front ends match it to list the app
 #: under «не хватило лимита».
 LIMIT_REFUSAL_TEXT = "Лимит бесплатных лицензий исчерпан"
@@ -215,6 +220,17 @@ def run_with_free_license(
         missing = exc
 
     store_id = str(store_id or "").strip()
+    # Preflight before anything else: an ipatool without patches 0001/0003 has
+    # no reliable account country and no safe passphrase path — refuse here,
+    # before the lookup, the journal lock, purchase and any journal line.
+    preflight = getattr(tools, "ipatool_missing_patches", None)
+    if callable(preflight):
+        try:
+            lacking = tuple(preflight() or ())
+        except Exception:  # noqa: BLE001 - cannot tell = not safe
+            lacking = ("?",)
+        if lacking:
+            raise LicenseDenied(NEEDS_PATCHED_IPATOOL_TEXT) from missing
     country = ""
     try:
         country = str(tools.account_country() or "").strip().lower()

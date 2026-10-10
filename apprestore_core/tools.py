@@ -1262,6 +1262,14 @@ class AppRestoreTools:
             raise ToolUnavailable(detail or "ipatool purchase failed")
         return payload
 
+    def ipatool_missing_patches(self) -> tuple[str, ...]:
+        """AppRestore patches the license path needs that this ipatool lacks
+        (``ipatool_caps.missing_patches``: 0001 country, 0003 passphrase stdin)."""
+
+        from .ipatool_caps import missing_patches
+
+        return missing_patches(resolve_tool("ipatool"))
+
     def account_country(self) -> str:
         """Country of the signed-in Apple ID from ``auth info``; ``""`` = unknown.
 

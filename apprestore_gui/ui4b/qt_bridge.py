@@ -46,6 +46,7 @@ from apprestore_gui.ui4b.onboarding import Onboarding
 from apprestore_core.license_gate import is_store_mismatch
 from apprestore_core.license_guard import DEFAULT_TOTAL_LIMIT
 from apprestore_gui.ui4b.queue import LIMIT_ERROR
+from apprestore_gui.ui4b.onboarding import illustration_tiles, scanning_count, scanning_tiles
 from apprestore_gui.ui4b.scan import ScanCounter
 from apprestore_gui.ui4b.search import SEARCH_HINT, search_store
 from apprestore_gui.ui4b.selection import CHECK_ON, OFFLINE_FOOTER, Selection
@@ -517,7 +518,12 @@ class Restore4b(QObject):
 
     @Property("QVariantMap", notify=changed)
     def home(self) -> dict[str, object]:
-        return dict(self._home)
+        view = dict(self._home)
+        if self._step == 1:
+            view["tiles"] = illustration_tiles()
+        elif self._step == 4 and not self.scan.done:
+            view["tiles"] = scanning_tiles(list(view.get("tiles") or []), self.scan.fraction)
+        return view
 
     @Property(str, notify=changed)
     def screen(self) -> str:
@@ -548,9 +554,10 @@ class Restore4b(QObject):
         items = self.selection.items
         offloaded = sum(1 for item in items if item.group == "offloaded")
         removed = sum(1 for item in items if item.group == "removed")
+        frac, done = self.scan.fraction, self.scan.done
         return [
-            {"count": offloaded, "label": "сгруженных"},
-            {"count": removed, "label": "удалённых из App Store"},
+            {"count": scanning_count(offloaded, frac, done), "label": "сгруженных"},
+            {"count": scanning_count(removed, frac, done), "label": "удалённых из App Store"},
         ]
 
     @Property(int, notify=changed)
