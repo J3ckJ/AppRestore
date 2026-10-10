@@ -343,10 +343,17 @@ def test_flow_goes_through_gated_store_install_then_offloaded_batch() -> None:
 def test_queue_rows_and_stop() -> None:
     queue = RestoreQueue()
     queue.start([item("a", GROUP_REMOVED, 351, name="Сбер"), item("b", GROUP_REMOVED, 302, name="Т-Банк")])
-    queue.progress(64, "Ставим на iPhone")
+    queue.progress(40, "Скачиваем")
     rows = queue.rows()
-    assert rows[0]["state"] == CURRENT and rows[0]["detail"] == "Ставится на iPhone · 64 %"
-    assert rows[0]["stage"] == 1
+    assert rows[0]["detail"] == "Скачиваем 40 %"
+    assert rows[0]["stages"] == ["Скачивание 40 %", "Установка", "Готово"]
+    assert rows[0]["percent"] == 40
+    queue.progress(100, "Ставим на iPhone")
+    rows = queue.rows()
+    # спека: у установки нет числа
+    assert rows[0]["state"] == CURRENT and rows[0]["detail"] == "Ставится на iPhone"
+    assert rows[0]["stage"] == 1 and rows[0]["percent"] == -1
+    assert rows[0]["stages"] == ["Скачано", "Установка", "Готово"]
     assert rows[1]["state"] == WAIT and rows[1]["right"] == "В очереди"
     queue.stop()
     assert not queue.active and queue.finished
@@ -376,7 +383,9 @@ def test_home_missing_state_texts_and_tiles() -> None:
     assert view["number"] == 4 and view["word"] == "приложения" and view["word2"] == "не хватает"
     assert view["cta"] == "Вернуть все 4"
     assert view["lead"].startswith("<b>Сбер, Т-Банк, ВТБ и Альфа</b> пропали с телефона")
-    assert view["hint"] == "Около 5 минут. Телефон не отключайте."
+    # ВТБ size unknown → no minutes promise, honest note
+    assert view["hint"] == "Телефон не отключайте. Размер части приложений узнаем при скачивании."
+    assert view["a11y"] == "Не хватает 4 приложений"
     kinds = [t["kind"] for t in view["tiles"]]
     assert len(kinds) == 16 and kinds[8:12] == ["slot"] * 4
 
@@ -412,7 +421,7 @@ def test_home_states() -> None:
         queue.settle(key, True)
     done = home.home_view(home.HomeInput(connected=True, signed_in=True, items=removed4(), queue=queue))
     assert done["state"] == home.STATE_DONE and done["title"] == "Всё\nна месте"
-    assert all(t["kind"] == "done" for t in done["tiles"] if t["name"] in ("Сбер", "Альфа"))
+    assert all(t["kind"] == "new" for t in done["tiles"] if t["name"] in ("Сбер", "Альфа"))
 
 
 # -- onboarding --------------------------------------------------------------------
@@ -545,3 +554,107 @@ def test_restore_settled_with_session_error_drops_offloaded_batch() -> None:
     flow.begin(items, DeviceSpace(total_bytes=10**11, free_bytes=5 * 10**10))
     flow.on_restore_settled(f"{items[0].name}: Сессия Apple ID истекла. Войдите заново.")
     assert flow.needs_signin and flow.queue.entries == []
+
+
+# -- спека Ники, часть 1 -------------------------------------------------------------
+
+import math as _math
+import re as _re
+from pathlib import Path as _Path
+
+_QML = _Path(__file__).resolve().parents[1] / "apprestore_gui" / "qml4b"
+
+
+def _sized(n: int, size_mb: int = 100) -> list[RestoreItem]:
+    return [item(str(i), GROUP_REMOVED, size_mb, short_name=f"App{i}") for i in range(n)]
+
+
+def test_restore_all_max_matches_theme() -> None:
+    text = (_QML / "theme" / "Theme.qml").read_text(encoding="utf-8")
+    value = int(_re.search(r"restoreAllMax:\s*(\d+)", text).group(1))
+    assert value == home.RESTORE_ALL_MAX == 12
+
+
+def test_return_all_up_to_12_if_it_fits() -> None:
+    roomy = space.DeviceSpace(128 * GB, 50 * GB)
+    v12 = home.home_view(home.HomeInput(connected=True, signed_in=True, items=_sized(12), space=roomy))
+    assert v12["state"] == home.STATE_MISSING and v12["cta"] == "Вернуть все 12"
+    v13 = home.home_view(home.HomeInput(connected=True, signed_in=True, items=_sized(13), space=roomy))
+    assert v13["state"] == home.STATE_MANY and v13["cta"] == "Выбрать и вернуть"
+    assert v13["hint"] == "Сначала покажем список, отметите нужные."
+    tight = space.DeviceSpace(128 * GB, 500 * 1000 * 1000)
+    over = home.home_view(home.HomeInput(connected=True, signed_in=True, items=_sized(6), space=tight))
+    assert over["cta"] == "Выбрать и вернуть"
+    unknown = [item(str(i), GROUP_REMOVED, None, short_name=f"A{i}") for i in range(3)]
+    v = home.home_view(home.HomeInput(connected=True, signed_in=True, items=unknown, space=tight))
+    assert v["cta"] == "Вернуть все 3" and "узнаем при скачивании" in v["hint"]
+
+
+def test_lead_one_and_many_names() -> None:
+    roomy = space.DeviceSpace(128 * GB, 50 * GB)
+    one = home.home_view(home.HomeInput(connected=True, signed_in=True, items=_sized(1), space=roomy))
+    assert one["lead"] == "<b>App0</b> пропало с телефона, его больше нет в App Store. Его можно вернуть."
+    six = home.home_view(home.HomeInput(connected=True, signed_in=True, items=_sized(6), space=roomy))
+    assert six["lead"].startswith("<b>App0, App1, App2 и ещё 3</b> пропали с телефона")
+
+
+def test_caption_goes_through_one_function(monkeypatch) -> None:
+    from apprestore_gui.ui4b import formatting
+
+    assert formatting.missing_caption(1) == ("приложение", "не хватает")
+    assert formatting.missing_caption(21) == ("приложение", "не хватает")
+    assert formatting.missing_caption(5) == ("приложений", "не хватает")
+    monkeypatch.setattr(home, "missing_caption", lambda n, noun="iPhone": ("приложение", f"пропало с {noun}"))
+    v = home.home_view(home.HomeInput(connected=True, signed_in=True, items=_sized(1), space=space.DeviceSpace(128 * GB, 50 * GB)))
+    assert v["word2"] == "пропало с iPhone"
+
+
+def test_short_names() -> None:
+    from apprestore_gui.ui4b.catalog import short_name_of
+
+    assert short_name_of("Сбер: банк и кошелёк") == "Сбер"
+    assert short_name_of("Альфа — банк") == "Альфа"
+    assert short_name_of("Т-Банк - деньги") == "Т-Банк"
+    assert short_name_of("Т-Банк") == "Т-Банк"
+
+
+def test_phone_tiles_follow_queue_kinds() -> None:
+    items = removed4()
+    queue = RestoreQueue()
+    queue.start(items)
+    queue.settle("1", True)
+    queue.progress(64, "Скачиваем")
+    v = home.home_view(home.HomeInput(connected=True, signed_in=True, items=items, queue=queue,
+                                      phone_apps=[home.PhoneApp(f"a{i}") for i in range(12)]))
+    by = {t["app"]: t for t in v["tiles"]}
+    assert by["Сбер"]["kind"] == "new"
+    assert by["Т-Банк"]["kind"] == "downloading" and by["Т-Банк"]["progress"] == 0.64
+    assert by["ВТБ"]["kind"] == "waiting" and by["ВТБ"]["name"] == "Ожидание"
+    queue.progress(100, "Ставим на iPhone")
+    v = home.home_view(home.HomeInput(connected=True, signed_in=True, items=items, queue=queue))
+    by = {t["app"]: t for t in v["tiles"]}
+    assert by["Т-Банк"]["kind"] == "installing" and by["Т-Банк"]["progress"] == -1
+    queue.settle("2", False, "ошибка")
+    v = home.home_view(home.HomeInput(connected=True, signed_in=True, items=items, queue=queue))
+    by = {t["app"]: t for t in v["tiles"]}
+    assert by["Т-Банк"]["kind"] == "slot"
+
+
+def test_tiles_have_no_letters_or_colours() -> None:
+    items = removed4() + [item(f"o{i}", GROUP_OFFLOADED, 10) for i in range(20)]
+    v = home.home_view(home.HomeInput(connected=True, signed_in=True, items=items,
+                                      space=space.DeviceSpace(128 * GB, 50 * GB)))
+    for tile in v["tiles"]:
+        assert "mark" not in tile and "color" not in tile and "ink" not in tile
+    assert v["pages"] == _math.ceil(24 / 24) == 1
+    assert home.phone_pages(519) == 11 and home.phone_pages(30) == 2
+
+
+def test_qml4b_uses_no_letter_placeholders() -> None:
+    for path in _QML.rglob("*.qml"):
+        text = path.read_text(encoding="utf-8")
+        assert "placeholder_pixmap" not in text and "modelData.mark" not in text, path
+        assert "5E5CE6" not in text.upper(), path
+    theme = (_QML / "theme" / "Theme.qml").read_text(encoding="utf-8")
+    assert _re.search(r"iconPlaceholder:\s*track", theme)
+    assert '"#D3D1CA"' in theme

@@ -113,21 +113,29 @@ class RestoreQueue:
         self.stopped = True
 
     def rows(self, noun: str = "iPhone") -> list[dict[str, object]]:
+        """Rows of the installing queue (спека §3).
+
+        Current app, three stages: «Скачивание N %» (percent from ipatool) →
+        «Установка» (no number: indeterminate bar, ring on the phone) →
+        «Готово» only by ``installSettled(ok)``.
+        """
+
         rows: list[dict[str, object]] = []
         for entry in self.entries:
             item = entry.item
             size = format_size(item.size_bytes) if item.size_bytes else ""
+            stages = ["Скачано", "Установка", "Готово"]
             if entry.state == DONE:
                 detail, right = size, f"На {noun}"
             elif entry.state == FAILED:
                 detail, right = entry.error or "Не получилось", "Ошибка"
             elif entry.state == CURRENT:
                 if entry.stage == STAGE_INSTALL:
-                    pct = f" · {entry.percent} %" if entry.percent >= 0 else ""
-                    detail = f"Ставится на {noun}{pct}"
+                    detail = f"Ставится на {noun}"
                 else:
-                    pct = f" · {entry.percent} %" if entry.percent >= 0 else ""
-                    detail = (entry.status or "Скачивается") + pct
+                    pct = f" {entry.percent} %" if entry.percent >= 0 else ""
+                    detail = f"Скачиваем{pct}"
+                    stages[0] = f"Скачивание{pct}"
                 right = ""
             else:
                 detail, right = size, "Остановлено" if self.stopped else "В очереди"
@@ -139,7 +147,9 @@ class RestoreQueue:
                     "bundleId": item.bundle_id,
                     "state": entry.state,
                     "stage": entry.stage,
-                    "percent": entry.percent,
+                    # download only; the install stage has no number
+                    "percent": entry.percent if entry.stage == STAGE_DOWNLOAD else -1,
+                    "stages": stages,
                     "detail": detail,
                     "right": right,
                 }

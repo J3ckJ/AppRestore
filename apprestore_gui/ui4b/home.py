@@ -6,6 +6,7 @@ returns.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -16,8 +17,14 @@ from apprestore_gui.ui4b.catalog import (
     GROUP_REMOVED,
     RestoreItem,
 )
-from apprestore_gui.ui4b.formatting import apps_word, format_size, join_names, plural
-from apprestore_gui.ui4b.queue import CURRENT, DONE, FAILED, RestoreQueue
+from apprestore_gui.ui4b.formatting import (
+    format_size,
+    join_names,
+    missing_a11y,
+    missing_caption,
+    plural,
+)
+from apprestore_gui.ui4b.queue import CURRENT, DONE, FAILED, STAGE_INSTALL, WAIT, RestoreQueue
 from apprestore_gui.ui4b.space import SPACE_OVER, DeviceSpace, plan_space
 
 STATE_DISCONNECTED = "disconnected"
@@ -30,9 +37,14 @@ STATE_INSTALLING = "installing"
 STATE_DONE = "done"
 STATE_EMPTY = "empty"
 
-#: Up to this many apps the home screen offers «Вернуть все N» directly.
-DIRECT_LIMIT = 8
+#: Up to this many apps (and if they fit) the home screen offers «Вернуть все N»;
+#: more → «Выбрать и вернуть». Mirrors ``Theme.restoreAllMax`` (test keeps them equal).
+RESTORE_ALL_MAX = 12
+DIRECT_LIMIT = RESTORE_ALL_MAX
 PHONE_TILES = 16
+#: Page dots on the phone: ceil(total / 24), at most 11.
+PAGE_SIZE = 24
+PAGES_MAX = 11
 MINUTES_PER_APP = 1.25
 
 
@@ -68,46 +80,58 @@ def _minutes(count: int) -> str:
     return f"Около {minutes} {plural(minutes, 'минуты', 'минут', 'минут')}"
 
 
-def _tile(name: str, store_id: str, bundle_id: str, kind: str, label: str = "") -> dict[str, object]:
+def _tile(name: str, store_id: str, bundle_id: str, kind: str, label: str = "", progress: float = -1) -> dict[str, object]:
     return {
         "name": label or name,
+        "app": name,
         "storeId": store_id,
         "bundleId": bundle_id,
-        # installed | cloud | slot | done | current | wait | na
+        # спека §2.4: app | slot | offloaded | waiting | downloading | installing | new | unavailable
         "kind": kind,
+        "progress": progress,
     }
 
 
 def phone_tiles(inp: HomeInput, state: str) -> list[dict[str, object]]:
-    """16 icons: other apps around, the missing ones as dashed slots in row 3."""
+    """16 icons: apps on the phone around, the missing ones as slots in row 3.
 
-    queue_state: dict[str, str] = {}
+    Follows the queue: slot → waiting → downloading(p) → installing → new;
+    a failed app goes back to slot. No icons of other apps are invented:
+    without ``phone_apps`` only slots / offloaded are shown.
+    """
+
+    entries = {}
     if inp.queue is not None:
-        for entry in inp.queue.entries:
-            queue_state[entry.item.key] = entry.state
+        entries = {entry.item.key: entry for entry in inp.queue.entries}
     targets: list[dict[str, object]] = []
     others: list[dict[str, object]] = []
     for item in inp.items:
-        if item.group == GROUP_OFFLOADED and item.key not in queue_state:
-            others.append(_tile(item.label, item.store_id, item.bundle_id, "cloud"))
+        entry = entries.get(item.key)
+        if item.group == GROUP_OFFLOADED and entry is None:
+            others.append(_tile(item.label, item.store_id, item.bundle_id, "offloaded"))
             continue
+        label = item.label
+        progress = -1.0
         if item.group == GROUP_REGION:
-            kind = "na"
-            label = "Недоступна"
-        else:
-            status = queue_state.get(item.key, "")
-            if state == STATE_DONE or status == DONE:
-                kind, label = "done", ""
-            elif status == CURRENT:
-                kind, label = "current", ""
-            elif status in ("wait",) and state == STATE_INSTALLING:
-                kind, label = "wait", "Ожидание"
-            elif status == FAILED:
-                kind, label = "slot", ""
+            kind, label = "unavailable", "Недоступна"
+        elif state == STATE_DONE and (entry is None or entry.state == DONE):
+            kind = "new"
+        elif entry is None or entry.state == FAILED:
+            kind = "slot"
+        elif entry.state == DONE:
+            kind = "new"
+        elif entry.state == CURRENT:
+            if entry.stage == STAGE_INSTALL:
+                kind = "installing"
             else:
-                kind, label = "slot", ""
-        targets.append(_tile(item.label, item.store_id, item.bundle_id, kind, label or item.label))
-    installed = [_tile(app.name, app.store_id, app.bundle_id, "installed") for app in inp.phone_apps]
+                kind = "downloading"
+                progress = entry.percent / 100 if entry.percent >= 0 else -1.0
+        elif entry.state == WAIT and state == STATE_INSTALLING:
+            kind, label = "waiting", "Ожидание"
+        else:
+            kind = "slot"
+        targets.append(_tile(item.label, item.store_id, item.bundle_id, kind, label, progress))
+    installed = [_tile(app.name, app.store_id, app.bundle_id, "app") for app in inp.phone_apps]
     around = installed + others
     head = around[:8]
     row = targets[:4]
@@ -116,6 +140,10 @@ def phone_tiles(inp: HomeInput, state: str) -> list[dict[str, object]]:
     if len(tiles) < PHONE_TILES and len(targets) > 4:
         tiles += targets[4 : 4 + PHONE_TILES - len(tiles)]
     return tiles[:PHONE_TILES]
+
+
+def phone_pages(total: int) -> int:
+    return min(PAGES_MAX, max(1, math.ceil(total / PAGE_SIZE))) if total > 0 else 0
 
 
 def home_view(inp: HomeInput) -> dict[str, object]:
@@ -141,6 +169,8 @@ def home_view(inp: HomeInput) -> dict[str, object]:
         "links": [],
         "steps": [],
         "queue": [],
+        "a11y": "",
+        "pages": 0,
         "pill": f"{noun} подключён" if inp.connected else f"{noun} не подключён",
         "pillOn": inp.connected,
     }
@@ -179,6 +209,7 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             number=queue.done_count,
             word=f"из {total}",
             word2=f"уже на {noun}",
+            a11y=f"Уже на {noun}: {queue.done_count} из {total}",
             queue=queue.rows(noun),
             fine="Иконка на телефоне может появиться на минуту позже. "
             "Это нормально: ошибки нет, просто подождите.",
@@ -231,7 +262,7 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             "Код подтверждения придёт на ваши устройства Apple.",
             links=["Есть файл IPA", "Почему это безопасно"],
         )
-    elif region and len(selectable) <= DIRECT_LIMIT:
+    elif region and len(selectable) <= RESTORE_ALL_MAX:
         state = STATE_REGION
         names_ok = join_names([item.label for item in selectable])
         names_na = join_names([item.label for item in region])
@@ -251,7 +282,10 @@ def home_view(inp: HomeInput) -> dict[str, object]:
     else:
         plan = plan_space(selectable, inp.space)
         count = len(items)
-        many = len(selectable) > DIRECT_LIMIT or plan.verdict == SPACE_OVER
+        # спека §2.2: «Вернуть все N» при N ≤ restoreAllMax и если известные
+        # размеры помещаются (неизвестный размер = 0); иначе «Выбрать и вернуть».
+        many = len(selectable) > RESTORE_ALL_MAX or plan.verdict == SPACE_OVER
+        links = ["Найти другое приложение", "Файлы IPA", "Apple ID"]
         if many:
             state = STATE_MANY
             parts = []
@@ -265,33 +299,55 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             lead += "."
             if plan.verdict == SPACE_OVER:
                 lead += f" Все сразу не поместятся: на {noun} свободно {format_size(inp.space.free_bytes, floor=True)}."
+            line1, line2 = missing_caption(count, noun)
             view.update(
                 number=count,
-                word=apps_word(count),
-                word2="не хватает",
+                word=line1,
+                word2=line2,
+                a11y=missing_a11y(count),
                 lead=lead,
                 cta="Выбрать и вернуть",
                 hint="Сначала покажем список, отметите нужные.",
+                links=links,
+                pages=phone_pages(count),
             )
         else:
             state = STATE_MISSING
+            n = len(selectable)
             names = join_names([item.label for item in selectable])
             if removed and not offloaded:
-                lead = f"<b>{names}</b> пропали с телефона, их больше нет в App Store. Их можно вернуть."
+                if n == 1:
+                    lead = f"<b>{names}</b> пропало с телефона, его больше нет в App Store. Его можно вернуть."
+                else:
+                    lead = f"<b>{names}</b> пропали с телефона, их больше нет в App Store. Их можно вернуть."
             elif offloaded and not removed:
-                lead = f"<b>{names}</b> сгружены: иконки на месте, а самих приложений нет. Их можно вернуть."
+                if n == 1:
+                    lead = f"<b>{names}</b> сгружено: иконка на месте, а самого приложения нет. Его можно вернуть."
+                else:
+                    lead = f"<b>{names}</b> сгружены: иконки на месте, а самих приложений нет. Их можно вернуть."
             else:
                 lead = f"<b>{names}</b> пропали с телефона или сгружены. Их можно вернуть."
-            n = len(selectable)
+            if plan.unknown_count:
+                hint = "Телефон не отключайте. Размер части приложений узнаем при скачивании."
+            else:
+                hint = f"{_minutes(n)}. Телефон не отключайте."
+            line1, line2 = missing_caption(n, noun)
             view.update(
                 number=n,
-                word=apps_word(n),
-                word2="не хватает",
+                word=line1,
+                word2=line2,
+                a11y=missing_a11y(n),
                 lead=lead,
                 cta=f"Вернуть все {n}" if n > 1 else "Вернуть",
-                hint=f"{_minutes(n)}. Телефон не отключайте.",
-                links=["Найти другое приложение", "Файлы IPA", "Apple ID"],
+                hint=hint,
+                links=links,
             )
     view["state"] = state
     view["tiles"] = phone_tiles(inp, state) if inp.connected else []
+    slots = sum(1 for tile in view["tiles"] if tile["kind"] == "slot")
+    view["phoneA11y"] = (
+        f"Экран {noun}: {slots} {plural(slots, 'пустое место', 'пустых места', 'пустых мест')}"
+        if inp.connected
+        else f"Экран {noun} выключен"
+    )
     return view

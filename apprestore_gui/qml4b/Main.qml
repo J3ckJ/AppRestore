@@ -9,8 +9,8 @@ Window {
     objectName: "ui4bWindow"
     width: Theme.windowWidth
     height: Theme.windowHeight
-    minimumWidth: 1180
-    minimumHeight: 760
+    minimumWidth: Theme.windowMinWidth
+    minimumHeight: Theme.windowMinHeight
     visible: true
     color: Theme.bg
     title: "AppRestore"
@@ -18,6 +18,24 @@ Window {
     readonly property var home: ui.home
     readonly property bool onboarding: ui.screen === "onboarding"
     readonly property string noun: (home.pill || "iPhone").split(" ")[0]
+
+    // Ресайз (спека §2.1): телефон справа, низ всегда режется окном.
+    readonly property real phoneW: Math.max(360, Math.min(Theme.phoneW, 0.309 * width))
+    readonly property real phoneRight: Theme.phoneRightMargin * width / Theme.windowWidth
+    readonly property real heroW: Math.min(Theme.heroWidth, width - Theme.padX - phoneW - phoneRight - 48)
+    readonly property real heroTop: height < 820 ? 120 : Theme.heroTop
+
+    // Enter без фокуса = главная кнопка (спека §5)
+    Item {
+        id: keys
+        focus: true
+        Keys.onReturnPressed: win.enter()
+        Keys.onEnterPressed: win.enter()
+    }
+    function enter() {
+        if (!win.onboarding && !ui.pickerOpen && !ui.signIn.open && (win.home.cta || "") !== "")
+            ui.primaryAction()
+    }
 
     // -- header -----------------------------------------------------------------
     Row {
@@ -53,7 +71,8 @@ Window {
         objectName: "homeHero"
         visible: !win.onboarding
         x: Theme.padX
-        y: Theme.heroTop
+        y: win.heroTop
+        width: win.heroW
         view: win.home
         onPrimary: ui.primaryAction()
         onLink: function(name) { if (name === "Остановить") ui.stop() }
@@ -61,7 +80,7 @@ Window {
     Onboarding {
         visible: win.onboarding
         x: Theme.padX
-        y: Theme.heroTop
+        y: win.heroTop
         step: ui.onboardingStep
         noun: win.noun
         onSignInRequested: ui.openSignIn()
@@ -69,13 +88,15 @@ Window {
 
     // -- phone ---------------------------------------------------------------------
     PhoneMock {
-        x: Theme.phoneX
-        y: Theme.phoneY
+        x: win.width - win.phoneRight - win.phoneW
+        y: Theme.phoneTop
+        w: win.phoneW
         tiles: win.home.tiles || []
+        accessibleText: win.home.phoneA11y || ""
         alert: win.onboarding && ui.onboardingStep === 2 ? "trust"
                : win.onboarding && ui.onboardingStep === 3 ? "code" : ""
         off: !win.home.pillOn && alert === ""
-        pageDots: win.home.state === "many" ? 11 : 0
+        pageDots: win.home.pages || 0
     }
 
     // -- «Что вернуть» -------------------------------------------------------------

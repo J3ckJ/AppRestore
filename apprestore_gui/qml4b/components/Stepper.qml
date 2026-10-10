@@ -30,8 +30,7 @@ Row {
                     T {
                         anchors.centerIn: parent
                         visible: modelData.state !== "ok"
-                        token: "stepNum"
-                        font.pixelSize: 12
+                        token: "stepNum12"
                         color: modelData.state === "on" ? "#ffffff" : Theme.ink
                         text: String(modelData.n)
                     }

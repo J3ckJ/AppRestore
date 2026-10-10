@@ -10,7 +10,9 @@ Column {
     readonly property bool hasTitle: (view.title || "") !== ""
     signal primary()
     signal link(string name)
+    // heroWidth = min(620, W − padX − phoneW − rightMargin − 48) — задаёт Main
     width: Theme.heroWidth
+    property alias primaryButton: cta
 
     function rich(text) {
         return (text || "").replace(/<b>/g, "<font color='" + Theme.ink + "'><b>").replace(/<\/b>/g, "</b></font>")
@@ -26,18 +28,19 @@ Column {
         word: root.view.word || ""
         word2: root.view.word2 || ""
         small: root.st === "installing"
-        column: root.st === "many" && String(root.view.number || 0).length >= 3
+        maxWidth: root.width
+        accessibleText: root.view.a11y || ""
     }
     T {
         visible: root.hasTitle && !root.hasNumber
         token: "h1"
         text: root.view.title || ""
         lineHeightMode: Text.FixedHeight
-        lineHeight: 84 * 0.96
-        height: lineCount * 84 * 0.96
+        lineHeight: Theme.display.lh
+        height: lineCount * Theme.display.lh
         // CSS lets glyphs overflow a tight line box (negative half-leading);
         // Qt does not, so lift by that half-leading to match the concept.
-        transform: Translate { y: (84 * 0.96 - 84 * 1.21) / 2 }
+        transform: Translate { y: (Theme.display.lh - Theme.display.size * 1.21) / 2 }
     }
 
     // lead
@@ -47,11 +50,11 @@ Column {
         visible: (root.view.lead || "") !== ""
         token: "lead"
         color: Theme.ink2
-        width: Theme.leadWidth
+        width: Math.min(Theme.heroLeadWidth, root.width)
         wrapMode: Text.WordWrap
         textFormat: Text.StyledText
         lineHeightMode: Text.FixedHeight
-        lineHeight: 22 * 1.4
+        lineHeight: Theme.lead.lh
         text: root.rich(root.view.lead)
     }
 

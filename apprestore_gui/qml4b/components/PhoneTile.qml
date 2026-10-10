@@ -2,74 +2,131 @@ import QtQuick
 import QtQuick.Shapes
 import "../theme"
 
-// One home-screen icon on the phone silhouette.
-// kind: installed | cloud | slot | done | current | wait | na
+// HomeTile (спека §2.4). kind: app | slot | offloaded | waiting |
+// downloading | installing | new | unavailable. progress: 0…1 при
+// скачивании, −1 = неопределённо (установка: сектор 90°, оборот 1200 мс).
 Item {
     id: root
     property var tile: ({})
-    readonly property string kind: tile.kind || "installed"
-    width: Theme.tileIcon
-    height: Theme.tileIcon + 7 + 15
+    property real k: 1.0                       // phoneW / 430
+    readonly property string kind: tile.kind || "app"
+    readonly property real icon: Theme.phoneIcon * k
+    readonly property real r: Theme.tileRadius * k
+    readonly property real progress: tile.progress === undefined ? -1 : tile.progress
+    readonly property bool busy: kind === "downloading" || kind === "installing"
+    width: icon
+    height: icon + 7 + 15
+
+    Accessible.role: Accessible.StaticText
+    Accessible.name: {
+        var n = root.tile.name || ""
+        switch (root.kind) {
+        case "slot": return "Пустое место: " + n + ", не хватает"
+        case "waiting": return (root.tile.app || n) + ", ожидает"
+        case "downloading": return (root.tile.app || n) + ", скачивается, " + Math.round(Math.max(0, root.progress) * 100) + " процента"
+        case "installing": return (root.tile.app || n) + ", ставится"
+        case "new": return n + ", вернулось"
+        case "unavailable": return (root.tile.app || n) + ", недоступна в регионе"
+        case "offloaded": return n + ", сгружено"
+        default: return n
+        }
+    }
 
     AppIcon {
-        id: icon
-        width: Theme.tileIcon; height: Theme.tileIcon
-        radius: Theme.radiusTile
+        id: art
+        width: root.icon; height: root.icon
+        radius: root.r
         storeId: root.tile.storeId || ""
         bundleId: root.tile.bundleId || ""
         visible: root.kind !== "slot"
-        iconOpacity: root.kind === "current" ? 0.55
-                   : root.kind === "wait" ? 0.35
-                   : root.kind === "na" ? 0.3
-                   : root.kind === "cloud" ? 0.6 : 1.0
+        // opacity у иконки, не у плитки: подпись не гаснет (спека §6)
+        iconOpacity: root.busy ? 0.55
+                   : root.kind === "waiting" ? 0.35
+                   : root.kind === "unavailable" ? 0.3
+                   : root.kind === "offloaded" ? 0.6 : 1.0
+        Behavior on iconOpacity { NumberAnimation { duration: Theme.durFast; easing.type: Theme.easeOut } }
     }
+    // пустое место: пунктир (у Rectangle.border пунктира нет)
     Shape {
-        width: Theme.tileIcon; height: Theme.tileIcon
+        width: root.icon; height: root.icon
         visible: root.kind === "slot"
         preferredRendererType: Shape.CurveRenderer
         ShapePath {
-            strokeColor: Theme.slotStroke
-            strokeWidth: 2
+            strokeColor: Theme.slotDash
+            strokeWidth: Theme.slotDashWidth
             strokeStyle: ShapePath.DashLine
-            dashPattern: [2.2, 1.6]
+            dashPattern: Theme.slotDashPattern
             fillColor: "transparent"
-            PathRectangle { x: 1; y: 1; width: Theme.tileIcon - 2; height: Theme.tileIcon - 2; radius: Theme.radiusTile - 1 }
+            PathRectangle {
+                x: Theme.slotDashWidth / 2; y: Theme.slotDashWidth / 2
+                width: root.icon - Theme.slotDashWidth; height: root.icon - Theme.slotDashWidth
+                radius: root.r - Theme.slotDashWidth / 2
+            }
         }
     }
-    // installing: dark veil with a progress pie
+    // скачивание / установка: вуаль + кольцо r19/2.5 + сектор r15
     Rectangle {
-        width: Theme.tileIcon; height: Theme.tileIcon
-        radius: Theme.radiusTile
+        width: root.icon; height: root.icon
+        radius: root.r
         color: Theme.veil
-        visible: root.kind === "current"
-        Shape {
+        visible: root.busy
+        Item {
+            id: pie
             anchors.centerIn: parent
-            width: 44; height: 44
-            preferredRendererType: Shape.CurveRenderer
-            ShapePath {
-                strokeColor: "#ffffff"; strokeWidth: 2.5; fillColor: "transparent"
-                PathAngleArc { centerX: 22; centerY: 22; radiusX: 19; radiusY: 19; startAngle: 0; sweepAngle: 360 }
+            width: Theme.pieBox; height: Theme.pieBox
+            readonly property bool indeterminate: root.kind === "installing" || root.progress < 0
+            property real shown: Math.max(0.02, Math.min(1, root.progress))
+            Behavior on shown { NumberAnimation { duration: 200; easing.type: Easing.Linear } }
+            Shape {
+                anchors.fill: parent
+                preferredRendererType: Shape.CurveRenderer
+                ShapePath {
+                    strokeColor: "#ffffff"; strokeWidth: Theme.ringWidth; fillColor: "transparent"
+                    PathAngleArc { centerX: 22; centerY: 22; radiusX: 19; radiusY: 19; startAngle: 0; sweepAngle: 360 }
+                }
             }
-            ShapePath {
-                strokeWidth: 0; strokeColor: "transparent"; fillColor: "#ffffff"
-                startX: 22; startY: 22
-                PathAngleArc { centerX: 22; centerY: 22; radiusX: 15; radiusY: 15; startAngle: -90; sweepAngle: 360 * Math.max(0.02, (root.tile.percent || 64) / 100) }
-                PathLine { x: 22; y: 22 }
+            Shape {
+                id: sector
+                anchors.fill: parent
+                preferredRendererType: Shape.CurveRenderer
+                ShapePath {
+                    strokeWidth: 0; strokeColor: "transparent"; fillColor: "#ffffff"
+                    startX: 22; startY: 22
+                    PathAngleArc {
+                        centerX: 22; centerY: 22; radiusX: 15; radiusY: 15
+                        startAngle: -90
+                        sweepAngle: pie.indeterminate ? 90 : 360 * pie.shown
+                        moveToStart: false
+                    }
+                    PathLine { x: 22; y: 22 }
+                }
+                RotationAnimator on rotation {
+                    running: pie.indeterminate && root.visible
+                    from: 0; to: 360
+                    duration: 1200
+                    loops: Animation.Infinite
+                }
             }
         }
     }
     Row {
         anchors.horizontalCenter: parent.horizontalCenter
-        y: Theme.tileIcon + 7
+        y: root.icon + 7
         spacing: 4
-        Glyph { name: "cloud"; size: 11; visible: root.kind === "cloud"; anchors.verticalCenter: parent.verticalCenter }
-        Rectangle { width: 6; height: 6; radius: 3; color: Theme.iosNew; visible: root.kind === "done"; anchors.verticalCenter: parent.verticalCenter }
+        Glyph { Accessible.ignored: true; name: "cloud"; size: 11; visible: root.kind === "offloaded"; anchors.verticalCenter: parent.verticalCenter }
+        Rectangle {
+            width: Theme.newDot; height: Theme.newDot; radius: Theme.newDot / 2
+            color: Theme.iosNew
+            visible: root.kind === "new"
+            anchors.verticalCenter: parent.verticalCenter
+        }
         T {
-            token: "tileLabel"
+            Accessible.ignored: true
+            token: "phoneLabel"
             text: root.tile.name || ""
-            color: root.kind === "slot" ? Theme.ink2 : (root.kind === "na" ? Theme.ink3 : Theme.ink)
+            color: root.kind === "slot" ? Theme.ink2 : (root.kind === "unavailable" ? Theme.ink3 : Theme.ink)
             elide: Text.ElideRight
-            width: Math.min(implicitWidth, 86)
+            width: Math.min(implicitWidth, 86 * root.k)
         }
     }
 }

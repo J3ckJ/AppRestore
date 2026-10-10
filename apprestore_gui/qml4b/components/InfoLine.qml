@@ -10,6 +10,7 @@ Row {
     property int maxWidth: Theme.fineWidth
     spacing: wrap ? 8 : 7
     Glyph {
+        Accessible.ignored: true
         name: root.glyph
         size: 14
         y: root.wrap ? 4 : Math.round((label.height - height) / 2)
@@ -17,11 +18,11 @@ Row {
     T {
         id: label
         token: "hint"
-        color: Theme.ink3
+        color: Theme.ink3Text   // спека §5: ink3 мелким не проходит контраст
         text: root.text
         width: root.wrap ? root.maxWidth - 22 : implicitWidth
         wrapMode: root.wrap ? Text.WordWrap : Text.NoWrap
         lineHeightMode: root.wrap ? Text.FixedHeight : Text.ProportionalHeight
-        lineHeight: root.wrap ? Math.round(14.5 * 1.5) : 1.0
+        lineHeight: root.wrap ? Theme.fine.lh : 1.0
     }
 }

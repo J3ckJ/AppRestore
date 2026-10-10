@@ -27,6 +27,23 @@ def apps_word(count: int) -> str:
     return plural(count, "приложение", "приложения", "приложений")
 
 
+def missing_caption(count: int, noun: str = "iPhone") -> tuple[str, str]:
+    """Two lines next to the big number: «приложения / не хватает».
+
+    The one place for this wording. «1 приложение не хватает» is awkward
+    (genitive is needed); Ника suggests «пропало с iPhone» for 1, 21, 31…
+    The decision is Евгений's; until then the spec default stays.
+    """
+
+    return apps_word(count), "не хватает"
+
+
+def missing_a11y(count: int) -> str:
+    """«Не хватает 4 приложений» (one phrase for screen readers)."""
+
+    return f"Не хватает {count} {plural(count, 'приложения', 'приложений', 'приложений')}"
+
+
 def _decimal(value: float) -> str:
     return f"{value:.1f}".replace(".", ",")
 

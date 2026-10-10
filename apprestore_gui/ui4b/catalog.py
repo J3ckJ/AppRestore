@@ -38,6 +38,20 @@ ACTION_IPA = "ipa"  # QuickSession.installSaved (local file)
 ACTION_NONE = "none"
 
 
+_SHORT_CUTS = (":", "—", " – ", " - ")
+
+
+def short_name_of(name: str) -> str:
+    """«Сбер» from «Сбер: банк и кошелёк» (спека: до «:», «—», « - »)."""
+
+    text = (name or "").strip()
+    for cut in _SHORT_CUTS:
+        head = text.split(cut, 1)[0].strip()
+        if head:
+            text = head
+    return text
+
+
 @dataclass(frozen=True)
 class RestoreItem:
     key: str
@@ -61,7 +75,7 @@ class RestoreItem:
 
     @property
     def label(self) -> str:
-        return self.short_name or self.name
+        return self.short_name or short_name_of(self.name)
 
     @property
     def icon_keys(self) -> tuple[str, ...]:

@@ -142,7 +142,7 @@ Item {
                     width: parent.width - x - (sbox.typed ? escHint.width + 28 : 14)
                     anchors.verticalCenter: parent.verticalCenter
                     font.family: Theme.fontFamily
-                    font.pixelSize: Theme.type.search.size
+                    font.pixelSize: Theme.style("search").size
                     color: Theme.ink
                     selectByMouse: true
                     clip: true
@@ -389,8 +389,8 @@ Item {
                     elide: Text.ElideRight
                     textFormat: Text.RichText
                     font.family: Theme.fontFamily
-                    font.pixelSize: Theme.type.row.size
-                    font.weight: Theme.type.row.weight
+                    font.pixelSize: Theme.style("row").size
+                    font.weight: Theme.style("row").weight
                     color: row.selectable ? Theme.ink : Theme.ink2
                     text: row.nameHtml
                 }
@@ -480,7 +480,7 @@ Item {
                     wrapMode: Text.WordWrap
                     textFormat: Text.StyledText
                     font.family: Theme.fontFamily
-                    font.pixelSize: Math.round(Theme.type.warn.size)
+                    font.pixelSize: Math.round(Theme.style("warn").size)
                     lineHeightMode: Text.FixedHeight
                     lineHeight: 13.5 * 1.4
                     color: ui.footer.warnBold !== "" ? Theme.ink : Theme.ink3

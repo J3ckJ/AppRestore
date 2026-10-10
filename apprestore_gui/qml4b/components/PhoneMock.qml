@@ -9,7 +9,12 @@ Item {
     // Illustration on the phone during onboarding: "" | "trust" | "code".
     property string alert: ""
     property int pageDots: 0
-    readonly property real w: Theme.phoneWidth
+    property string accessibleText: ""
+    // phoneW = clamp(360, 430, 0.309·W) — задаёт Main; всё ниже от w (спека §2.3)
+    property real w: Theme.phoneW
+    readonly property real k: w / Theme.phoneW
+    Accessible.role: Accessible.Graphic
+    Accessible.name: accessibleText
     width: w
     height: w * 2.05
 
@@ -60,11 +65,12 @@ Item {
             y: root.w * 0.05
             width: screen.width - 2 * (root.w * 0.1)
             height: Math.round(root.w * 0.05 * 1.21)
-            T {
-                token: "brand"
+            Text {
+                font.family: Theme.fontText
                 font.pixelSize: Math.round(root.w * 0.05)
                 font.weight: 600
                 font.letterSpacing: -0.01 * root.w * 0.05
+                color: Theme.ink
                 text: "17:39"
                 anchors.verticalCenter: parent.verticalCenter
             }
@@ -72,10 +78,11 @@ Item {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 4
-                T {
-                    token: "brand"
+                Text {
+                    font.family: Theme.fontText
                     font.pixelSize: Math.round(root.w * 0.05)
                     font.weight: 600
+                    color: Theme.ink
                     text: "5G"
                     anchors.verticalCenter: parent.verticalCenter
                 }
@@ -97,21 +104,21 @@ Item {
             y: root.w * 0.2
             width: screen.width - 2 * root.w * 0.075
             columns: 4
-            rowSpacing: Theme.tileRowGap
+            rowSpacing: Theme.tileRowGap * root.k
             columnSpacing: 0
             Repeater {
                 model: root.tiles
                 Item {
                     width: grid.width / 4
                     height: cell.height
-                    PhoneTile { id: cell; tile: modelData; anchors.horizontalCenter: parent.horizontalCenter }
+                    PhoneTile { id: cell; tile: modelData; k: root.k; anchors.horizontalCenter: parent.horizontalCenter }
                 }
             }
         }
         Row {  // page dots (many apps)
             visible: root.pageDots > 1 && !root.off
             anchors.horizontalCenter: parent.horizontalCenter
-            y: grid.y + 4 * (Theme.tileIcon + 7 + 15 + Theme.tileRowGap) - Theme.tileRowGap + 18
+            y: grid.y + 4 * ((Theme.tileIcon + 7 + 15 + Theme.tileRowGap) * root.k) - Theme.tileRowGap * root.k + 18
             spacing: 7
             Repeater {
                 model: root.pageDots

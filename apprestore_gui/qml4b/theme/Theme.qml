@@ -1,79 +1,183 @@
+// Theme.qml — токены AppRestore 4b. Синглтон: в qmldir — "singleton Theme 1.0 Theme.qml".
+// Источник: design/spec/tokens.json (из CSS концептов 4b). Значения — логические px.
 pragma Singleton
 import QtQuick
 
-// Design tokens of AppRestore 4b. Taken from the CSS of
-// design/concepts/variant-4b*.html until Ника's spec arrives; the spec should
-// only change values here. Light only: the concept has no dark variant.
 QtObject {
-    id: theme
-
-    // -- platform font: SF on macOS, Segoe UI Variable / Segoe UI on Windows --
-    readonly property bool isWindows: Qt.platform.os === "windows"
     readonly property bool isMac: Qt.platform.os === "osx" || Qt.platform.os === "macos"
-    readonly property string fontFamily: isWindows
-        ? (Qt.fontFamilies().indexOf("Segoe UI Variable Text") >= 0 ? "Segoe UI Variable Text" : "Segoe UI")
-        : Qt.application.font.family
-    // Big numbers and headlines (Segoe UI Variable Display on Windows 11).
-    readonly property string displayFamily: isWindows
-        ? (Qt.fontFamilies().indexOf("Segoe UI Variable Display") >= 0 ? "Segoe UI Variable Display" : "Segoe UI")
-        : fontFamily
+    // ui4b: «--ui4b-as-windows» only for offscreen screenshots next to variant-4b-missing-windows.png
+    readonly property bool isWin: Qt.platform.os === "windows" || Qt.application.arguments.indexOf("--ui4b-as-windows") >= 0
 
-    // -- colors (concept :root) ----------------------------------------------
-    readonly property color bg: "#ebeae6"
+    // ── Цвета
+    readonly property color bg: "#EBEAE6"
+    readonly property color card: "#FFFFFF"
+    readonly property color surfaceSoft: "#F3F2EE"
     readonly property color ink: "#121212"
-    readonly property color ink2: "#61605c"
-    readonly property color ink3: "#97958f"
-    readonly property color line: "#d6d4ce"
-    readonly property color card: "#ffffff"
-    readonly property color accent: "#c45a2c"
-    readonly property color ok: "#2f9e55"
-    readonly property color off: "#a3a29d"
-    readonly property color iosNew: "#0a84ff"
-    readonly property color wall: "#ddd8cc"
-    readonly property color sheet: "#ffffff"
-    readonly property color soft: "#f3f2ee"
-    readonly property color mark: "#f6ebe4"       // search hit
-    readonly property color rowOn: "#fbf6f2"      // checked row
-    readonly property color rowLine: "#ecebe6"
-    readonly property color backdrop: Qt.rgba(20/255, 20/255, 18/255, 0.34)
-    readonly property color track: "#d3d1ca"      // stage bars
-    readonly property color capTrack: "#e2e0da"   // capacity bar
-    readonly property color checkBorder: "#b8b6ae"
-    readonly property color checkDisabledBorder: "#dcdad3"
-    readonly property color goDisabled: "#d9d7d1"
-    readonly property color iconPlaceholder: "#dcdad3"  // app without artwork: neutral, no letter
-    readonly property color slotStroke: Qt.rgba(0, 0, 0, 0.32)
-    readonly property color phoneFrame: "#1b1b1d"
-    readonly property color phoneFrameEdge: "#38383b"
-    readonly property color phoneBezel: "#0b0b0b"
-    readonly property color phoneOff: "#1f1f21"
-    readonly property color stepTodoBorder: "#c3c1ba"
-    readonly property color stepOkBg: "#dcdad3"
-    readonly property color stepLine: "#cfcdc6"
+    readonly property color ink2: "#61605C"
+    readonly property color ink3: "#97958F"      // только декоративное/крупное (2.49:1 на bg)
+    readonly property color ink3Text: "#77756F"  // мелкий вторичный текст (3.83:1 на bg, 4.61:1 на белом)
+    readonly property color line: "#D6D4CE"
+    readonly property color lineSoft: "#ECEBE6"
+    readonly property color track: "#D3D1CA"
+    readonly property color accent: "#C45A2C"
+    readonly property color accentHover: "#B35128"
+    readonly property color accentPressed: "#A04824"
+    readonly property color accentDisabled: "#D9D7D1"
+    readonly property color accentTint: "#F6EBE4"
+    readonly property color ok: "#2F9E55"
+    readonly property color okText: "#217A40"
+    readonly property color off: "#A3A29D"
+    readonly property color iosNew: "#0A84FF"
+    readonly property color wall: "#DDD8CC"
+    readonly property color screenOff: "#1F1F21"
+    readonly property color phoneFrame: "#1B1B1D"
+    readonly property color phoneFrameEdge: "#38383B"
+    readonly property color phoneBezel: "#0B0B0B"
+    readonly property color slotDash: Qt.rgba(0, 0, 0, 0.32)
     readonly property color veil: Qt.rgba(0, 0, 0, 0.45)
+    readonly property color backdrop: Qt.rgba(20/255, 20/255, 18/255, 0.34)
+    readonly property color focusRing: ink
 
-    // -- type scale (px, weight, letter-spacing in em) ------------------------
-    readonly property var type: ({
-        brand:      { size: 17,   weight: 650, ls: -0.01 },
-        pill:       { size: 14,   weight: 550, ls: 0 },
-        over:       { size: 15,   weight: 700, ls: 0 },
-        number:     { size: 300,  weight: 700, ls: -0.065 },
-        numberSm:   { size: 190,  weight: 700, ls: -0.065 },
-        numberWord: { size: 38,   weight: 650, ls: -0.025 },
-        numberWordSm: { size: 32, weight: 650, ls: -0.025 },
-        h1:         { size: 84,   weight: 700, ls: -0.045 },
-        lead:       { size: 22,   weight: 400, ls: -0.005 },
-        cta:        { size: 21,   weight: 650, ls: -0.01 },
-        hint:       { size: 14.5, weight: 400, ls: 0 },
-        link:       { size: 15,   weight: 500, ls: 0 },
-        step:       { size: 21,   weight: 400, ls: -0.01 },
+    // ── Шрифты (Inter положить в бандл как запасной)
+    readonly property string fontText: isMac ? ".AppleSystemUIFont" : (isWin ? "Segoe UI Variable Text" : "Inter")
+    readonly property string fontDisplay: isMac ? ".AppleSystemUIFont" : (isWin ? "Segoe UI Variable Display" : "Inter")
+    readonly property var tnum: ({ "tnum": 1 })  // font.features (Qt ≥ 6.6)
+
+    // ── Типографика: size / weight / lineHeight(px) / letterSpacing(px)
+    readonly property var numeralXL:  ({ size: 300, weight: 700, lh: 216, ls: -19.5 })
+    readonly property var numeralL:   ({ size: 250, weight: 700, lh: 180, ls: -16.25 })
+    readonly property var numeralM:   ({ size: 190, weight: 700, lh: 137, ls: -12.35 })
+    readonly property var numeralCaption:  ({ size: 38, weight: 650, lh: 40, ls: -0.95 })
+    readonly property var numeralCaptionM: ({ size: 32, weight: 650, lh: 34, ls: -0.8 })
+    readonly property var display:    ({ size: 84, weight: 700, lh: 81, ls: -3.78 })
+    readonly property var lead:       ({ size: 22, weight: 400, lh: 31, ls: -0.11 })
+    readonly property var step:       ({ size: 21, weight: 400, lh: 28, ls: -0.21 })
+    readonly property var button:     ({ size: 21, weight: 650, lh: 26, ls: -0.21 })
+    readonly property var brand:      ({ size: 17, weight: 650, lh: 22, ls: -0.17 })
+    readonly property var rowTitle:   ({ size: 16.5, weight: 600, lh: 22, ls: 0 })
+    readonly property var overline:   ({ size: 15, weight: 700, lh: 20, ls: 0 })
+    readonly property var link:       ({ size: 15, weight: 500, lh: 20, ls: 0 })
+    readonly property var fine:       ({ size: 14.5, weight: 400, lh: 21.75, ls: 0 })
+    readonly property var pill:       ({ size: 14, weight: 550, lh: 18, ls: 0 })
+    readonly property var rowMeta:    ({ size: 13.5, weight: 450, lh: 18, ls: 0 })
+    readonly property var stageLabel: ({ size: 12.5, weight: 600, lh: 16, ls: 0 })
+    readonly property var phoneLabel: ({ size: 12.5, weight: 500, lh: 16, ls: 0 })
+
+    // ── Отступы, радиусы, линии, размеры
+    readonly property int padX: 76
+    readonly property int heroTop: 150
+    readonly property int headerTop: 52
+    readonly property int heroWidth: 620
+    readonly property int ctaHeight: 68
+    readonly property int ctaPadX: 46
+    readonly property int ctaRadius: isWin ? 8 : 18
+    readonly property int pillHeight: 36
+    readonly property int pillDot: 9
+    readonly property int tileRadius: 17
+    readonly property int phoneW: 430
+    readonly property int phoneIcon: 74
+    readonly property int phoneRightMargin: 156
+    readonly property int phoneTop: 128
+    readonly property real hair: 1
+    readonly property real slotDashWidth: 2
+    readonly property var slotDashPattern: [3, 3]   // в единицах толщины линии
+    readonly property real ringWidth: 2.5
+    readonly property int restoreAllMax: 12         // параметр: «Вернуть все N» vs «Выбрать и вернуть»
+
+    // ── Движение
+    readonly property int durFast: 150
+    readonly property int durBase: 220
+    readonly property int durSlow: 320
+    readonly property int durSlotFill: 240
+    readonly property int durCrossfade: 180
+    readonly property int easeOut: Easing.OutCubic
+    readonly property int easeInOut: Easing.InOutCubic
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // ui4b: дополнения Димы. Выше — Theme.qml Ники без изменений (кроме isWin
+    // для скриншотов). Ниже то, чего в части 1 спеки нет (окно «Что вернуть»,
+    // онбординг, вход) — значения из CSS концептов и tokens.json; части 2–3
+    // спеки заменят их. Старые имена компонентов сведены к токенам Ники.
+    // ═════════════════════════════════════════════════════════════════════════
+
+    // Шрифт: если системного нет (Linux, CI), Qt сам возьмёт запасной.
+    readonly property string fontFamily: fontText
+    readonly property string displayFamily: fontDisplay
+
+    // Размеры из tokens.json, которых нет в Theme.qml части 1
+    readonly property int brandIcon: 34
+    readonly property int rowIconSize: 40      // иконка в очереди
+    readonly property int rowIconRadius: 9
+    readonly property int stageBar: 5
+    readonly property int barRadius: 3
+    readonly property int newDot: 6
+    readonly property int pieBox: 44
+    readonly property int heroLeadWidth: 540
+    readonly property int fineWidth: 470
+    readonly property int queueWidth: 560
+    readonly property int linksGap: 30
+    readonly property int windowMinWidth: 1180
+    readonly property int windowMinHeight: 760
+    readonly property int windowWidth: 1392    // окно макета
+    readonly property int windowHeight: 852
+
+    // Окно «Что вернуть», онбординг, вход (CSS концептов; ждём части 2–3)
+    readonly property color sheet: card
+    readonly property color soft: surfaceSoft
+    readonly property color mark: accentTint          // подсветка найденного
+    readonly property color rowOn: "#FBF6F2"          // tokens.json rowSelected
+    readonly property color rowLine: lineSoft
+    readonly property color capTrack: "#E2E0DA"
+    readonly property color checkBorder: "#B8B6AE"
+    readonly property color checkDisabledBorder: "#DCDAD3"  // tokens.json trackAlt
+    readonly property color goDisabled: accentDisabled
+    readonly property color iconPlaceholder: track    // спека §2.4: без иконки — #D3D1CA, без буквы
+    readonly property color slotStroke: slotDash
+    readonly property color phoneOff: screenOff
+    readonly property color stepTodoBorder: "#C3C1BA"
+    readonly property color stepOkBg: "#DCDAD3"
+    readonly property color stepLine: "#CFCDC6"
+
+    readonly property int sheetInsetX: 96
+    readonly property int sheetInsetY: 34
+    readonly property int sheetHead: 84
+    readonly property int sheetFoot: 84
+    readonly property int railWidth: 262
+    readonly property int rowHeight: 46
+    readonly property int groupHeight: 44
+    readonly property int rowIcon: 34
+    readonly property int listPadX: 28
+    readonly property int capWidth: 220
+    readonly property int radiusSheet: 18
+    readonly property int radiusGo: 14
+    readonly property int radiusSearch: 12
+    readonly property int radiusRail: 10
+    readonly property int radiusSeg: 10
+    readonly property int radiusSegItem: 8
+    readonly property int radiusCheck: 6
+    readonly property int radiusRowIcon: 8
+
+    // Старые имена главного экрана → токены Ники
+    readonly property int topY: headerTop
+    readonly property int buttonHeight: ctaHeight
+    readonly property int radiusCta: ctaRadius
+    readonly property int radiusTile: tileRadius
+    readonly property int radiusQueueIcon: rowIconRadius
+    readonly property int tileIcon: phoneIcon
+    readonly property int phoneWidth: phoneW
+    readonly property int phoneY: phoneTop
+    readonly property int queueIcon: rowIconSize
+    readonly property int leadWidth: heroLeadWidth
+    readonly property int tileRowGap: 26
+
+    // Стили текста для <T token>: стили Ники по имени + стили окон частей 2–3.
+    // ls здесь в px, как у Ники.
+    readonly property var extraStyles: ({
         stepNum:    { size: 14,   weight: 700, ls: 0 },
-        queueName:  { size: 16.5, weight: 600, ls: 0 },
-        queueSmall: { size: 13.5, weight: 450, ls: 0 },
+        numeralCaptionCol: { size: 40, weight: 650, ls: -1.0 },  // подпись под 3-значной цифрой (picker.html .num.col)
+        stepNum12:  { size: 12,   weight: 700, ls: 0 },
         queueRight: { size: 14,   weight: 400, ls: 0 },
-        stage:      { size: 12.5, weight: 600, ls: 0 },
-        tileLabel:  { size: 12.5, weight: 500, ls: 0 },
-        sheetTitle: { size: 30,   weight: 700, ls: -0.03 },
+        sheetTitle: { size: 30,   weight: 700, ls: -0.9 },
         sheetSub:   { size: 15,   weight: 500, ls: 0 },
         sheetLink:  { size: 15,   weight: 550, ls: 0 },
         rail:       { size: 15,   weight: 550, ls: 0 },
@@ -93,55 +197,29 @@ QtObject {
         stepper:    { size: 14,   weight: 550, ls: 0 },
         scanCap:    { size: 15,   weight: 600, ls: 0 },
         found:      { size: 16,   weight: 400, ls: 0 },
-        foundNum:   { size: 22,   weight: 700, ls: -0.02 },
+        foundNum:   { size: 22,   weight: 700, ls: -0.44 },
         table:      { size: 18,   weight: 400, ls: 0 }
     })
-
-    // -- layout (px) ---------------------------------------------------------
-    readonly property int windowWidth: 1392
-    readonly property int windowHeight: 852
-    readonly property int padX: 76
-    readonly property int topY: 52
-    readonly property int heroTop: 150
-    readonly property int heroWidth: 620
-    readonly property int leadWidth: 540
-    readonly property int fineWidth: 470
-    readonly property int queueWidth: 560
-    readonly property int buttonHeight: 68
-    readonly property int ctaPadX: 46
-    readonly property int linksGap: 30
-    readonly property int brandIcon: 34
-    readonly property int pillHeight: 36
-    readonly property int phoneX: 806
-    readonly property int phoneY: 128
-    readonly property int phoneWidth: 430
-    readonly property int tileIcon: 74
-    readonly property int tileRowGap: 26
-    readonly property int queueIcon: 40
-    // picker sheet
-    readonly property int sheetInsetX: 96
-    readonly property int sheetInsetY: 34
-    readonly property int sheetHead: 84
-    readonly property int sheetFoot: 84
-    readonly property int railWidth: 262
-    readonly property int rowHeight: 46
-    readonly property int groupHeight: 44
-    readonly property int rowIcon: 34
-    readonly property int listPadX: 28
-    readonly property int capWidth: 220
-
-    // -- radii ---------------------------------------------------------------
-    readonly property int radiusCta: 18
-    readonly property int radiusSheet: 18
-    readonly property int radiusGo: 14
-    readonly property int radiusSearch: 12
-    readonly property int radiusRail: 10
-    readonly property int radiusSeg: 10
-    readonly property int radiusSegItem: 8
-    readonly property int radiusCheck: 6
-    readonly property int radiusRowIcon: 8
-    readonly property int radiusQueueIcon: 9
-    readonly property int radiusTile: 17
-
-    function ls(token) { return type[token].ls * type[token].size }
+    readonly property var specStyles: ({
+        numeralXL: numeralXL, numeralL: numeralL, numeralM: numeralM,
+        numeralCaption: numeralCaption, numeralCaptionM: numeralCaptionM,
+        display: display, lead: lead, step: step, button: button, brand: brand,
+        rowTitle: rowTitle, overline: overline, link: link, fine: fine, pill: pill,
+        rowMeta: rowMeta, stageLabel: stageLabel, phoneLabel: phoneLabel
+    })
+    // Прежние имена токенов текста → стили Ники
+    readonly property var styleAlias: ({
+        number: "numeralXL", numberSm: "numeralM", numberWord: "numeralCaption",
+        numberWordSm: "numeralCaptionM", h1: "display", cta: "button", hint: "fine",
+        over: "overline", queueName: "rowTitle", queueSmall: "rowMeta", stage: "stageLabel",
+        tileLabel: "phoneLabel"
+    })
+    function style(name) {
+        var n = styleAlias[name] || name
+        return specStyles[n] || extraStyles[n] || lead
+    }
+    function isDisplay(name) {
+        var n = styleAlias[name] || name
+        return n === "display" || n.indexOf("numeral") === 0
+    }
 }
