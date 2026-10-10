@@ -48,6 +48,16 @@
 
 Проверка лимита + purchase + запись проходят под одной блокировкой, поэтому GUI и
 bench на одном журнале не превысят лимит.
+
+Поправки и гашения (журнал только дописывается):
+
+    record_amend(entry["id"], "acquired")                  # uncertain -> acquired: 1
+    record_amend(entry["id"], "refused")                   # uncertain -> refused: 0
+    record_amend(entry["id"], "acquired_download_failed")  # acquired -> dl failed: 1
+    record_void(entry["id"], "ошибочная запись")           # цепочка: 0, окончательно
+
+В лимит идёт только ПОСЛЕДНИЙ статус цепочки amends (и только из ACQUIRED_STATUSES);
+voids исходной гасит всю цепочку. Подробно — комментарий у VOID_STATUS.
 """
 
 from __future__ import annotations
@@ -74,7 +84,7 @@ except ImportError:  # pragma: no cover - не-Windows
 
 __all__ = ["Verdict", "AcquireResult", "check_can_acquire", "record_acquire",
            "read_counts", "acquire_and_record", "journal_lock",
-           "default_journal_path", "record_void", "DEFAULT_DAILY_LIMIT",
+           "default_journal_path", "record_void", "record_amend", "DEFAULT_DAILY_LIMIT",
            "DEFAULT_TOTAL_LIMIT", "ACQUIRED_STATUSES", "VOID_STATUS"]
 
 DEFAULT_DAILY_LIMIT = 5
@@ -87,10 +97,31 @@ JOURNAL_ENV = "APPRESTORE_LICENSE_JOURNAL"
 ACQUIRED_STATUSES = frozenset({"acquired", "acquired_download_failed", "purchase_uncertain"})
 
 # Журнал только APPEND-ONLY (требование Лены): строки не удаляем и не правим.
-# Ошибочную запись ГАСИМ отдельной строкой status="voided" со ссылкой `voids`
-# на исходную (time+track_id). При подсчёте и сама voided-строка не считается,
-# и исходная, на которую она ссылается, вычитается. Обе строки остаются в файле.
+# Исходная запись лицензии (record_acquire / acquire_and_record) начинает ЦЕПОЧКУ.
+# Дальше к ней только ДОПИСЫВАЮТСЯ строки-ссылки (сами в лимит не идут никогда):
+#
+#   * ``voids``  (status="voided") — ГАСИТ ошибочную запись.
+#       - ``voids: <id исходной>`` -> цепочка не считается, окончательно (поздние
+#         amends её не оживляют);
+#       - ``voids: <id amends-строки>`` -> отменяется ТОЛЬКО эта поправка, цепочка
+#         возвращается к предыдущему статусу (ошибочную поправку гасим, а не лицензию);
+#       - ``voids: {"time","track_id"}`` -> legacy: гасит старые строки БЕЗ id по паре.
+#   * ``amends: <id>`` + ``status`` — МЕНЯЕТ статус цепочки (например
+#     purchase_uncertain -> acquired / refused, acquired -> acquired_download_failed).
+#     ``<id>`` — id исходной ИЛИ id другой amends-строки той же цепочки (amends на
+#     amends). В лимит идёт ПОСЛЕДНИЙ действующий статус цепочки (по порядку строк
+#     в файле = по времени, т.к. запись под journal_lock), и только если он в
+#     ACQUIRED_STATUSES. Промежуточные статусы и сами amends-строки не считаются.
+#     Время для суточного окна — время ИСХОДНОЙ записи.
+#     Только по id: старые строки без id поправками не меняются (amends-словарь
+#     игнорируется — по паре не догадываемся, только явный voids).
+#
+# Ссылка на несуществующий id игнорируется (и сама строка не считается).
+# Порядок подсчёта: сначала свернуть каждую цепочку до последнего статуса (с учётом
+# отменённых поправок), затем применить voids исходных, затем фильтр ACQUIRED_STATUSES.
 VOID_STATUS = "voided"
+AMEND_FIELD = "amends"
+VOID_FIELD = "voids"
 
 
 def default_journal_path() -> Path:
@@ -232,60 +263,99 @@ def _entry_key(entry: dict[str, Any]) -> tuple[str, str]:
     return (str(entry.get("time", "")), str(entry.get("track_id", "")))
 
 
-#: Поля voided-записи, которыми можно сослаться на исходную. ``voids`` — наш
-#: основной, ``amends`` — алиас Димы (update_status пишет ту же схему).
-_VOID_REF_FIELDS = ("voids", "amends")
+def _is_link(entry: dict[str, Any]) -> bool:
+    """Строка-ссылка (гашение или поправка), а не исходная запись лицензии.
 
-
-def _voided_id_refs(entries: list[dict[str, Any]]) -> set[str]:
-    """id исходных записей, погашенных voided-строками (ссылка ``voids``/``amends`` = id-строка)."""
-
-    ids: set[str] = set()
-    for e in entries:
-        if str(e.get("status") or "") != VOID_STATUS:
-            continue
-        for field in _VOID_REF_FIELDS:
-            ref = e.get(field)
-            if isinstance(ref, str) and ref:
-                ids.add(ref)
-    return ids
-
-
-def _voided_pair_refs(entries: list[dict[str, Any]]) -> set[tuple[str, str]]:
-    """Legacy: (time, track_id) исходных строк БЕЗ id, погашенных voided-строками.
-
-    Старая схема ссылки — словарь ``voids`` = {"time", "track_id"}. voided-строка
-    без корректной ссылки ничего не гасит (и сама не считается), подсчёт не ломается.
+    Любая строка с ``voids``/``amends`` или со status="voided" (даже без корректной
+    ссылки) — ссылка: в лимит сама не идёт.
     """
 
-    refs: set[tuple[str, str]] = set()
-    for e in entries:
-        if str(e.get("status") or "") != VOID_STATUS:
+    return (VOID_FIELD in entry or AMEND_FIELD in entry
+            or str(entry.get("status") or "") == VOID_STATUS)
+
+
+def _live_entries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Исходные записи, идущие в лимит, после сворачивания цепочек voids/amends.
+
+    Возвращает КОПИИ исходных строк с итоговым статусом цепочки (поле ``status``),
+    порядок — как в файле. Строки-ссылки сами никогда не возвращаются.
+    """
+
+    roots: list[dict[str, Any]] = []
+    by_id: dict[str, int] = {}                     # id исходной -> индекс
+    by_pair: dict[tuple[str, str], list[int]] = {}  # legacy (без id) -> индексы
+    links: list[dict[str, Any]] = []
+    for e in rows:
+        if _is_link(e):
+            links.append(e)
             continue
-        for field in _VOID_REF_FIELDS:
-            ref = e.get(field)
+        index = len(roots)
+        roots.append(dict(e))
+        eid = e.get("id")
+        if isinstance(eid, str) and eid:
+            by_id.setdefault(eid, index)
+        else:
+            by_pair.setdefault(_entry_key(e), []).append(index)
+
+    link_root: dict[str, int] = {}      # id строки-ссылки -> индекс исходной
+    amend_ids: set[str] = set()         # id amends-строк (их можно отменить через voids)
+    history: dict[int, list[tuple[str, str]]] = {}  # индекс -> [(id поправки, статус)]
+    cancelled: set[str] = set()         # id отменённых поправок
+    voided: set[int] = set()            # погашенные исходные
+
+    def target(ref: Any) -> int | None:
+        if isinstance(ref, str) and ref:
+            if ref in by_id:
+                return by_id[ref]
+            return link_root.get(ref)
+        return None
+
+    for e in links:
+        index: int | None = None
+        if VOID_FIELD in e:
+            ref = e.get(VOID_FIELD)
             if isinstance(ref, dict):
                 key = (str(ref.get("time", "")), str(ref.get("track_id", "")))
-                if key != ("", ""):
-                    refs.add(key)
-    return refs
+                hit = by_pair.get(key, []) if key != ("", "") else []
+                voided.update(hit)
+                index = hit[0] if hit else None
+            elif isinstance(ref, str) and ref in amend_ids:
+                cancelled.add(ref)               # гасим ошибочную поправку, не лицензию
+                index = link_root.get(ref)
+            else:
+                index = target(ref)
+                if index is not None and isinstance(ref, str) and ref in by_id:
+                    voided.add(index)
+                # voids на id другой void-строки: ничего не меняем
+        elif AMEND_FIELD in e:
+            index = target(e.get(AMEND_FIELD))   # словарь (legacy) намеренно не понимаем
+            status = str(e.get("status") or "")
+            lid = e.get("id")
+            if index is not None and status:
+                key = lid if isinstance(lid, str) and lid else f"#anon{len(amend_ids)}"
+                history.setdefault(index, []).append((key, status))
+                if isinstance(lid, str) and lid:
+                    amend_ids.add(lid)
+        # status="voided" без ссылки — ничего не гасит
+        lid = e.get("id")
+        if index is not None and isinstance(lid, str) and lid:
+            link_root.setdefault(lid, index)
+
+    live: list[dict[str, Any]] = []
+    for i, root in enumerate(roots):
+        if i in voided:
+            continue
+        for amend_id, status in reversed(history.get(i, [])):
+            if amend_id not in cancelled:
+                root["status"] = status
+                break
+        if _counts_toward_limit(root):
+            live.append(root)
+    return live
 
 
 def _read_counts_unlocked(path: Path, now: Callable[[], dt.datetime]) -> tuple[int, int]:
-    rows = _read_entries_unlocked(path)
-    id_refs = _voided_id_refs(rows)
-    pair_refs = _voided_pair_refs(rows)
-    entries: list[dict[str, Any]] = []
-    for e in rows:
-        if not _counts_toward_limit(e):
-            continue  # voided-строки и неучитываемые статусы не считаем
-        eid = e.get("id")
-        if isinstance(eid, str) and eid:
-            if eid in id_refs:
-                continue  # погашена по id (однозначно даже при совпадении time)
-        elif _entry_key(e) in pair_refs:
-            continue  # старая запись без id -> погашение по паре (time, track_id)
-        entries.append(e)
+    entries = _live_entries(_read_entries_unlocked(path))
     since = now() - dt.timedelta(hours=24)
     used_today = 0
     for item in entries:
@@ -394,7 +464,8 @@ def record_acquire(track_id: Any, bundle_id: str | None = None,
     """Дописать взятую лицензию в журнал (под блокировкой). Возвращает строку.
 
     Единый формат строки (для GUI и bench):
-      id         — uuid4 записи (строка); по нему гасят через voided/amends;
+      id         — uuid4 записи (строка); на него ссылаются `voids` (гашение,
+                   record_void) и `amends` (смена статуса, record_amend);
       time       — ISO 8601, UTC;
       track_id   — основной ключ (числовой App Store ID, строкой);
       app_id     — алиас track_id (совместимость со старым bench);
@@ -438,7 +509,8 @@ def record_void(target_id: Any = None, reason: str = "", *,
       track_id — track_id исходной (для читаемости);
       status   — "voided";
       voids    — <id исходной> (строка) ЛИБО {"time","track_id"} (legacy-словарь);
-                 алиас `amends` (пишет Дима) читается так же;
+                 <id amends-строки> отменяет только эту поправку;
+                 `amends` — НЕ алиас voids: это смена статуса, см. record_amend();
       reason   — человекочитаемая причина.
     """
 
@@ -462,6 +534,57 @@ def record_void(target_id: Any = None, reason: str = "", *,
         "reason": reason,
     }
     with journal_lock(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return entry
+
+
+def record_amend(target_id: Any, new_status: str, reason: str = "", *,
+                 track_id: Any = None,
+                 journal_path: Path | str | None = None,
+                 now: Callable[[], dt.datetime] = _now_utc) -> dict[str, Any] | None:
+    """Дописать APPEND-ONLY строку ``amends: <id>`` с новым статусом цепочки.
+
+    Пример: purchase упал по таймауту (purchase_uncertain), потом выяснили исход:
+        record_amend(entry["id"], "acquired")   # лицензия есть -> считается 1
+        record_amend(entry["id"], "refused")    # Apple отказала -> не считается
+
+    ``target_id`` — id исходной записи ИЛИ id другой amends-строки той же
+    цепочки. В лимит идёт последний статус цепочки (если он в ACQUIRED_STATUSES),
+    сама поправка не считается; суточное окно — по времени исходной записи.
+    Исходную строку НЕ трогаем. Только для записей с ``id``: если ``target_id``
+    пуст или такого id в журнале нет — ничего не пишем и возвращаем None (старые
+    строки без id меняются только гашением record_void(..., legacy_match=...)).
+    Проверка id и запись — под одной journal_lock.
+
+    Схема amends-строки:
+      id       — uuid4 самой поправки (на неё можно сослаться amends/voids);
+      time     — ISO 8601 UTC, когда поправили;
+      track_id — track_id исходной (для читаемости) или "";
+      status   — новый статус цепочки (любой непустой; в лимит — ACQUIRED_STATUSES);
+      amends   — <id цели> (строка);
+      reason   — человекочитаемая причина.
+    """
+
+    if target_id is None or not str(target_id):
+        return None
+    status = str(new_status or "").strip()
+    if not status:
+        raise ValueError("record_amend: нужен непустой new_status")
+    path = _resolve(journal_path)
+    entry = {
+        "id": str(uuid.uuid4()),
+        "time": now().isoformat(timespec="seconds"),
+        "track_id": str(track_id) if track_id is not None else "",
+        "status": status,
+        AMEND_FIELD: str(target_id),
+        "reason": reason,
+    }
+    with journal_lock(path):
+        known = {e.get("id") for e in _read_entries_unlocked(path)}
+        if str(target_id) not in known:
+            return None
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")

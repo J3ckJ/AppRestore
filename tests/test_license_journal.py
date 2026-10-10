@@ -4,8 +4,8 @@
 changes the chain's status and the limit counts the chain's last status
 (acquired / acquired_download_failed / purchase_uncertain yes, voided no); the
 amendment line itself is not counted; legacy lines without ``id`` are voided
-only by an explicit ``voids``. The counting half is ``license_guard``'s (Макс);
-tests it does not pass yet are strict xfail pointing at the proposal.
+only by an explicit ``voids``. The counting half is ``license_guard``'s (Макс,
+``record_amend``); links are by uuid only.
 """
 
 from __future__ import annotations
@@ -15,16 +15,9 @@ import json
 import threading
 from pathlib import Path
 
-import pytest
-
 from apprestore_core import license_guard, license_journal
 from apprestore_core.license_guard import read_counts, record_void
 
-PROPOSAL = "maks-share/license_guard-amends-proposal/"
-PENDING = pytest.mark.xfail(
-    strict=True,
-    reason=f"license_guard fc1a2a71 counts `amends` lines / reads amends as voids; see {PROPOSAL}",
-)
 FIXED = dt.datetime(2026, 10, 10, 12, 0, 0, tzinfo=dt.timezone.utc)
 
 
@@ -87,6 +80,20 @@ def test_legacy_line_without_id_is_never_amended(tmp_path: Path) -> None:
     assert journal.stat().st_size == size
 
 
+def test_update_status_delegates_to_record_amend(tmp_path, monkeypatch) -> None:
+    calls = []
+
+    def fake(target_id, status, reason="", **kwargs):
+        calls.append((target_id, status, reason, kwargs))
+        return {"amends": target_id}
+
+    monkeypatch.setattr(license_guard, "record_amend", fake)
+    journal = tmp_path / "j.jsonl"
+    assert license_journal.update_status("abc", "acquired_download_failed", track_id="1", reason="r",
+                                         journal_path=journal) == {"amends": "abc"}
+    assert calls == [("abc", "acquired_download_failed", "r", {"track_id": "1", "journal_path": journal})]
+
+
 def test_update_holds_the_journal_lock(tmp_path: Path) -> None:
     journal = tmp_path / "j.jsonl"
     entry = license_journal.record("111", journal_path=journal, price=0.0)
@@ -106,7 +113,6 @@ def test_update_holds_the_journal_lock(tmp_path: Path) -> None:
 # ------------------------------------------------------------ counting (license_guard)
 
 
-@PENDING
 def test_chain_acquired_then_download_failed_counts_once(tmp_path: Path) -> None:
     journal = tmp_path / "j.jsonl"
     entry = license_guard.record_acquire("389801252", status="acquired", journal_path=journal, now=_now)
@@ -121,7 +127,6 @@ def test_chain_purchase_uncertain_then_voids_counts_zero(tmp_path: Path) -> None
     assert read_counts(journal, now=_now) == (0, 0)
 
 
-@PENDING
 def test_chain_amended_then_voided_counts_zero(tmp_path: Path) -> None:
     journal = tmp_path / "j.jsonl"
     entry = license_guard.record_acquire("389801252", status="acquired", journal_path=journal, now=_now)
@@ -137,7 +142,6 @@ def test_void_with_unknown_id_is_ignored(tmp_path: Path) -> None:
     assert read_counts(journal, now=_now) == (1, 1)
 
 
-@PENDING
 def test_amends_with_unknown_id_is_ignored_and_not_counted(tmp_path: Path) -> None:
     journal = tmp_path / "j.jsonl"
     license_guard.record_acquire("389801252", status="acquired", journal_path=journal, now=_now)
@@ -155,7 +159,6 @@ def test_two_attempts_same_second_only_one_voided(tmp_path: Path) -> None:
     assert read_counts(journal, now=_now) == (1, 1)
 
 
-@PENDING
 def test_two_attempts_same_second_amend_one_void_other(tmp_path: Path) -> None:
     journal = tmp_path / "j.jsonl"
     a = license_guard.record_acquire("492224193", status="acquired", journal_path=journal, now=_now)
@@ -177,7 +180,6 @@ def test_legacy_attempt_a_voided_by_pair_counts_zero(tmp_path: Path) -> None:
     assert len(_rows(journal)) == 2
 
 
-@PENDING
 def test_legacy_line_is_not_voided_by_amends(tmp_path: Path) -> None:
     journal = tmp_path / "j.jsonl"
     _append(journal, {"time": "2026-10-10T15:16:42+00:00", "track_id": "492224193", "status": "purchase_uncertain"})

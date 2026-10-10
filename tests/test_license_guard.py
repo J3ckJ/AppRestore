@@ -361,8 +361,8 @@ def test_two_same_second_same_track_voided_individually_by_id(tmp_path):
     assert lg.read_counts(journal, now=lambda: fixed) == (1, 1)
 
 
-def test_amends_alias_is_honored(tmp_path):
-    """Дима пишет ссылку в поле `amends` -> читается как гашение по id."""
+def test_amends_to_voided_status_counts_zero(tmp_path):
+    """`amends` НЕ алиас voids: это смена статуса; последний статус voided -> 0."""
     journal = tmp_path / "licenses_acquired.jsonl"
     e = lg.record_acquire("389801252", status="acquired", journal_path=journal)
     assert lg.read_counts(journal) == (1, 1)
@@ -381,3 +381,129 @@ def test_legacy_pair_still_works_without_id(tmp_path):
     lg.record_void(None, "legacy fix",
                    legacy_match=("2026-10-10T15:16:42+00:00", "492224193"), journal_path=journal)
     assert lg.read_counts(journal) == (0, 0)
+
+
+# -------------------------------------------------------------- цепочки amends
+
+
+def _amend_raw(path, target, status, *, link_id, track="389801252", when="2026-10-10T12:00:05+00:00"):
+    _append_raw(path, {"id": link_id, "time": when, "track_id": track,
+                       "status": status, "amends": target, "reason": "test"})
+
+
+def test_amend_uncertain_to_acquired_counts_one(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    link = lg.record_amend(e["id"], "acquired", "verified via list-purchases",
+                           track_id="389801252", journal_path=j, now=_now)
+    assert link["amends"] == e["id"] and link["status"] == "acquired"
+    assert link["id"] != e["id"]
+    import uuid as _uuid
+    _uuid.UUID(link["id"])
+    assert lg.read_counts(j, now=_now) == (1, 1)
+
+
+def test_amend_uncertain_to_refused_counts_zero(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (1, 1)
+    lg.record_amend(e["id"], "refused", "-128 Account Not In This Store", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (0, 0)
+    assert lg.check_can_acquire("1", 0, journal_path=j, daily_limit=1, now=_now).allowed
+
+
+def test_amend_chain_of_two_last_status_wins(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    a1 = lg.record_amend(e["id"], "refused", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (0, 0)
+    a2 = lg.record_amend(a1["id"], "acquired", journal_path=j, now=_now)   # amends на amends
+    assert a2["amends"] == a1["id"]
+    assert lg.read_counts(j, now=_now) == (1, 1)                           # не 2 и не 3
+    lg.record_amend(e["id"], "acquired_download_failed", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (1, 1)
+
+
+def test_amend_then_void_root_counts_zero_and_stays_voided(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    lg.record_amend(e["id"], "acquired", journal_path=j, now=_now)
+    lg.record_void(e["id"], "mistake", track_id="389801252", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (0, 0)
+    lg.record_amend(e["id"], "acquired", journal_path=j, now=_now)   # не оживляет
+    assert lg.read_counts(j, now=_now) == (0, 0)
+
+
+def test_void_of_amend_line_reverts_only_that_amend(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    bad = lg.record_amend(e["id"], "refused", "wrong guess", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (0, 0)
+    lg.record_void(bad["id"], "amend was wrong", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (1, 1)    # снова purchase_uncertain
+
+
+def test_amend_keeps_original_time_for_daily_window(tmp_path):
+    j = tmp_path / "j.jsonl"
+    old = FIXED - dt.timedelta(days=2)
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=lambda: old)
+    lg.record_amend(e["id"], "acquired", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (0, 1)
+
+
+def test_amend_unknown_id_writes_nothing(tmp_path):
+    j = tmp_path / "j.jsonl"
+    lg.record_acquire("389801252", journal_path=j, now=_now)
+    size = j.stat().st_size
+    assert lg.record_amend("no-such-id", "refused", journal_path=j, now=_now) is None
+    assert lg.record_amend("", "refused", journal_path=j, now=_now) is None
+    assert j.stat().st_size == size
+    _amend_raw(j, "no-such-id", "acquired", link_id="x")   # чужая строка на неизвестный id
+    assert lg.read_counts(j, now=_now) == (1, 1)
+
+
+def test_amend_empty_status_rejected(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", journal_path=j, now=_now)
+    with pytest.raises(ValueError):
+        lg.record_amend(e["id"], "", journal_path=j, now=_now)
+
+
+def test_record_amend_is_append_only(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    before = j.read_bytes()
+    lg.record_amend(e["id"], "acquired", journal_path=j, now=_now)
+    assert j.read_bytes().startswith(before)
+    assert len(j.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_mixed_legacy_and_new_format(tmp_path):
+    """Старые строки без id + новые с id/amends/voids в одном журнале."""
+    j = tmp_path / "j.jsonl"
+    # legacy: без status (=взята) и purchase_uncertain без id
+    _append_raw(j, {"time": "2026-10-10T09:00:00+00:00", "track_id": "111"})
+    _append_raw(j, {"time": "2026-10-10T10:00:00+00:00", "track_id": "222",
+                    "status": "purchase_uncertain", "price": 0.0})
+    a = lg.record_acquire("333", status="purchase_uncertain", journal_path=j, now=_now)
+    b = lg.record_acquire("444", status="purchase_uncertain", journal_path=j, now=_now)
+    assert lg.read_counts(j, now=_now) == (4, 4)
+    lg.record_amend(a["id"], "acquired", journal_path=j, now=_now)         # 333: 1
+    lg.record_amend(b["id"], "refused", journal_path=j, now=_now)          # 444: 0
+    # legacy-строку amends-словарь не меняет (по паре только voids)
+    _append_raw(j, {"id": "x", "time": "2026-10-10T12:00:01+00:00", "track_id": "222",
+                    "status": "refused",
+                    "amends": {"time": "2026-10-10T10:00:00+00:00", "track_id": "222"}})
+    assert lg.read_counts(j, now=_now) == (3, 3)
+    lg.record_void(None, "legacy fix", legacy_match=("2026-10-10T10:00:00+00:00", "222"),
+                   journal_path=j, now=_now)                                 # 222: 0
+    assert lg.read_counts(j, now=_now) == (2, 2)                            # 111 + 333
+
+
+def test_amend_lines_never_double_count_with_limit(tmp_path):
+    j = tmp_path / "j.jsonl"
+    e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=j, now=_now)
+    for status in ("acquired", "acquired_download_failed", "acquired"):
+        lg.record_amend(e["id"], status, journal_path=j, now=_now)
+    v = lg.check_can_acquire("999", 0, journal_path=j, daily_limit=2, total_limit=2, now=_now)
+    assert v.allowed and (v.used_today, v.used_total) == (1, 1)

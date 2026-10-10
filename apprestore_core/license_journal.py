@@ -9,22 +9,19 @@ below maps the gate's purchase onto Макс's callback contract, and
 
 The journal is append-only (Лена): lines are never rewritten or removed.
 The gate writes ``acquired`` right after a successful ``ipatool purchase``;
-if the download that follows fails, ``update_status`` APPENDS an amendment
-``{id, time, track_id, status, amends: <id of that line>, reason}``. Лена's
-semantics: the limit counts the last status of the chain (``acquired`` →
-``acquired_download_failed`` still counts once), only ``voids`` cancels, and
-the amendment itself is not counted. Until ``license_guard`` implements that
-(proposal: ``maks-share/license_guard-amends-proposal/``), it counts the
-amendment line as one more license: stricter, never looser.
+if the download that follows fails, ``update_status`` appends an amendment
+through Макс's ``license_guard.record_amend``:
+``{id, time, track_id, status, amends: <uuid of that line>, reason}``.
+Links are by uuid only (legacy lines without ``id`` are never amended, only
+voided explicitly with ``voids``). ``license_guard`` counts the chain's last
+status (``acquired`` → ``acquired_download_failed`` still counts once); the
+amendment line itself is not an extra license; ``voids`` cancels.
 """
 
 from __future__ import annotations
 
-import datetime as dt
-import json
 import os
 import threading
-import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -92,52 +89,20 @@ def update_status(
     """Append ``amends: <target_id>`` with the chain's new ``status``.
 
     ``target_id`` is the ``id`` of the line ``acquire_and_record`` returned.
-    Earlier lines stay byte-for-byte unchanged; the file only grows. Returns
+    Delegates to Макс's ``license_guard.record_amend`` (same ``journal_lock``):
+    earlier lines stay byte-for-byte unchanged, the file only grows. Returns
     the appended line, or ``None`` (nothing written) when ``target_id`` is
-    empty or not in the journal: legacy lines without ``id`` are never
-    amended, only voided explicitly by ``license_guard.record_void``.
+    empty or not in the journal.
     """
 
-    native = getattr(license_guard, "record_amend", None)
-    path = Path(journal_path)
     if not target_id:
         return None
-    if callable(native):
-        with _LOCK:
-            entry = native(target_id, status, reason, track_id=track_id, journal_path=path)
+    path = Path(journal_path)
+    with _LOCK:
+        entry = license_guard.record_amend(target_id, status, reason, track_id=track_id, journal_path=path)
+    if entry is not None:
         _private(path)
-        return entry
-    line = {
-        "id": str(uuid.uuid4()),
-        "time": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "track_id": str(track_id),
-        "status": str(status),
-        "amends": str(target_id),
-        "reason": reason,
-    }
-    # Same <journal>.lock as Макс's acquire_and_record / record_acquire / bench.
-    with _LOCK, license_guard.journal_lock(path):
-        if not _has_id(path, str(target_id)):
-            return None
-        with path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(line, ensure_ascii=False) + "\n")
-    _private(path)
-    return line
-
-
-def _has_id(path: Path, wanted: str) -> bool:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return False
-    for raw in text.splitlines():
-        try:
-            item = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict) and item.get("id") == wanted:
-            return True
-    return False
+    return entry
 
 
 class PurchaseRefused(Exception):
