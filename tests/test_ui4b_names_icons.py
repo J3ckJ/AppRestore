@@ -241,3 +241,100 @@ def test_placeholder_is_theme_token_no_dash_no_letter() -> None:
     for f in (root / "components").glob("*.qml"):
         t = f.read_text(encoding="utf-8")
         assert "modelData.mark" not in t and ".mark\b" not in t, f
+
+
+# -- BUG (Eugene, f7b0f28): 4 phone tiles «Приложение» with a dashed outline ---------------
+
+
+def _tile_window(tmp_path, tile_js: str):
+    comp = Path(__file__).resolve().parents[1] / "apprestore_gui" / "qml4b" / "components"
+    book = IconBook(cache=FakeArt(_png(tmp_path), fail_first=False))
+    qml = tmp_path / "t.qml"
+    qml.write_text(
+        "import QtQuick\nimport QtQuick.Window\nimport \"" + QUrl.fromLocalFile(str(comp)).toString() + "\"\n"
+        "Window { width: 200; height: 200; visible: true\n"
+        "  PhoneTile { objectName: 'tile'; tile: (" + tile_js + ") } }\n",
+        encoding="utf-8",
+    )
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("iconBook", book)
+    warnings: list[str] = []
+    engine.warnings.connect(lambda ws: warnings.extend(w.toString() for w in ws))
+    engine.load(QUrl.fromLocalFile(str(qml)))
+    win = engine.rootObjects()[0]
+    tile = win.findChild(QObject, "tile")
+    return (engine, win), book, tile, warnings
+
+
+@pytest.mark.parametrize("ids", ["storeId: '9'", "bundleId: 'ru.bank.app'", "storeId: '9', bundleId: 'ru.bank.app'"])
+def test_missing_app_slot_is_a_placeholder_icon_not_a_dashed_empty_place(qapp, tmp_path, ids) -> None:
+    engine, _book, tile, warnings = _tile_window(tmp_path, "{kind: 'slot', name: 'Приложение', " + ids + "}")
+    dash = tile.findChild(QObject, "slotDash")
+    icon = [o for o in tile.findChildren(QObject) if o.property("hasArt") is not None][0]
+    assert tile.property("emptySlot") is False
+    assert dash.property("visible") is False  # no dashes for a real app
+    assert icon.property("visible") is True and icon.property("hasArt") is False  # Theme.iconPlaceholder
+    assert icon.property("width") == tile.property("icon") and icon.property("radius") == tile.property("r")
+    assert not warnings, warnings
+    del engine
+
+
+def test_only_a_truly_empty_place_is_dashed(qapp, tmp_path) -> None:
+    engine, _book, tile, warnings = _tile_window(tmp_path, "{kind: 'slot', name: ''}")
+    assert tile.property("emptySlot") is True
+    assert tile.findChild(QObject, "slotDash").property("visible") is True
+    icon = [o for o in tile.findChildren(QObject) if o.property("hasArt") is not None][0]
+    assert icon.property("visible") is False
+    assert not warnings, warnings
+    del engine
+
+
+def test_dash_rule_lives_in_one_place() -> None:
+    qml = (Path(__file__).resolve().parents[1] / "apprestore_gui" / "qml4b" / "components" / "PhoneTile.qml").read_text(encoding="utf-8")
+    assert qml.count("DashLine") == 1
+    assert "visible: root.emptySlot && !root.tile.pending" in qml and "visible: !root.emptySlot" in qml
+    assert 'root.kind === "slot" && !root.tile.pending' not in qml
+
+
+def test_home_slots_for_missing_apps_carry_their_ids(qapp) -> None:
+    from apprestore_gui.ui4b.catalog import GROUP_REMOVED, RestoreItem
+    from apprestore_gui.ui4b.home import HomeInput, phone_tiles
+
+    items = [RestoreItem(key=f"store:{i}", name="Приложение", group=GROUP_REMOVED, action="store",
+                         store_id=str(i), bundle_id=f"ru.example.app{i}") for i in range(4)]
+    inp = HomeInput(connected=True, items=items)
+    slots = [t for t in phone_tiles(inp, "missing") if t["kind"] == "slot"]
+    assert len(slots) == 4 and all(t["storeId"] and t["bundleId"] for t in slots)
+
+
+def test_installation_proxy_asks_for_names_and_keeps_offloaded() -> None:
+    import inspect
+
+    from apprestore_core.tools import AppRestoreTools
+
+    src = inspect.getsource(AppRestoreTools._list_apps_with_metadata)
+    for attr in ("CFBundleDisplayName", "CFBundleName", "CFBundleIdentifier", "ApplicationType"):
+        assert f'"{attr}"' in src
+    assert '"ReturnAttributes": return_attributes' in src
+    assert '"ApplicationType": "User"' in src and '"ShowPlaceholders": True' in src
+
+
+def test_offloaded_placeholder_name_from_itunes_metadata() -> None:
+    import plistlib
+
+    from apprestore_core.catalog import parse_offloaded_apps
+
+    meta = plistlib.dumps({"itemName": "Погода Плюс", "itemId": 123})
+    payload = {"ru.example.weather": {"CFBundleIdentifier": "ru.example.weather", "IsPlaceholder": True,
+                                      "ApplicationType": "User", "iTunesMetadata": meta}}
+    apps = parse_offloaded_apps(payload, [], {})
+    assert [a.name for a in apps] == ["Погода Плюс"]
+
+
+def test_service_stand_in_name_is_not_a_title() -> None:
+    from apprestore_gui.ui4b.names import resolve, usable
+
+    assert usable("App Store 492224193", store_id="492224193") == ""
+    assert resolve("App Store 492224193", store_id="492224193",
+                   builtin={"492224193": "Сбербанк Онлайн"}) == "Сбербанк Онлайн"
+    assert resolve("App Store 1", store_id="1") == "Приложение"

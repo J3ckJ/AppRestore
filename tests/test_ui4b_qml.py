@@ -398,10 +398,18 @@ def test_picker_offline_folds_groups_and_allows_only_offloaded(qapp) -> None:
 def test_session_source_rechecks_read_only_when_network_returns(qapp) -> None:
     from apprestore_gui.ui4b.qt_bridge import SessionSource
 
+    import time
+
     session = FakeSession()
     session.sessionState = "offline"
     src = SessionSource(session)
+    src._probe_hosts = lambda: False  # no host answers either: really offline
     session.changed.emit()
+    end = time.monotonic() + 5
+    while src._hosts_busy and time.monotonic() < end:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
     assert src.online is False
     session.sessionState = "ok"
     session.changed.emit()

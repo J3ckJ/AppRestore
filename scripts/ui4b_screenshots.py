@@ -35,6 +35,9 @@ SHOTS: tuple[tuple[str, str, str | None], ...] = (
     ("find-builtin", "missing", None),
     ("find-archive", "missing", None),
     ("find-archive-busy", "missing", None),
+    ("find-signin", "missing", None),
+    ("find-archive-down", "missing", None),
+    ("signin-code-wrong", "signin", None),
     ("settings-sheet", "missing", None),
     ("home-apple-rejected", "missing", None),
     ("account-sheet", "missing", None),
@@ -73,6 +76,11 @@ def prepare(controller, source, scenario: str, name: str = "") -> None:
                     if net else []), False
 
         busy = name == "find-archive-busy"
+        if name == "find-signin":
+            source.signed_in = False  # not signed in: search works, banner «Войти»
+        if name == "find-archive-down":
+            def delisted(query, net, _d=delisted):  # noqa: F811
+                return ([], True) if net else _d(query, net)
         f = controller.finder
         f.set_delisted(delisted)
         f._spawn = (lambda fn: None) if busy else (lambda fn: fn())
@@ -85,7 +93,7 @@ def prepare(controller, source, scenario: str, name: str = "") -> None:
             f.state.archive_state, f.state.archive_asked = "busy", True
             f.changed.emit()
         else:
-            f.openWith("сириус" if name == "find-builtin" else "демо банк")
+            f.openWith("сириус" if name in ("find-builtin", "find-signin") else "демо банк")
         return
     if name == "settings-sheet":
         controller.openSettings()
@@ -101,6 +109,14 @@ def prepare(controller, source, scenario: str, name: str = "") -> None:
         controller.openAccount()
         if name == "account-signout":
             controller.askSignOut()
+        return
+    if name == "signin-code-wrong":
+        from apprestore_gui.auth_pty import WRONG_CODE_TEXT
+
+        source.auth_status = WRONG_CODE_TEXT
+        source.auth_phase = "out"
+        source.account_email = "marina@example.com"
+        controller.openSignIn()
         return
     if name == "signin-code":
         controller.openSignIn()

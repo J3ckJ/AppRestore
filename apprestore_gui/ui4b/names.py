@@ -30,7 +30,8 @@ def is_bundle_like(text: str, bundle_id: str = "") -> bool:
 
 def usable(text: object, bundle_id: str = "", store_id: str = "") -> str:
     value = " ".join(str(text or "").split())
-    if not value or is_bundle_like(value, bundle_id) or (store_id and value == store_id) or value.isdigit():
+    if (not value or is_bundle_like(value, bundle_id) or (store_id and value == store_id) or value.isdigit()
+            or re.fullmatch(r"App Store \d+", value)):  # service.py's stand-in for a nameless known app
         return ""
     return value
 

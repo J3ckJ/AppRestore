@@ -110,14 +110,6 @@ Window {
         sourceComponent: PickerSheet {}
     }
 
-    // -- sign-in with 2FA ------------------------------------------------------------
-    Loader {
-        anchors.fill: parent
-        active: !!ui.signIn.open
-        focus: active
-        sourceComponent: SignInSheet {}
-    }
-
     // -- «Apple ID» when signed in: who, «Выйти» (04-auth §2a) -------------------------
     Loader {
         anchors.fill: parent
@@ -130,8 +122,16 @@ Window {
     Loader {
         anchors.fill: parent
         active: ui.find.open
-        focus: active
+        focus: active && !ui.signIn.open
         sourceComponent: FindSheet {}
+    }
+
+    // -- sign-in with 2FA: above «Найти» (its «Поставить»/«Войти» opens it over the results)
+    Loader {
+        anchors.fill: parent
+        active: !!ui.signIn.open
+        focus: active
+        sourceComponent: SignInSheet {}
     }
 
     // -- «Настройки»: macOS menu «Настройки…» + ⌘, ; Windows Ctrl+, and a quiet link --

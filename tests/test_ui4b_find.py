@@ -179,13 +179,14 @@ def test_archive_timeout_and_down_banner(qapp) -> None:
     c, _ = controller(delisted=d)
     c.finder.openWith("редкое")
     v = c.finder.view
-    assert v["banner"] == F.ARCHIVE_DOWN and v["spinner"] == ""
+    assert v["archiveNote"] == F.ARCHIVE_DOWN and v["spinner"] == ""
+    assert c.finder.banner["text"] == ""  # the archive failing is not «offline»
     pending = []
     c2 = Restore4b(FakeSource("missing"), find_options={"delisted": Delisted(), "spawn": pending.append})
     c2.finder.openWith("редкое")
     pending.pop(0)()
     c2.finder._archive_timeout(c2.finder._gen)
-    assert c2.finder.view["banner"] == F.ARCHIVE_DOWN and c2.finder.view["spinner"] == ""
+    assert c2.finder.view["archiveNote"] == F.ARCHIVE_DOWN and c2.finder.view["spinner"] == ""
 
 
 def test_actions_owned_free_paid_unknown_component_and_offline(qapp) -> None:
@@ -211,7 +212,7 @@ def test_actions_owned_free_paid_unknown_component_and_offline(qapp) -> None:
     c._on_source()
     c.finder.search("app")
     v = c.finder.view
-    assert v["banner"] == F.OFFLINE_BANNER and all(not r["enabled"] for r in rows(c))
+    assert c.finder.banner["text"] == F.OFFLINE_BANNER and all(not r["enabled"] for r in rows(c))
 
 
 def test_empty_field_is_placeholder_only_no_suggestions(qapp) -> None:
@@ -522,6 +523,6 @@ def test_offline_find_builtin_only_install_disabled_no_archive_no_footnote(qapp)
     c._on_source()
     c.finder.openWith("сириус")
     v = c.finder.view
-    assert v["banner"] == "Нет интернета. Найденное можно будет поставить, когда он появится"
+    assert c.finder.banner["text"] == "Нет интернета. Найденное можно будет поставить, когда он появится"
     assert rows(c) and all(not r["enabled"] for r in rows(c))
     assert all(net is False for _, net in d.calls) and v["footnote"] == "" and not v["spinner"]

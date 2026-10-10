@@ -14,6 +14,11 @@ Item {
     readonly property real r: Theme.tileRadius * k
     readonly property real progress: tile.progress === undefined ? -1 : tile.progress
     readonly property bool busy: kind === "downloading" || kind === "installing"
+    // THE one rule for the dashed outline (Ника): dashes = a truly empty place.
+    // Any tile that stands for a real app (store id or bundle id) is a normal icon
+    // tile (artwork, else Theme.iconPlaceholder); a missing app's «slot» is the
+    // plain Theme.iconPlaceholder tile of the same size and radius; no dashes, no letters.
+    readonly property bool emptySlot: kind === "slot" && !(tile.storeId || tile.bundleId)
     width: icon
     height: icon + 7 + 15
 
@@ -36,9 +41,11 @@ Item {
         id: art
         width: root.icon; height: root.icon
         radius: root.r
-        storeId: root.tile.storeId || ""
-        bundleId: root.tile.bundleId || ""
-        visible: root.kind !== "slot"
+        // a missing app's place: the neutral placeholder tile (not its artwork —
+        // it is not on the phone), same size and radius as a real icon
+        storeId: root.kind === "slot" ? "" : (root.tile.storeId || "")
+        bundleId: root.kind === "slot" ? "" : (root.tile.bundleId || "")
+        visible: !root.emptySlot
         // opacity у иконки, не у плитки: подпись не гаснет (спека §6)
         iconOpacity: root.tile.pending ? 0.6
                    : root.busy ? 0.55
@@ -50,7 +57,8 @@ Item {
     // пустое место: пунктир (у Rectangle.border пунктира нет)
     Shape {
         width: root.icon; height: root.icon
-        visible: root.kind === "slot" && !root.tile.pending
+        objectName: "slotDash"
+        visible: root.emptySlot && !root.tile.pending
         preferredRendererType: Shape.CurveRenderer
         ShapePath {
             strokeColor: Theme.slotDash

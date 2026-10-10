@@ -43,6 +43,21 @@ EMPTY_TEXT = "Ничего не нашли. Попробуйте другое н
 ARCHIVE_LINK = "Искать и в архиве"
 ARCHIVE_DOWN = "Архив сейчас не отвечает, показываем только найденное в App Store"
 OFFLINE_BANNER = "Нет интернета. Найденное можно будет поставить, когда он появится"  # Ника, final
+#: 02-picker §6b: not signed in / session expired — search works fully, only installing
+#: needs the Apple ID; «Войти» opens the sign-in sheet.
+SIGNIN_BANNER = "Войдите в Apple ID, чтобы поставить найденное"
+SIGNIN_LINK = "Войти"
+
+
+def banner(*, online: bool, signed_in: bool) -> dict[str, str]:
+    """The quiet banner above the results: «Нет интернета» only when no host
+    answered (ui4b.network); otherwise the sign-in banner when there is no session."""
+
+    if not online:
+        return {"kind": "offline", "text": OFFLINE_BANNER, "link": ""}
+    if not signed_in:
+        return {"kind": "signin", "text": SIGNIN_BANNER, "link": SIGNIN_LINK}
+    return {"kind": "", "text": "", "link": ""}
 BANK_LINK_NOTE = "Ссылку на это приложение публиковал банк"
 INSTALL = "Поставить"
 PAID_NOTE = "Платное, нет в ваших покупках"
@@ -306,7 +321,6 @@ class FindState:
         busy = self.archive_state == "busy"
         searching = typed and not self.store_done
         empty = typed and self.store_done and not busy and not rows
-        banner = OFFLINE_BANNER if self.offline else (ARCHIVE_DOWN if self.archive_state == "down" else "")
         return {
             "rows": rows,
             "typed": typed,
@@ -314,7 +328,9 @@ class FindState:
             "spinner": SEARCHING_ARCHIVE if busy else "",
             "empty": EMPTY_TEXT if empty else "",
             "emptyLink": ARCHIVE_LINK if empty and not self.archive_enabled else "",
-            "banner": banner,
+            # the archive failing is not «offline»: a quiet note under the
+            # «Удалено из App Store» block only (the last group, so the list footer)
+            "archiveNote": ARCHIVE_DOWN if self.archive_state == "down" and not self.offline else "",
             "footnote": ARCHIVE_NOTE if self.archive_enabled and self.archive_asked else "",
         }
 

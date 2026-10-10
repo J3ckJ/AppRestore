@@ -12,6 +12,8 @@ Thin on purpose: every decision is in ``selection``, ``space``, ``home``,
 from __future__ import annotations
 
 import threading
+import time
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
@@ -56,6 +58,7 @@ from apprestore_core.delisted_attempt import on_account as attempt_account
 from apprestore_core.delisted_attempt import reset_session as reset_attempt_session
 from apprestore_core.delisted_attempt import mark_attempted, record_prices, record_region_probe
 from apprestore_gui.ui4b.find_qt import Find4b
+from apprestore_gui.ui4b.network import REPROBE_S, any_host_answers, is_offline
 from apprestore_gui.ui4b.names import builtin_names, purchase_names
 from apprestore_gui.ui4b.names import resolve as resolve_name
 from apprestore_gui.ui4b.settings import ARCHIVE_DEFAULT, UPDATE_BUSY, settings_view, update_status
@@ -259,6 +262,7 @@ class SessionSource(SourceBase):
 
     _missingReady = Signal(str, object)
     _spaceReady = Signal(str, object)
+    _hostsReady = Signal(bool)
 
     def __init__(self, session: Any) -> None:
         super().__init__()
@@ -283,6 +287,12 @@ class SessionSource(SourceBase):
         self._builtin_names: dict[str, str] | None = None
         self._missingReady.connect(self._on_missing)
         self._spaceReady.connect(self._on_space)
+        self._hostsReady.connect(self._on_hosts)
+        #: anonymous TCP probe (ui4b.network): None = not asked / no answer yet
+        self._hosts_answer: bool | None = None
+        self._hosts_busy = False
+        self._hosts_at = 0.0
+        self._probe_hosts: Callable[[], bool] = any_host_answers
 
     # -- reading ---------------------------------------------------------------
 
@@ -300,11 +310,15 @@ class SessionSource(SourceBase):
         self.relogin = bool(getattr(s, "sessionRelogin", False)) and not is_store_mismatch(note)
         self.auth_status = str(getattr(s, "authStatus", "") or "")
         self.account_email = str(getattr(s, "accountEmail", "") or getattr(s, "boundEmail", "") or "")
-        was_online = self.online
-        self.online = str(getattr(s, "sessionState", "") or "") != "offline"
+        # «offline» from the session probe is not «no internet» by itself (no account,
+        # an unfinished sign-in, an unknown ipatool answer…): ask public hosts too
+        state = str(getattr(s, "sessionState", "") or "")
+        if state == "offline":
+            self._ask_hosts()
+        else:
+            self._hosts_answer = None
+        self._set_online(not is_offline(state, self._hosts_answer))
         udid = s.current_udid()
-        if self.online and not was_online:
-            self.recheck()
         if self.connected and udid and not self.loading and udid != self._missing_udid:
             self._missing_udid = udid
             threading.Thread(target=self._load_missing, args=(udid,), daemon=True, name="ui4b-missing").start()
@@ -347,6 +361,35 @@ class SessionSource(SourceBase):
         if udid == self.session.current_udid():
             self._missing = list(apps or [])  # type: ignore[call-overload]
             self.changed.emit()
+
+    def _set_online(self, online: bool) -> None:
+        was_online = self.online
+        self.online = online
+        if online and not was_online:
+            self.recheck()
+
+    def _ask_hosts(self) -> None:
+        if self._hosts_busy or time.monotonic() - self._hosts_at < REPROBE_S:
+            return
+        self._hosts_busy = True
+        probe = self._probe_hosts
+
+        def work() -> None:
+            try:
+                ok = bool(probe())
+            except Exception:  # noqa: BLE001
+                ok = True  # cannot tell: never claim «offline»
+            self._hostsReady.emit(ok)
+
+        threading.Thread(target=work, daemon=True, name="ui4b-hosts").start()
+
+    def _on_hosts(self, ok: bool) -> None:
+        self._hosts_busy = False
+        self._hosts_at = time.monotonic()
+        self._hosts_answer = ok
+        state = str(getattr(self.session, "sessionState", "") or "")
+        self._set_online(not is_offline(state, ok))
+        self.changed.emit()
 
     def _load_space(self, udid: str) -> None:
         try:
@@ -561,6 +604,7 @@ class Restore4b(QObject):
             archive_enabled=lambda: self._archive_search,
             install=self.installFound,
             open_settings=self.openSettings,
+            sign_in=self.openSignIn,
             component_missing=lambda: bool(self._patches_missing),
             rejected=lambda: set(self.flow.apple_rejected),
             **(find_options or {}),

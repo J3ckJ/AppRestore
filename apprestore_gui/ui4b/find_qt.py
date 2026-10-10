@@ -15,7 +15,7 @@ from typing import Any
 from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 
 from .find import (
-    ARCHIVE_TIMEOUT_S, PLACEHOLDER, TITLE, FindState, Hit, hit_from, load_module, min_confidence, run_delisted,
+    ARCHIVE_TIMEOUT_S, PLACEHOLDER, TITLE, FindState, banner as banner_view, Hit, hit_from, load_module, min_confidence, run_delisted,
 )
 from apprestore_core.delisted_attempt import is_attempt_status, record_prices, status_value
 
@@ -28,6 +28,9 @@ def _thread(fn: Callable[[], None]) -> None:
 
 class Find4b(QObject):
     changed = Signal()
+    #: only the banner (network / sign-in): the rows are not re-read, so the
+    #: list keeps its scroll position when the user signs in
+    bannerChanged = Signal()
     _storeDone = Signal(int, object, object, object)  # gen, rows, offers, statuses
     _archiveDone = Signal(int, object, bool, object, object)  # gen, hits, down, statuses, offers
 
@@ -38,6 +41,7 @@ class Find4b(QObject):
         archive_enabled: Callable[[], bool],
         install: Callable[[str, str, str], None],
         open_settings: Callable[[], None],
+        sign_in: Callable[[], None] = lambda: None,
         component_missing: Callable[[], bool] = lambda: False,
         rejected: Callable[[], set[str]] = set,
         delisted: Callable[[str, bool], tuple[list[Any], bool]] | None = None,
@@ -50,6 +54,11 @@ class Find4b(QObject):
         self._archive_enabled = archive_enabled
         self._install = install
         self._open_settings = open_settings
+        self._sign_in = sign_in
+        source_changed = getattr(source, "changed", None)
+        if source_changed is not None and hasattr(source_changed, "connect"):
+            source_changed.connect(self._on_source_changed)
+        self._was_offline: bool | None = None
         self._component_missing = component_missing
         self._rejected = rejected
         self._module = module if module is not None else (None if delisted else load_module())
@@ -85,6 +94,23 @@ class Find4b(QObject):
     def query(self) -> str:
         return self.state.query
 
+    def signed_in(self) -> bool:
+        """A usable session: signed in and Apple did not ask to sign in again."""
+
+        return bool(getattr(self.source, "signed_in", False)) and not bool(getattr(self.source, "relogin", False))
+
+    @Property("QVariantMap", notify=bannerChanged)
+    def banner(self) -> dict[str, str]:
+        return banner_view(online=bool(self.source.online), signed_in=self.signed_in())
+
+    def _on_source_changed(self) -> None:
+        self.bannerChanged.emit()
+        offline = not self.source.online
+        if self._open and self._was_offline is not None and offline != self._was_offline:
+            self.state.offline = offline  # rows enabled/disabled follow the network
+            self.changed.emit()
+        self._was_offline = offline
+
     @Property("QVariantMap", notify=changed)
     def view(self) -> dict[str, object]:
         v = self.state.view()
@@ -111,6 +137,7 @@ class Find4b(QObject):
         st = self.state
         st.reset(query)
         st.offline = not self.source.online
+        self._was_offline = st.offline
         st.archive_enabled = bool(self._archive_enabled())
         st.archive_available = self._has_delisted
         st.component_missing = bool(self._component_missing())
@@ -143,7 +170,12 @@ class Find4b(QObject):
 
     @Slot(str, str)
     def install(self, store_id: str, name: str) -> None:
-        if self.state.offline or not store_id:
+        if not self.source.online or not store_id:
+            return
+        if not self.signed_in():
+            # 02-picker §6b, Лена R3: open the sign-in sheet over these results; after
+            # signing in nothing continues by itself — the user presses «Поставить» again
+            self._sign_in()
             return
         self._open = False
         self._gen += 1
@@ -151,6 +183,12 @@ class Find4b(QObject):
         status = self.state.statuses.get(store_id)
         flag = status_value(status) if is_attempt_status(status) else ""
         self._install(store_id, name, flag)
+
+    @Slot()
+    def signIn(self) -> None:
+        """«Войти» in the banner."""
+
+        self._sign_in()
 
     @Slot()
     def openSettings(self) -> None:

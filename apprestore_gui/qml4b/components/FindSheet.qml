@@ -12,6 +12,8 @@ Item {
     anchors.fill: parent
     readonly property var f: ui.find
     readonly property var v: f.view
+    // separate from the rows: a sign-in only changes this, so the list keeps its scroll
+    readonly property var b: f.banner
     focus: true
     Keys.onEscapePressed: f.close()
 
@@ -91,25 +93,50 @@ Item {
             Timer { id: debounce; interval: 250; onTriggered: root.f.search(input.text) }
         }
 
-        // -- banner: offline / archive down --------------------------------------------
+        // -- banner: no internet (no host answered) / not signed in («Войти») ----------
         Rectangle {
             id: banner
             objectName: "findBanner"
             x: sbox.x
             y: sbox.y + sbox.height + 12
             width: sbox.width
-            visible: (root.v.banner || "") !== ""
-            height: visible ? bannerText.implicitHeight + 22 : 0
+            visible: (root.b.text || "") !== ""
+            height: visible ? Math.max(bannerText.implicitHeight, bannerLink.implicitHeight) + 22 : 0
             radius: 10
             color: Theme.surfaceSoft
+            Glyph {
+                id: bannerGlyph
+                Accessible.ignored: true
+                x: 14
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.b.kind === "signin"
+                name: "lock"
+                size: 14
+            }
             T {
                 id: bannerText
-                x: 14; y: 11
-                width: parent.width - 28
+                x: bannerGlyph.visible ? 14 + 14 + 8 : 14
+                y: 11
+                width: parent.width - x - 14 - (bannerLink.visible ? bannerLink.width + 16 : 0)
                 token: "status"
                 color: Theme.ink2
                 wrapMode: Text.WordWrap
-                text: root.v.banner || ""
+                text: root.b.text || ""
+            }
+            T {
+                id: bannerLink
+                objectName: "findBannerLink"
+                visible: (root.b.link || "") !== ""
+                anchors.right: parent.right
+                anchors.rightMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+                token: "toolLink"
+                color: Theme.ink
+                font.underline: true
+                text: root.b.link || ""
+                Accessible.role: Accessible.Link
+                Accessible.name: text
+                MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor; onClicked: root.f.signIn() }
             }
         }
 
@@ -167,6 +194,16 @@ Item {
                         text: root.v.emptyLink || ""
                         MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor; onClicked: root.f.openSettings() }
                     }
+                }
+                // archive did not answer: a quiet note under «Удалено из App Store» only
+                T {
+                    objectName: "findArchiveNote"
+                    visible: (root.v.archiveNote || "") !== ""
+                    width: parent.width
+                    token: "fine"
+                    color: Theme.ink2
+                    wrapMode: Text.WordWrap
+                    text: root.v.archiveNote || ""
                 }
                 T {
                     objectName: "findFootnote"

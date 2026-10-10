@@ -277,6 +277,23 @@ def find_store_id(value: object, *, depth: int = 0) -> str | None:
     return None
 
 
+def device_display_name(enriched: Mapping[str, Any]) -> str:
+    """installation_proxy name: CFBundleDisplayName → CFBundleName → the store name
+    in iTunesMetadata (itemName / bundleDisplayName; offloaded placeholders keep it)."""
+
+    meta = enriched.get("iTunesMetadata")
+    meta = meta if isinstance(meta, Mapping) else {}
+    for value in (
+        enriched.get("CFBundleDisplayName"),
+        enriched.get("CFBundleName"),
+        meta.get("itemName"),
+        meta.get("bundleDisplayName"),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
 def enrich_app_record(info: Mapping[str, Any]) -> dict[str, Any]:
     """Return a shallow copy with binary iTunesMetadata decoded when possible."""
     enriched = dict(info)
@@ -1307,10 +1324,7 @@ def parse_offloaded_apps(
         apps.append(
             OffloadedApp(
                 bundle_id=bundle_id,
-                name=_clean_text(
-                    enriched.get("CFBundleDisplayName") or enriched.get("CFBundleName"),
-                    bundle_id,
-                ),
+                name=_clean_text(device_display_name(enriched), bundle_id),
                 version=_clean_text(
                     enriched.get("CFBundleShortVersionString")
                     or enriched.get("CFBundleVersion"),
@@ -1361,10 +1375,7 @@ def parse_installed_apps(
         apps.append(
             InstalledApp(
                 bundle_id=bundle_id,
-                name=_clean_text(
-                    enriched.get("CFBundleDisplayName") or enriched.get("CFBundleName"),
-                    bundle_id,
-                ),
+                name=_clean_text(device_display_name(enriched), bundle_id),
                 version=_clean_text(
                     enriched.get("CFBundleShortVersionString")
                     or enriched.get("CFBundleVersion"),

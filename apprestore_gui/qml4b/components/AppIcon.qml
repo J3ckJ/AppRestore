@@ -10,6 +10,7 @@ Item {
     property real radius: Theme.radiusRowIcon
     property real iconOpacity: 1.0
     readonly property string source: {
+        if (!iconBook) return ""  // window teardown: the book may already be gone
         var rev = iconBook.revision
         var a = storeId ? iconBook.pathFor(storeId) : ""
         return a ? a : (bundleId ? iconBook.pathFor(bundleId) : "")
