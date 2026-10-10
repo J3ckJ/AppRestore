@@ -20,6 +20,7 @@ from apprestore_gui.ui4b.space import DeviceSpace
 from apprestore_gui.ui4b.window import load, qml_path
 
 SCENARIOS = (
+    "unpatched",
     "missing", "many", "picker", "picker-search", "installing", "done", "disconnected",
     "signin", "relogin", "region", "empty", "onboarding-1", "onboarding-2", "onboarding-3", "onboarding-4",
 )
@@ -496,6 +497,9 @@ def _gated_source(tmp_path, scenario="consent", paid=()):
     notes: list[str] = []
 
     class Tools:
+        def ipatool_missing_patches(self):
+            return source.missing_patches()
+
         def account_country(self):
             return "us"
 
@@ -666,3 +670,47 @@ def test_smoke5_no_secrets_in_logs_or_terminal(qapp, caplog, capsys) -> None:
                 if isinstance(arg, ast.Name) and any(s in arg.id.casefold() for s in secret):
                     bad.append(f"{path.name}:{node.lineno} {arg.id}")
     assert bad == []
+
+
+
+def test_unpatched_ipatool_no_consent_owned_go_marked_listed(qapp, tmp_path) -> None:
+    """Смоук #12 on an old ipatool: no purchase, empty journal, read_counts same;
+    owned/offloaded go as usual; the rest says «Нужен дополнительный компонент»."""
+
+    from apprestore_gui.ui4b.component import COMPONENT_NOTE, DETAILS_LINK, HOWTO_LINK, QUIET_LINE
+    from apprestore_gui.ui4b.fake_data import removed_items
+
+    source, journal, bought, notes = _gated_source(tmp_path, scenario="unpatched")
+    controller = Restore4b(source)
+    marked = [i for i in controller.selection.items if i.note == COMPONENT_NOTE]
+    not_owned = [i.store_id for i in removed_items()[:2]]
+    assert sorted(i.store_id for i in marked) == sorted(not_owned) and not any(i.selectable for i in marked)
+    rows = [r for r in controller.selection.rows() if r.get("kind") == "app" and r["storeId"] in not_owned]
+    assert rows and all(r["ipaHint"] == HOWTO_LINK and r["hasIpaHint"] for r in rows)
+    home = controller.home
+    assert home["fine"] == QUIET_LINE and HOWTO_LINK in home["links"] and DETAILS_LINK in home["links"]
+    assert "ipatool" not in home["fine"]  # technical words only behind «Подробнее»
+    controller.link(DETAILS_LINK)
+    assert "0001" in controller.home["fine"] and "0003" in controller.home["fine"]
+    before = source.license_counts()
+    controller.selection.select_visible(True)
+    controller.restoreSelected()
+    wait(qapp, lambda: any(c[0] == "install_store" for c in source.calls))
+    wait(qapp, lambda: not controller.flow.running)
+    assert not controller.consent.get("open")
+    assert bought == [] and notes == []
+    assert not any(c == ("install_store", sid) for sid in not_owned for c in source.calls)
+    assert source.license_counts() == before and not journal.exists()
+
+
+def test_unpatched_gate_refuses_even_if_called_directly(qapp, tmp_path) -> None:
+    from apprestore_core.license_gate import NEEDS_PATCHED_IPATOOL_TEXT
+    from apprestore_gui.ui4b.fake_data import removed_items
+
+    source, journal, bought, notes = _gated_source(tmp_path, scenario="unpatched")
+    settled = []
+    source.installSettled.connect(lambda sid, ok, text: settled.append((sid, ok, text)))
+    sid = removed_items()[0].store_id
+    source.install_store(sid)
+    assert settled == [(sid, False, NEEDS_PATCHED_IPATOOL_TEXT)]
+    assert bought == [] and not journal.exists()

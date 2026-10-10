@@ -42,6 +42,7 @@ from apprestore_gui.ui4b.licenses import candidates as license_candidates
 from apprestore_gui.ui4b.home import STATE_DONE, STATE_STORE_MISMATCH, HomeInput, PhoneApp, home_view, link_action
 from apprestore_gui.ui4b.region import apply_statuses, load_classifier
 from apprestore_gui.ui4b.region import classify as classify_region_ids
+from apprestore_gui.ui4b import component
 from apprestore_gui.ui4b.onboarding import Onboarding
 from apprestore_core.license_gate import is_store_mismatch
 from apprestore_core.license_guard import DEFAULT_TOTAL_LIMIT
@@ -170,6 +171,11 @@ class SourceBase(QObject):
 
     def purchase_rows(self) -> list[dict[str, object]]:
         return []
+
+    def missing_patches(self) -> tuple[str, ...]:
+        """AppRestore ipatool patches (0001, 0003) the installed binary lacks."""
+
+        return ()
 
     def search_store(self, term: str, purchases: list[dict[str, object]]) -> list[dict[str, str]]:
         """Worker thread: App Store + purchases (ui4b.search), no IPA catalogues."""
@@ -339,6 +345,12 @@ class SessionSource(SourceBase):
     def purchase_rows(self) -> list[dict[str, object]]:
         return list(self.session.purchases or [])
 
+    def missing_patches(self) -> tuple[str, ...]:
+        try:
+            return tuple(self.session.service.core.tools.ipatool_missing_patches())
+        except Exception:  # noqa: BLE001 - cannot tell: like the gate, not safe
+            return ("0001", "0003")
+
     def owned_store_ids(self) -> set[str] | None:
         # QuickSession.purchases = purchases.py's list-purchases cache
         # (ipatool_api.all_purchases / iter_purchases).
@@ -448,6 +460,8 @@ class Restore4b(QObject):
         self._consent: dict[str, object] = {}
         self._limit_note: tuple[object, object] = (None, ("", False))
         self._found: list[dict[str, str]] = []
+        self._patches_missing: tuple[str, ...] = ()
+        self._component_details = False
         self._consent_plan: LicensePlan | None = None
         self._consent_space: DeviceSpace = UNKNOWN_SPACE
         source.changed.connect(self._on_source)
@@ -467,7 +481,11 @@ class Restore4b(QObject):
         self.flow.observe_account(src.signed_in, src.auth_phase, src.relogin, src.account_email)
         if self._signin_open and src.signed_in and src.auth_phase == "in" and not src.relogin:
             self._signin_open = False
-        self.selection.set_items(self.source.items())
+        self._patches_missing = tuple(self.source.missing_patches())
+        items = self.source.items()
+        if self._patches_missing:
+            items = component.mark(items, self.source.owned_store_ids(), self._patches_missing)
+        self.selection.set_items(items)
         self.selection.set_space(self.source.space())
         self.selection.set_offline(not src.online)
         checked, total, done = self.source.scan()
@@ -503,6 +521,8 @@ class Restore4b(QObject):
                 store_problem_app=self.flow.store_problem_app,
                 limit_note=self._limit_note_for_queue(queue)[0],
                 limit_total=self._limit_note_for_queue(queue)[1],
+                component_details=component.details_text(self._patches_missing)
+                if self._component_details and self._patches_missing else "",
             )
         )
         self.picker.set_rows(self.selection.rows())
@@ -798,6 +818,19 @@ class Restore4b(QObject):
             self.flow.begin(chosen, fresh)  # records the warning, starts nothing
             self._refresh()
             return
+        if self._patches_missing:
+            # No free licenses on this ipatool: no consent sheet; what needs one
+            # is listed in the summary, the rest goes as usual (gate refuses anyway).
+            owned_ids = None if owned is None else {str(s) for s in owned}
+            blocked = [i for i in chosen if component.needs_component(i, owned_ids) or i.note == component.COMPONENT_NOTE]
+            rest = [i for i in chosen if i not in blocked]
+            skipped = {"component": [i.label for i in blocked]} if blocked else {}
+            result = self.flow.begin(rest, fresh, skipped)
+            if not result.blocked:
+                self._picker_open = False
+                self._done_dismissed = False
+            self._refresh()
+            return
         plan = plan_licenses(chosen, owned, prices)
         if plan.k == 0:
             self._begin(plan, CONTINUE, fresh)
@@ -886,6 +919,8 @@ class Restore4b(QObject):
         self._refresh()
 
     pickIpaRequested = Signal()
+    #: «Как установить»: a local file (BUILD-ipatool.md / RUN-FROM-SOURCE.md) to open.
+    openDocRequested = Signal(str)
 
     @Slot(str)
     def link(self, name: str) -> None:
@@ -898,6 +933,16 @@ class Restore4b(QObject):
             self.openSignIn()
         elif action == "picker":
             self.openPicker()
+        elif action == "howto":
+            path = component.howto_path()
+            if path is not None:
+                self.openDocRequested.emit(str(path))
+            else:
+                self._component_details = True
+                self._refresh()
+        elif action == "details":
+            self._component_details = not self._component_details
+            self._refresh()
 
     @Slot(str)
     def installIpaFile(self, url_or_path: str) -> None:

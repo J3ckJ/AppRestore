@@ -19,6 +19,7 @@ from apprestore_gui.ui4b.catalog import (
     short_name_of,
 )
 from apprestore_gui.ui4b.region import IPA_LINK, IPA_MORE
+from apprestore_gui.ui4b.component import COMPONENT_NOTE, DETAILS_LINK, HOWTO_LINK, QUIET_LINE
 from apprestore_gui.ui4b.formatting import (
     format_size,
     join_names,
@@ -83,6 +84,8 @@ class HomeInput:
     limit_note: str = ""
     #: The total limit (15) is used up (read_counts): no time, an explanation.
     limit_total: bool = False
+    #: «Подробнее» pressed: the technical text instead of the quiet line.
+    component_details: str = ""
 
 
 def _minutes(count: int) -> str:
@@ -167,6 +170,10 @@ def link_action(name: str) -> str:
         return "signin"
     if name == "Найти другое приложение":
         return "picker"
+    if name == HOWTO_LINK:
+        return "howto"  # BUILD-ipatool.md / RUN-FROM-SOURCE.md
+    if name == DETAILS_LINK:
+        return "details"  # technical details of the missing component
     return ""
 
 
@@ -295,7 +302,11 @@ def home_view(inp: HomeInput) -> dict[str, object]:
                 if inp.limit_note:
                     lead += f" {inp.limit_note}."
                 lead += " Сами на завтра не ставим."
-        for reason, label in (("no_license", "Без новой лицензии не возвращали"), ("paid", "Платные не возвращаем")):
+        for reason, label in (
+            ("no_license", "Без новой лицензии не возвращали"),
+            ("paid", "Платные не возвращаем"),
+            ("component", COMPONENT_NOTE),
+        ):
             names_skipped = queue.skipped.get(reason) or []
             if names_skipped:
                 lead = (lead + " " if lead else "") + f"{label}: <b>{join_names(names_skipped)}</b>."
@@ -413,6 +424,12 @@ def home_view(inp: HomeInput) -> dict[str, object]:
                 hint=hint,
                 links=links,
             )
+    if state in (STATE_MISSING, STATE_MANY, STATE_REGION, STATE_EMPTY) and any(
+        item.note == COMPONENT_NOTE for item in items
+    ):
+        # ipatool without AppRestore's patches: one quiet line, no error screen (Ника)
+        view["fine"] = inp.component_details or QUIET_LINE
+        view["links"] = [*(view.get("links") or []), HOWTO_LINK, DETAILS_LINK]
     view["state"] = state
     view["tiles"] = phone_tiles(inp, state) if inp.connected else []
     slots = sum(1 for tile in view["tiles"] if tile["kind"] == "slot")

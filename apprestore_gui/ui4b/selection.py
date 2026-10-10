@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from dataclasses import replace
 
 from apprestore_gui.ui4b.region import IPA_LINK
+from apprestore_gui.ui4b.component import COMPONENT_NOTE, HOWTO_LINK
 
 from apprestore_gui.ui4b.catalog import (
     ACTION_NONE,
@@ -392,7 +393,8 @@ class Selection:
                         "group": group,
                         "name": item.name,
                         "shortName": short_name_of(item.name),
-                        "ipaHint": IPA_LINK if group == GROUP_REGION else "",
+                        "ipaHint": IPA_LINK if group == GROUP_REGION
+                        else HOWTO_LINK if item.note == COMPONENT_NOTE else "",
                         "nameHtml": highlight_html(item.name, match, self.mark_color),
                         "developer": item.developer,
                         "storeId": item.store_id,
@@ -403,7 +405,7 @@ class Selection:
                         if item.note
                         else ("" if item.size_bytes is not None else "размер узнаем при скачивании"),
                         "unverified": item.group == GROUP_NOPHONE,
-                        "hasIpaHint": group == GROUP_REGION,
+                        "hasIpaHint": group == GROUP_REGION or item.note == COMPONENT_NOTE,
                         "check": CHECK_DISABLED if not item.selectable else (CHECK_ON if checked else CHECK_OFF),
                         "selected": checked,
                         "selectable": item.selectable,

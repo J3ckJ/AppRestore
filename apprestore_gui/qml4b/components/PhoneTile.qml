@@ -125,6 +125,7 @@ Item {
             Accessible.ignored: true
             token: "phoneLabel"
             text: root.tile.name || ""
+            opacity: root.kind === "slot" && root.tile.pending ? 0 : 1
             color: root.kind === "slot" ? Theme.ink2 : (root.kind === "unavailable" ? Theme.ink3 : Theme.ink)
             elide: Text.ElideRight
             width: Math.min(implicitWidth, 86 * root.k)

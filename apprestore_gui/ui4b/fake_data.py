@@ -143,6 +143,8 @@ class FakeSource(SourceBase):
         self.prices: dict[str, float | None] = {}
         #: License journal for license_counts(); None = an empty one (never the real file).
         self.journal: Path | None = None
+        #: ipatool patches the binary lacks (scenario "unpatched").
+        self.patches: tuple[str, ...] = ()
         self.set_scenario(scenario)
 
     def set_scenario(self, scenario: str) -> None:
@@ -152,7 +154,8 @@ class FakeSource(SourceBase):
         self.relogin = scenario == "relogin"
         self.online = scenario != "picker-offline"
         phone = [PhoneApp(name, store_id=sid) for sid, name in PHONE]
-        if scenario in ("missing", "installing", "done", "disconnected", "signin", "relogin"):
+        self.patches = ("0001", "0003") if scenario == "unpatched" else ()
+        if scenario in ("missing", "installing", "done", "disconnected", "signin", "relogin", "unpatched"):
             self._items = removed_items()
             self._phone = phone
         elif scenario == "region":
@@ -176,7 +179,7 @@ class FakeSource(SourceBase):
             self.connected = step in "34"
             self.signed_in = step == "4"
             self._scan = (218, 640, False) if step == "4" else (0, None, False)
-        if scenario == "consent":
+        if scenario in ("consent", "unpatched"):
             # Сбер and Т-Банк are not on the Apple ID (free in lookup), the rest are.
             self._items = removed_items()
             self._phone = phone
@@ -185,6 +188,9 @@ class FakeSource(SourceBase):
         else:
             self.owned = {i.store_id for i in self._items if i.store_id}
         self.changed.emit()
+
+    def missing_patches(self) -> tuple[str, ...]:
+        return tuple(self.patches)
 
     def owned_store_ids(self) -> set[str] | None:
         return None if self.owned is None else set(self.owned)

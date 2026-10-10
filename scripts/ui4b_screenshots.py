@@ -33,6 +33,7 @@ SHOTS: tuple[tuple[str, str, str | None], ...] = (
     ("signin-sheet", "relogin", None),
     ("signin-code", "signin", None),
     ("home-region", "region", "variant-4b-region.png"),
+    ("home-unpatched-ipatool", "unpatched", None),
     ("onboarding-1", "onboarding-1", "variant-4b-onboarding-1.png"),
     ("onboarding-2", "onboarding-2", "variant-4b-onboarding-2.png"),
     ("onboarding-3", "onboarding-3", "variant-4b-onboarding-3.png"),

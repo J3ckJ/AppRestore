@@ -434,7 +434,7 @@ Item {
                         token: "rowNote"; font.weight: 550; color: Theme.ink2
                         font.underline: true
                         text: row.ipaHint
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: ui.link("Файлы IPA") }
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: ui.link(row.ipaHint) }
                     }
                 }
                 T {

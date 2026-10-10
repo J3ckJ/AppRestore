@@ -52,7 +52,14 @@ def build(settings: QSettings) -> tuple[QQmlApplicationEngine | None, list[Any]]
             items.append((app.store_id, app.bundle_id, ""))
         icon_book.consider_async(items)
 
+    def open_doc(path: str) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
     controller.changed.connect(remember_onboarding)
+    controller.openDocRequested.connect(open_doc)
     source.changed.connect(queue_icons)
     engine = QQmlApplicationEngine()
     keep: list[Any] = [session, source, controller, icon_book, engine]

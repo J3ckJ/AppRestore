@@ -945,11 +945,12 @@ def test_region_adapter_accepts_only_known_statuses() -> None:
 def test_links_only_lead_to_existing_things() -> None:
     from apprestore_gui.ui4b.home import link_action
 
-    for name in ("Журнал", "Подробнее", "Почему это безопасно", "Как это работает", "Исходный код",
+    for name in ("Журнал", "Почему это безопасно", "Как это работает", "Исходный код",
                  "Войти с другим Apple ID", "Не получается подключить"):
         assert link_action(name) == ""
     assert link_action("Поставить из файла на компьютере…") == "ipa"
     assert link_action("Найти другое приложение") == "picker"
+    assert link_action("Как установить") == "howto" and link_action("Подробнее") == "details"
     v = home.home_view(home.HomeInput(connected=False, signed_in=True, items=removed4()))
     assert all(link_action(n) for n in v["links"])
 
