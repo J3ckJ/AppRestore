@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import unittest
 
+import pytest
+
+pytest.importorskip("PySide6")
+
 from apprestore_gui.errors import explain_update_error, explain_user_error
 from apprestore_gui.main_window import friendly_restore_error
 
