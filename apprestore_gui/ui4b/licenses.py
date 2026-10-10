@@ -118,9 +118,11 @@ def consent_view(
     left_total = max(0, total_limit - used_total)
     k = plan.k
     fits = min(left_today, left_total)
+    flagged = any(i.store_status for i in plan.need)
     lead = (
         f"Для {k} {plural(k, 'приложения', 'приложений', 'приложений')} программа возьмёт "
-        "бесплатную лицензию на ваш Apple ID."
+        # §1.14: with region_probe-flagged apps in K the price is unknown — no «бесплатн…»
+        + ("лицензию на ваш Apple ID." if flagged else "бесплатную лицензию на ваш Apple ID.")
     )
     warn = ""
     if fits == 0:
@@ -132,7 +134,7 @@ def consent_view(
             "не вернём, они будут в итоге списком «не хватило лимита»."
         )
     attempt = ""
-    if any(i.store_status for i in plan.need):
+    if flagged:
         # LEGAL §1.14: unknown price, region_probe flag — say what Apple may do
         attempt = ATTEMPT_NOTE
     paid = ""

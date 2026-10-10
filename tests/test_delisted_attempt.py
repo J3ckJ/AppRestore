@@ -139,6 +139,20 @@ def test_granted_records_price_source_apple_fixed_0_then_plain_download(tmp_path
     assert entry["status"] == "acquired"
 
 
+def test_region_notice_never_says_free(tmp_path) -> None:
+    from apprestore_core.license_gate import LICENSE_NOTICE, REGION_NOTICE
+
+    flagged()
+    tools, notes = Tools(), []
+    run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False),
+                          journal=tmp_path / "j", notify=notes.append)
+    assert notes == [REGION_NOTICE] and "бесплатн" not in REGION_NOTICE.casefold()
+    tools2, notes2 = Tools(), []
+    run_with_free_license("42", Download(tools2), tools=tools2, lookup=Lookup(0), journal=tmp_path / "j2",
+                          notify=notes2.append)
+    assert notes2 == [LICENSE_NOTICE]
+
+
 def test_apple_refusal_no_journal_no_limit_and_no_second_attempt(tmp_path) -> None:
     journal = tmp_path / "j.jsonl"
     flagged(RegionStatus.NOT_IN_REGION)
@@ -216,5 +230,6 @@ def test_consent_line_only_when_k_has_flagged_apps() -> None:
     fl = region.apply_statuses([item("1")], {"1": RegionStatus.DELISTED})
     v = licenses.consent_view(licenses.plan_licenses(fl + [item("2")], set(), {"2": 0.0}), (0, 0))
     assert v["attempt"] == CONSENT_LINE
+    assert "бесплатн" not in (v["lead"] + v["attempt"]).casefold()
     v = licenses.consent_view(licenses.plan_licenses([item("2")], set(), {"2": 0.0}), (0, 0))
     assert v["attempt"] == ""

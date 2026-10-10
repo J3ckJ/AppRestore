@@ -26,7 +26,7 @@ STAGE_DONE = 2
 _INSTALL_WORDS = ("установ", "ставим", "ставится", "install")
 
 
-from apprestore_core.license_gate import LICENSE_NOTICE  # noqa: E402
+from apprestore_core.license_gate import LICENSE_NOTICE, REGION_NOTICE  # noqa: E402
 
 #: QueueEntry.error for a gate refusal because the license limit is used up.
 LIMIT_ERROR = "не хватило лимита"
@@ -144,9 +144,9 @@ class RestoreQueue:
                 else:
                     pct = f" {entry.percent} %" if entry.percent >= 0 else ""
                     detail = f"Скачиваем{pct}"
-                    if entry.status == LICENSE_NOTICE and entry.percent <= 0:
+                    if entry.status in (LICENSE_NOTICE, REGION_NOTICE) and entry.percent <= 0:
                         # the gate's notice before a free license (smoke 12): shown, not swallowed
-                        detail = LICENSE_NOTICE
+                        detail = entry.status
                     stages[0] = f"Скачивание{pct}"
                 right = ""
             else:

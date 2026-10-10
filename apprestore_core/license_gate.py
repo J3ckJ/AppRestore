@@ -50,6 +50,8 @@ from .service import AppRestoreError
 T = TypeVar("T")
 
 LICENSE_NOTICE = "Бесплатное приложение будет добавлено на ваш Apple ID."
+#: §1.14 (price unknown, region_probe flag): never «бесплатное».
+REGION_NOTICE = "Приложение будет добавлено на ваш Apple ID, если Apple его выдаст."
 _NOT_OWNED = "Этого приложения нет на вашем Apple ID (нет лицензии)"
 UNKNOWN_COUNTRY_TEXT = (
     f"{_NOT_OWNED}. Не удалось определить страну аккаунта Apple ID, поэтому "
@@ -261,12 +263,13 @@ def run_with_free_license(
     # explicit license_guard path (pending; {} until his API is vendored).
     from .delisted_attempt import guard_kwargs
 
-    fields.update(guard_kwargs(store_id, price))
+    region_extra = guard_kwargs(store_id, price)
+    fields.update(region_extra)
     # Limit check, purchase and its journal line in one atomic step (Макс's
     # acquire_and_record holds <journal>.lock across all three once it lands).
     def purchase() -> None:
         if notify is not None:
-            notify(LICENSE_NOTICE)
+            notify(REGION_NOTICE if region_extra else LICENSE_NOTICE)
         try:
             tools.purchase_license(store_id, grant=_mint(store_id))
         except Exception as exc:
