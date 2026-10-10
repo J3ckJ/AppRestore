@@ -28,7 +28,7 @@ from PySide6.QtCore import (
 from apprestore_gui.ui4b.catalog import GROUP_REGION, RestoreItem, build_items
 from apprestore_gui.ui4b.flow import RestoreFlow
 from apprestore_gui.ui4b.formatting import format_size
-from apprestore_gui.ui4b.home import STATE_DONE, HomeInput, PhoneApp, home_view
+from apprestore_gui.ui4b.home import STATE_DONE, STATE_STORE_MISMATCH, HomeInput, PhoneApp, home_view
 from apprestore_gui.ui4b.onboarding import Onboarding
 from apprestore_gui.ui4b.scan import ScanCounter
 from apprestore_gui.ui4b.selection import CHECK_ON, Selection
@@ -315,7 +315,7 @@ class Restore4b(QObject):
 
     def _on_source(self) -> None:
         src = self.source
-        self.flow.observe_account(src.signed_in, src.auth_phase, src.relogin)
+        self.flow.observe_account(src.signed_in, src.auth_phase, src.relogin, src.account_email)
         if self._signin_open and src.signed_in and src.auth_phase == "in" and not src.relogin:
             self._signin_open = False
         self.selection.set_items(self.source.items())
@@ -349,6 +349,8 @@ class Restore4b(QObject):
                 phone_apps=src.phone_apps(),
                 region_name=src.region_name,
                 relogin=bool(src.relogin or self.flow.needs_signin),
+                store_problem=self.flow.store_problem,
+                store_problem_app=self.flow.store_problem_app,
             )
         )
         self.picker.set_rows(self.selection.rows())
@@ -535,6 +537,8 @@ class Restore4b(QObject):
         state = str(self._home.get("state", ""))
         if state == STATE_DONE:
             self.dismissDone()
+        elif state == STATE_STORE_MISMATCH:
+            self.flow.dismiss_store_problem()  # «На главный»
         elif state == "signin":
             self.openSignIn()
         elif state in ("many",):
@@ -594,6 +598,14 @@ class Restore4b(QObject):
     def onboardingLater(self) -> None:
         self.onboarding.apple_id_skipped = True
         self._refresh()
+
+    @Slot()
+    def secondaryAction(self) -> None:
+        """Second button next to the main one («Войти заново» on -128)."""
+
+        if str(self._home.get("state", "")) == STATE_STORE_MISMATCH:
+            self.flow.store_relogin_requested()
+            self.openSignIn()
 
     @Slot()
     def openSignIn(self) -> None:

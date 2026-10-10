@@ -36,6 +36,7 @@ STATE_REGION = "region"
 STATE_INSTALLING = "installing"
 STATE_DONE = "done"
 STATE_EMPTY = "empty"
+STATE_STORE_MISMATCH = "store_mismatch"  # -128, temporary look until Ника's part
 
 #: Up to this many apps (and if they fit) the home screen offers «Вернуть все N»;
 #: more → «Выбрать и вернуть». Mirrors ``Theme.restoreAllMax`` (test keeps them equal).
@@ -71,8 +72,11 @@ class HomeInput:
     done_dismissed: bool = False
     phone_apps: Sequence[PhoneApp] = ()
     region_name: str = ""
-    #: Apple wants the user again (expired session / «отказ -128»).
+    #: Apple wants the user again (expired session, session codes).
     relogin: bool = False
+    #: -128: "" | "mismatch" | "unavailable" (again after signing in again)
+    store_problem: str = ""
+    store_problem_app: str = ""
 
 
 def _minutes(count: int) -> str:
@@ -163,6 +167,7 @@ def home_view(inp: HomeInput) -> dict[str, object]:
         "title": "",
         "lead": "",
         "cta": "",
+        "cta2": "",
         "ctaSecondary": False,
         "hint": "",
         "fine": "",
@@ -187,6 +192,26 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             ],
             links=["Не получается подключить"],
         )
+    elif inp.store_problem and not (queue is not None and queue.active):
+        state = STATE_STORE_MISMATCH
+        app = inp.store_problem_app
+        over = f"{app} не скачалось" if app else "Приложение не скачалось"
+        if inp.store_problem == "unavailable":
+            view.update(
+                over=over,
+                title="Недоступно\nв магазине",
+                lead="Приложение недоступно в магазине страны вашего Apple ID.",
+                cta="На главный",
+            )
+        else:
+            view.update(
+                over=over,
+                title="Магазин\nне совпал",
+                lead="Магазин в текущем входе не совпадает со страной вашего Apple ID.",
+                cta="На главный",
+                cta2="Войти заново",
+                hint="После входа ничего не начнётся само: нажмите «Вернуть» ещё раз.",
+            )
     elif inp.relogin and not (queue is not None and queue.active):
         # No promise to continue: after signing in the user is back on the
         # home screen and presses «Вернуть» again.

@@ -465,8 +465,10 @@ def _store_items(count: int = 3):
 def test_needs_signin_recognises_session_failures() -> None:
     from apprestore_gui.ui4b.flow import needs_signin
 
-    assert needs_signin("Отказ -128")
-    assert needs_signin("Apple: error -128 (MZFinance)")
+    # -128 is STORE_MISMATCH now: its own screen, not «Войдите заново»
+    assert not needs_signin("Отказ -128")
+    assert not needs_signin("failed to purchase item: Account Not In This Store")
+    assert needs_signin("failed to get account: could not be found in the keyring")
     assert needs_signin("Сессия Apple ID истекла. Войдите заново.")
     assert needs_signin("password token is expired")
     assert not needs_signin("")
@@ -488,7 +490,7 @@ def test_session_failure_drops_the_run_and_signin_does_not_resume() -> None:
     flow.begin(items, space)
     assert backend.calls == [("store", items[0].store_id)]
 
-    flow.on_install_settled(items[0].store_id, False, "Отказ -128")
+    flow.on_install_settled(items[0].store_id, False, "Сессия Apple ID истекла. Войдите заново.")
     assert flow.needs_signin and not flow.running
     assert flow.queue.entries == []  # nothing kept to resume
     view = home_view(HomeInput(connected=True, signed_in=True, items=items, space=space,
@@ -658,3 +660,77 @@ def test_qml4b_uses_no_letter_placeholders() -> None:
     theme = (_QML / "theme" / "Theme.qml").read_text(encoding="utf-8")
     assert _re.search(r"iconPlaceholder:\s*track", theme)
     assert '"#D3D1CA"' in theme
+
+
+
+# -- -128 STORE_MISMATCH -------------------------------------------------------------
+
+MISMATCH = "failed to purchase item with param 'STDQ': Account Not In This Store"
+
+
+def _mismatch_flow():
+    from apprestore_gui.ui4b.flow import RestoreFlow
+    from apprestore_gui.ui4b.space import DeviceSpace
+
+    backend = RecordingBackend()
+    flow = RestoreFlow(backend)
+    flow.observe_account(True, "in", False, "marina@example.com")
+    return flow, backend, DeviceSpace(total_bytes=128 * 10**9, free_bytes=50 * 10**9)
+
+
+def _view(flow, items):
+    from apprestore_gui.ui4b.home import HomeInput, home_view
+
+    return home_view(HomeInput(connected=True, signed_in=True, items=items,
+                               queue=flow.queue if flow.queue.entries else None,
+                               relogin=flow.needs_signin, store_problem=flow.store_problem,
+                               store_problem_app=flow.store_problem_app))
+
+
+def test_store_mismatch_first_time_offers_home_and_relogin() -> None:
+    flow, backend, room = _mismatch_flow()
+    items = _store_items()
+    flow.begin(items, room)
+    flow.on_install_settled(items[0].store_id, False, MISMATCH)
+    assert not flow.running and flow.queue.entries == [] and not flow.needs_signin
+    view = _view(flow, items)
+    assert view["state"] == "store_mismatch"
+    assert view["lead"] == "Магазин в текущем входе не совпадает со страной вашего Apple ID."
+    assert view["cta"] == "На главный" and view["cta2"] == "Войти заново"
+    text = " ".join(str(view[k]) for k in ("over", "title", "lead", "hint")).casefold()
+    assert "vpn" not in text and "регион" not in text and "автомат" not in text
+    # «На главный»: back to «Вернуть все», nothing started
+    flow.dismiss_store_problem()
+    assert _view(flow, items)["state"] == "missing"
+    assert len(backend.calls) == 1
+
+
+def test_store_mismatch_again_after_relogin_same_account_says_unavailable() -> None:
+    flow, backend, room = _mismatch_flow()
+    items = _store_items()
+    flow.begin(items, room)
+    flow.on_install_settled(items[0].store_id, False, MISMATCH)
+    flow.store_relogin_requested()  # «Войти заново»
+    flow.observe_account(True, "running", False, "marina@example.com")
+    flow.observe_account(True, "in", False, "marina@example.com")
+    assert flow.store_problem == "" and len(backend.calls) == 1  # nothing retried
+    assert _view(flow, items)["state"] == "missing"
+    flow.begin(items, room)  # the user presses «Вернуть» again
+    flow.on_install_settled(items[0].store_id, False, '{"failureType":"-128"}')
+    view = _view(flow, items)
+    assert flow.store_problem == "unavailable"
+    assert view["lead"] == "Приложение недоступно в магазине страны вашего Apple ID."
+    assert view["cta"] == "На главный" and view["cta2"] == ""
+
+
+def test_store_mismatch_after_switching_account_is_first_time_again() -> None:
+    flow, backend, room = _mismatch_flow()
+    items = _store_items()
+    flow.begin(items, room)
+    flow.on_install_settled(items[0].store_id, False, MISMATCH)
+    flow.store_relogin_requested()
+    flow.observe_account(False, "out", False, "")
+    flow.observe_account(True, "in", False, "other@example.com")
+    flow.begin(items, room)
+    flow.on_install_settled(items[0].store_id, False, MISMATCH)
+    assert flow.store_problem == "mismatch"

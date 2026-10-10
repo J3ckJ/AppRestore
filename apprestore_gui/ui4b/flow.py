@@ -10,8 +10,14 @@ old window uses:
   price 0 in the account's country, 5/day + 15 total, journal);
 * local IPA → ``QuickSession.installSaved``.
 
-When Apple wants the user again (expired session, «отказ -128», any
-ipatool session code) the run stops and is dropped: nothing waits to resume.
+When Apple wants the user again (expired session, any ipatool session code)
+the run stops and is dropped: nothing waits to resume.
+
+-128 «Account Not In This Store» (``ErrorCode.STORE_MISMATCH``) is not a
+session problem: the run is dropped too and the home screen shows «Магазин
+не совпал» with «На главный» / «Войти заново». Whether the user already signed
+in again with this account after a -128 is kept only in memory; a second -128
+then says the app is not available in that country (no sign-in button).
 After «Войти заново» / a fresh sign-in the user lands on the home screen and
 presses «Вернуть» again (Ника/Лена: no auto-continue, no «продолжим
 автоматически»).
@@ -21,27 +27,26 @@ No Qt here: :class:`Backend` is whatever performs those calls.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Iterable
 from typing import Protocol
 
 from apprestore_core.ipatool_api import MESSAGES_RU, SESSION_CODES, classify_error
+from apprestore_core.license_gate import is_store_mismatch
 
 from apprestore_gui.ui4b.catalog import ACTION_IPA, ACTION_OFFLOADED, ACTION_STORE, RestoreItem
 from apprestore_gui.ui4b.queue import CURRENT, WAIT, RestoreQueue
 from apprestore_gui.ui4b.space import DeviceSpace, SpacePlan, plan_space
 
 
-_REFUSAL_128 = re.compile(r"(?<![\w-])-128\b")
 _SESSION_TEXTS = tuple(MESSAGES_RU[code].casefold() for code in SESSION_CODES if code in MESSAGES_RU)
 
 
 def needs_signin(text: str) -> bool:
     """The failure means «sign in again», not «this app did not work»."""
 
-    if not text:
-        return False
-    if _REFUSAL_128.search(text) or classify_error(text) in SESSION_CODES:
+    if not text or is_store_mismatch(text):
+        return False  # -128 has its own screen
+    if classify_error(text) in SESSION_CODES:
         return True
     folded = text.casefold()
     return any(message in folded for message in _SESSION_TEXTS) or "войдите заново" in folded
@@ -66,6 +71,12 @@ class RestoreFlow:
         #: The run was dropped because Apple wants the user to sign in again.
         self.needs_signin = False
         self._account: tuple[bool, str, bool] | None = None
+        self.account_email = ""
+        #: "" | "mismatch" (first -128) | "unavailable" (-128 again after signing in again)
+        self.store_problem = ""
+        self.store_problem_app = ""
+        self._relogin_for_store: str | None = None
+        self._relogged_for_store: set[str] = set()
 
     @property
     def running(self) -> bool:
@@ -146,6 +157,10 @@ class RestoreFlow:
         self.on_change()
 
     def on_install_settled(self, store_id: str, ok: bool, text: str) -> None:
+        if not ok and self.queue.entries and is_store_mismatch(text):
+            entry = self.queue._find(store_id) or self.queue.current()
+            self.interrupt_for_store_mismatch(entry.item.label if entry else "")
+            return
         if not ok and self.queue.entries and needs_signin(text):
             self.interrupt_for_signin()
             return
@@ -169,11 +184,42 @@ class RestoreFlow:
     def on_signed_in(self) -> None:
         """Back on the home screen; the user presses «Вернуть» again."""
 
-        if self.needs_signin:
-            self.needs_signin = False
+        changed = self.needs_signin or bool(self.store_problem)
+        if self._relogin_for_store is not None:
+            if not self._relogin_for_store or self._relogin_for_store == self.account_email.casefold():
+                self._relogged_for_store.add(self.account_email.casefold())
+            self._relogin_for_store = None
+        self.needs_signin = False
+        self.store_problem = ""
+        self.store_problem_app = ""
+        if changed:
             self.on_change()
 
-    def observe_account(self, signed_in: bool, auth_phase: str = "", relogin: bool = False) -> None:
+    def interrupt_for_store_mismatch(self, app: str = "") -> None:
+        """-128: drop the run; nothing is retried by itself."""
+
+        self.queue = RestoreQueue()
+        self._batch = set()
+        self._started = set()
+        relogged = self.account_email.casefold() in self._relogged_for_store
+        self.store_problem = "unavailable" if relogged else "mismatch"
+        self.store_problem_app = app
+        self.on_change()
+
+    def store_relogin_requested(self) -> None:
+        """«Войти заново» on the -128 screen: remember for whom (memory only)."""
+
+        self._relogin_for_store = self.account_email.casefold()
+
+    def dismiss_store_problem(self) -> None:
+        """«На главный»."""
+
+        self.store_problem = ""
+        self.store_problem_app = ""
+        self._relogin_for_store = None
+        self.on_change()
+
+    def observe_account(self, signed_in: bool, auth_phase: str = "", relogin: bool = False, email: str = "") -> None:
         """Follow QuickSession's account state.
 
         ``relogin`` (expired session) during a run drops it; a fresh sign-in
@@ -183,6 +229,8 @@ class RestoreFlow:
 
         before = self._account
         self._account = (bool(signed_in), auth_phase, bool(relogin))
+        if email:
+            self.account_email = email
         if relogin and self.queue.active:
             self.interrupt_for_signin()
         if before is None:

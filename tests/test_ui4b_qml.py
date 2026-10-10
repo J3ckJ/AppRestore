@@ -210,7 +210,7 @@ def test_relogin_returns_home_without_resuming(qapp) -> None:
     controller.primaryAction()
     wait(qapp, lambda: bool(source.calls))
     first = controller.flow.queue.entries[0].item.store_id
-    source.installSettled.emit(first, False, "Отказ -128")
+    source.installSettled.emit(first, False, "Сессия Apple ID истекла. Войдите заново.")
     assert controller.home["state"] == "signin"
     assert controller.home["cta"] == "Войти заново"
     controller.primaryAction()
@@ -258,3 +258,28 @@ def test_signin_sheet_with_2fa_loads_and_closes_without_resuming(qapp) -> None:
     del engine
     qapp.processEvents()
     assert warnings == []
+
+
+
+def test_store_mismatch_screen_buttons(qapp) -> None:
+    source = FakeSource("missing")
+    source.account_email = "marina@example.com"
+    controller = Restore4b(source)
+    controller.primaryAction()
+    wait(qapp, lambda: bool(source.calls))
+    first = controller.flow.queue.entries[0].item.store_id
+    source.installSettled.emit(first, False, "Account Not In This Store")
+    assert controller.home["state"] == "store_mismatch"
+    controller.secondaryAction()  # «Войти заново» opens the sign-in sheet
+    assert controller.signIn["open"]
+    controller.login("marina@example.com", "x")
+    controller.submitCode("111111")
+    assert controller.home["state"] == "missing"
+    assert [c[0] for c in source.calls].count("install_store") == 1
+    controller.primaryAction()
+    wait(qapp, lambda: [c[0] for c in source.calls].count("install_store") == 2)
+    first = controller.flow.queue.entries[0].item.store_id
+    source.installSettled.emit(first, False, "Account Not In This Store")
+    assert controller.home["state"] == "store_mismatch" and controller.home["cta2"] == ""
+    controller.primaryAction()  # «На главный»
+    assert controller.home["state"] == "missing"

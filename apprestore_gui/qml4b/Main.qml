@@ -75,6 +75,7 @@ Window {
         width: win.heroW
         view: win.home
         onPrimary: ui.primaryAction()
+        onSecondary: ui.secondaryAction()
         onLink: function(name) { if (name === "Остановить") ui.stop() }
     }
     Onboarding {

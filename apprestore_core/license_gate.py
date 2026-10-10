@@ -34,6 +34,7 @@ from typing import Any, Callable, TypeVar
 
 from .command import CommandError
 from .error_signal import _AUTH, _LICENSE, _NETWORK, _REGION, is_license_missing
+from .ipatool_api import ErrorCode, classify_error
 from .license_guard import DEFAULT_DAILY_LIMIT, DEFAULT_TOTAL_LIMIT, default_journal_path
 from .license_journal import (
     ACQUIRED_DOWNLOAD_FAILED,
@@ -80,9 +81,21 @@ _STORE_REFUSAL_FIELD = re.compile(r"failuretype\W{0,4}\d+|customermessage")
 _BARE_2040 = re.compile(r"\b2040\b")
 
 
+def is_store_mismatch(message: str) -> bool:
+    """Apple's -128 «Account Not In This Store» (Макс: ErrorCode.STORE_MISMATCH).
+
+    Not a session problem and not a transport one: the storefront of the saved
+    sign-in differs from the Apple ID's country. A refusal: no journal line.
+    """
+
+    return classify_error(message or "") is ErrorCode.STORE_MISMATCH
+
+
 def is_store_refusal(message: str) -> bool:
     """True when Apple explicitly refused the purchase (case-insensitive)."""
 
+    if is_store_mismatch(message):
+        return True
     text = (message or "").casefold()
     if any(hint in text for hint in _STORE_REFUSAL):
         return True

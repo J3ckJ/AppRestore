@@ -53,6 +53,7 @@ __all__ = [
     "SessionState",
     "classify_error",
     "apple_failure_type",
+    "classify_failure",
     "purchase_refused",
     "scrub_line",
     "run_verbose_scrubbed",
@@ -94,6 +95,10 @@ class ErrorCode(str, enum.Enum):
     KEYCHAIN_PASSPHRASE_WRONG = "keychain_passphrase_wrong"
     PASSPHRASE_NO_SECURE_METHOD = "passphrase_no_secure_method"
     # Store answers
+    #: Apple failureType -128 "Account Not In This Store": the storefront in
+    #: ipatool's saved session differs from the Apple ID's country (e.g. after
+    #: the account changed country).  NOT a session code: the token is alive.
+    STORE_MISMATCH = "store_mismatch"
     LICENSE_REQUIRED = "license_required"
     LICENSE_ALREADY_EXISTS = "license_already_exists"
     TEMPORARILY_UNAVAILABLE = "temporarily_unavailable"
@@ -130,6 +135,7 @@ MESSAGES_RU: Mapping[ErrorCode, str] = {
     ErrorCode.KEYCHAIN_PASSPHRASE_REQUIRED: "Нужен пароль связки ключей программы (это не пароль Apple ID).",
     ErrorCode.KEYCHAIN_PASSPHRASE_WRONG: "Пароль связки ключей программы не подошёл (это не пароль Apple ID).",
     ErrorCode.PASSPHRASE_NO_SECURE_METHOD: "Нет безопасного способа передать пароль связки ключей: нужен ipatool с патчем --keychain-passphrase-stdin, иначе введите пароль вручную.",
+    ErrorCode.STORE_MISMATCH: "Магазин в текущем входе не совпадает со страной вашего Apple ID.",
     ErrorCode.LICENSE_REQUIRED: "На этом Apple ID нет лицензии. Бесплатное — кнопкой «Получить», платное без оплаты не ставится.",
     ErrorCode.LICENSE_ALREADY_EXISTS: "Лицензия на это приложение уже есть.",
     ErrorCode.TEMPORARILY_UNAVAILABLE: "Временно недоступно в этом магазине.",
@@ -152,6 +158,7 @@ MESSAGES_RU: Mapping[ErrorCode, str] = {
 }
 
 #: Codes meaning "the saved session cannot be used without the user".
+#: STORE_MISMATCH is deliberately NOT here (the session is alive; see ErrorCode).
 SESSION_CODES = frozenset(
     {
         ErrorCode.TOKEN_EXPIRED,
@@ -175,6 +182,9 @@ TRANSPORT_CODES = frozenset({ErrorCode.NETWORK, ErrorCode.TIMEOUT})
 _RULES: Sequence[tuple[ErrorCode, "re.Pattern[str]"]] = tuple(
     (code, re.compile(pattern, re.IGNORECASE))
     for code, pattern in (
+        # First: Apple's own text for -128 is definitive and must beat every
+        # generic rule.  "-128" is matched as a whole number (not -1280, 2-128).
+        (ErrorCode.STORE_MISMATCH, r"account not in this store|(?<![\w-])-128(?![\d.])"),
         (ErrorCode.KEYCHAIN_PASSPHRASE_REQUIRED, r"keychain passphrase is required"),
         (ErrorCode.KEYCHAIN_PASSPHRASE_WRONG, r"KeyUnwrap\(\)|integrity check failed"),
         (ErrorCode.NOT_SIGNED_IN, r"could not be found in the keyring|failed to get account"),
@@ -296,6 +306,54 @@ def apple_failure_type(stdout: str, stderr: str = "") -> str:
             if text and text != "0":
                 return text
     return ""
+
+
+#: Apple failureType for "Account Not In This Store".
+STORE_MISMATCH_FAILURE_TYPE = "-128"
+
+
+def _apple_customer_messages(stdout: str, stderr: str = "") -> list[str]:
+    """Все непустые ``customerMessage`` и ``error`` из JSON-строк, регистронезависимо по ключу."""
+
+    texts: list[str] = []
+    for row in _json_lines(stdout) + _json_lines(stderr):
+        meta = _ci_get(row, "metadata")
+        data = _ci_get(meta, "data") if meta is not None else None
+        for value in (_ci_get(data, "customerMessage"), _ci_get(row, "customerMessage"),
+                      _ci_get(row, "error")):
+            if value is not None and str(value).strip():
+                texts.append(str(value))
+    return texts
+
+
+def classify_failure(stdout: str, stderr: str = "") -> Optional[ErrorCode]:
+    """Код отказа Apple по verbose-JSON ipatool (purchase/download), или None.
+
+    * failureType ``-128`` (строка или число) → :attr:`ErrorCode.STORE_MISMATCH`;
+    * customerMessage / error содержит "Account Not In This Store" (любой регистр,
+      в т.ч. форма ipatool "failed to purchase item with param 'STDQ': Account
+      Not In This Store") → STORE_MISMATCH, даже без failureType;
+    * иной непустой failureType → :func:`classify_error` по тексту Apple, а если
+      текст неизвестен (например 2040 "Purchase of this item is not currently
+      available") → :attr:`ErrorCode.APPLE_REJECTED` (генерик-отказ);
+    * отказа нет → None.
+
+    Любой не-None результат — это отказ: в журнал лицензий НЕ писать.
+    """
+
+    failure = apple_failure_type(stdout, stderr)
+    if failure == STORE_MISMATCH_FAILURE_TYPE:
+        return ErrorCode.STORE_MISMATCH
+    texts = _apple_customer_messages(stdout, stderr)
+    if any("account not in this store" in t.casefold() for t in texts):
+        return ErrorCode.STORE_MISMATCH
+    if not failure:
+        return None
+    for text in texts:
+        code = classify_error(text)
+        if code not in (ErrorCode.UNKNOWN, ErrorCode.STORE_MISMATCH):
+            return code
+    return ErrorCode.APPLE_REJECTED
 
 
 def purchase_refused(stdout: str, stderr: str = "") -> bool:
@@ -683,7 +741,10 @@ class IpatoolClient:
                 tail = (result.stderr or result.stdout).strip().splitlines()[-1:] or [""]
                 raw = tail[0][:500]
             detail = _redact(raw, (self._passphrase,))
-            raise IpatoolError(classify_error(raw), detail)
+            code = classify_error(raw)
+            if classify_failure(result.stdout, result.stderr) is ErrorCode.STORE_MISMATCH:
+                code = ErrorCode.STORE_MISMATCH  # -128 in metadata, even if "error" is vague
+            raise IpatoolError(code, detail)
 
         success = next((row for row in reversed(rows) if row.get("level") == "info"), None)
         if success is None:

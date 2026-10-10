@@ -9,6 +9,7 @@ Column {
     readonly property bool hasNumber: (view.word || "") !== ""
     readonly property bool hasTitle: (view.title || "") !== ""
     signal primary()
+    signal secondary()
     signal link(string name)
     // heroWidth = min(620, W − padX − phoneW − rightMargin − 48) — задаёт Main
     width: Theme.heroWidth
@@ -91,18 +92,29 @@ Column {
 
     // big button
     Item { width: 1; height: 34; visible: cta.visible }
-    Cta {
-        id: cta
-        visible: (root.view.cta || "") !== ""
-        text: root.view.cta || ""
-        secondary: !!root.view.ctaSecondary
-        onClicked: root.primary()
+    Row {
+        visible: cta.visible
+        spacing: 9
+        Cta {
+            id: cta
+            visible: (root.view.cta || "") !== ""
+            text: root.view.cta || ""
+            secondary: !!root.view.ctaSecondary
+            onClicked: root.primary()
+        }
+        Cta {
+            visible: (root.view.cta2 || "") !== ""
+            text: root.view.cta2 || ""
+            secondary: true
+            onClicked: root.secondary()
+        }
     }
     Item { width: 1; height: 14; visible: hint.visible }
     InfoLine {
         id: hint
         visible: (root.view.hint || "") !== ""
         text: root.view.hint || ""
+        wrap: root.st === "store_mismatch"
     }
     Item { width: 1; height: 16; visible: fine.visible }
     InfoLine {

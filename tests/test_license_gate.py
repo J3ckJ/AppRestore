@@ -425,3 +425,55 @@ def test_network_wrapped_or_unknown_purchase_errors_stay_uncertain(message: str)
 
     assert not is_store_refusal(message)
     assert purchase_outcome(ToolUnavailable(message)) == "uncertain"
+
+
+# ------------------------------------------- -128 «Account Not In This Store» (Макс: STORE_MISMATCH)
+
+APPLE_128_ERROR = "failed to purchase item with param 'STDQ': Account Not In This Store"
+APPLE_128_LINE = json.dumps(
+    {"level": "error", "error": APPLE_128_ERROR, "success": False, "time": "2026-10-10T19:05:00+03:00"}
+)
+
+
+@pytest.mark.parametrize(
+    "stdout, stderr",
+    [
+        (APPLE_128_LINE + "\n", ""),
+        ("", APPLE_128_LINE + "\n"),
+        ("", f'7:05PM ERR error="{APPLE_128_ERROR}" success=false\n'),
+    ],
+    ids=["pty-json", "stderr-json", "stderr-text"],
+)
+def test_store_mismatch_is_refused_and_not_journaled(tmp_path: Path, stdout, stderr) -> None:
+    journal = tmp_path / "j.jsonl"
+    tools, runner, patches = _real_tools(stdout, stderr)
+    with patches[0], patches[1]:
+        with pytest.raises(ToolUnavailable) as caught:
+            run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(0), journal=journal)  # type: ignore[arg-type]
+    assert [call[-3:] for call in runner.calls] == [("purchase", "--app-id", STORE)]
+    assert not journal.exists(), "-128 is a refusal: no journal line"
+    from apprestore_core.license_gate import is_store_mismatch, purchase_outcome
+
+    assert purchase_outcome(caught.value) == "refused"
+    assert is_store_mismatch(str(caught.value))
+
+
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        ("Account Not In This Store", True),
+        ("ACCOUNT NOT IN THIS STORE", True),
+        ('{"failureType":"-128"}', True),
+        ("error -128", True),
+        ("error -1280", False),
+        ("2-128", False),
+        ("password token is expired", False),
+    ],
+)
+def test_store_mismatch_detection(message: str, expected: bool) -> None:
+    from apprestore_core.ipatool_api import SESSION_CODES, TRANSPORT_CODES, ErrorCode
+    from apprestore_core.license_gate import is_store_mismatch
+
+    assert is_store_mismatch(message) is expected
+    assert ErrorCode.STORE_MISMATCH not in SESSION_CODES
+    assert ErrorCode.STORE_MISMATCH not in TRANSPORT_CODES

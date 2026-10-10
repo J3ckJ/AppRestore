@@ -501,3 +501,146 @@ def test_run_verbose_scrubbed_streams_before_sink():
     assert result.returncode == 0
     # sink всё же получил строки (в заскрабленном виде)
     assert any("<redacted>" in s for s in seen)
+
+
+# ------------------------------------------------- -128 "Account Not In This Store"
+# SYNTH той же формы, что REAL 2040 выше (attempt B видела этот ответ вживую,
+# но сырой ответ не сохраняли). STORE_MISMATCH — отдельный код, НЕ сессионный.
+
+
+def _purchase_refusal(failure_type, message: str, *, key: str = "FailureType") -> str:
+    data = {key: failure_type, "CustomerMessage": message, "JingleDocType": "", "Status": 0}
+    debug = {"level": "debug", "error": f"failed to purchase item with param 'STDQ': {message}",
+             "metadata": {"StatusCode": 200, "Data": data}, "time": "2026-10-10T19:00:00+03:00"}
+    error = {"level": "error", "error": f"failed to purchase item with param 'STDQ': {message}",
+             "success": False, "time": "2026-10-10T19:00:00+03:00"}
+    return json.dumps(debug) + "\n" + json.dumps(error) + "\n"
+
+
+PURCHASE_REFUSED_128 = _purchase_refusal("-128", "Account Not In This Store")
+
+
+def test_store_mismatch_is_its_own_code_not_session():
+    assert api.ErrorCode.STORE_MISMATCH.value == "store_mismatch"
+    assert api.ErrorCode.STORE_MISMATCH not in api.SESSION_CODES
+    assert api.ErrorCode.STORE_MISMATCH not in api.TRANSPORT_CODES
+    err_ = api.IpatoolError(api.ErrorCode.STORE_MISMATCH)
+    assert err_.is_session_problem is False and err_.is_transport_problem is False
+    assert "Сессия" not in str(err_) and "VPN" not in str(err_)
+    assert str(err_) == "Магазин в текущем входе не совпадает со страной вашего Apple ID."
+
+
+@pytest.mark.parametrize("message", [
+    "Account Not In This Store",
+    "account not in this store",
+    "ACCOUNT NOT IN THIS STORE",
+    "aCcOuNt NoT iN tHiS sToRe",
+    "failed to purchase item with param 'STDQ': Account Not In This Store",
+    "failed to purchase item with param 'STDQ': account not in this store",
+    "failureType -128",
+    "Apple refused (-128)",
+])
+def test_classify_error_store_mismatch(message):
+    assert api.classify_error(message) is api.ErrorCode.STORE_MISMATCH
+
+
+@pytest.mark.parametrize("message", [
+    "failed to purchase item with param 'STDQ': Purchase of this item is not currently available",
+    "2040",
+    "-1280",
+    "2-128",
+    "-128.5",
+    "invalid credentials -5000",
+    "account is disabled",
+    "password token is expired",
+])
+def test_classify_error_not_store_mismatch(message):
+    assert api.classify_error(message) is not api.ErrorCode.STORE_MISMATCH
+
+
+def test_classify_failure_128_with_text():
+    assert api.apple_failure_type(PURCHASE_REFUSED_128) == "-128"
+    assert api.classify_failure(PURCHASE_REFUSED_128) is api.ErrorCode.STORE_MISMATCH
+    assert api.purchase_refused(PURCHASE_REFUSED_128) is True     # отказ -> в журнал не пишем
+
+
+@pytest.mark.parametrize("failure_type", ["-128", -128, " -128 "])
+def test_classify_failure_128_without_text(failure_type):
+    raw = json.dumps({"metadata": {"Data": {"FailureType": failure_type}}})
+    assert api.classify_failure(raw) is api.ErrorCode.STORE_MISMATCH
+    assert api.classify_failure(json.dumps({"failureType": failure_type})) is api.ErrorCode.STORE_MISMATCH
+
+
+@pytest.mark.parametrize("key", ["FailureType", "failureType", "FAILURETYPE", "failuretype"])
+def test_classify_failure_128_key_any_case(key):
+    raw = _purchase_refusal("-128", "", key=key)
+    assert api.classify_failure(raw) is api.ErrorCode.STORE_MISMATCH
+
+
+@pytest.mark.parametrize("message", ["Account Not In This Store", "ACCOUNT NOT IN THIS STORE",
+                                     "account not in this store"])
+def test_classify_failure_text_without_failure_type(message):
+    # только текст Apple / ipatool, failureType нет вовсе
+    raw = json.dumps({"level": "error", "success": False,
+                      "error": f"failed to purchase item with param 'STDQ': {message}"})
+    assert api.classify_failure("", raw) is api.ErrorCode.STORE_MISMATCH
+    raw2 = json.dumps({"metadata": {"Data": {"customermessage": message}}})
+    assert api.classify_failure(raw2) is api.ErrorCode.STORE_MISMATCH
+
+
+def test_classify_failure_2040_is_generic_refusal_not_store_mismatch():
+    code = api.classify_failure(PURCHASE_REFUSED_2040)
+    assert code is not api.ErrorCode.STORE_MISMATCH
+    assert code is api.ErrorCode.APPLE_REJECTED                  # генерик-отказ
+    assert api.classify_error("failed to purchase item with param 'STDQ': "
+                              "Purchase of this item is not currently available") is api.ErrorCode.UNKNOWN
+
+
+def test_classify_failure_other_known_codes_keep_their_code():
+    raw = _purchase_refusal("2059", "This item is temporarily unavailable")
+    assert api.classify_failure(raw) is api.ErrorCode.TEMPORARILY_UNAVAILABLE
+    raw = _purchase_refusal("-1280", "Something else")
+    assert api.classify_failure(raw) is api.ErrorCode.APPLE_REJECTED
+
+
+def test_classify_failure_none_on_success():
+    assert api.classify_failure(line(success=True, output="/tmp/x.ipa")) is None
+    assert api.classify_failure('{"metadata":{"Data":{"FailureType":"0"}}}') is None
+
+
+def test_call_raises_store_mismatch_from_ipatool_error_line():
+    runner = FakeRunner(api.RunResult(1, "", PURCHASE_REFUSED_128))
+    with pytest.raises(api.IpatoolError) as ei:
+        client(runner).account_info()
+    assert ei.value.code is api.ErrorCode.STORE_MISMATCH
+    assert ei.value.is_session_problem is False
+
+
+def test_call_uses_failure_type_128_when_error_text_is_vague():
+    out = (json.dumps({"level": "debug", "metadata": {"Data": {"FailureType": "-128"}}}) + "\n"
+           + err("failed to purchase item with param 'STDQ': unexpected response"))
+    with pytest.raises(api.IpatoolError) as ei:
+        client(FakeRunner(api.RunResult(1, "", out))).account_info()
+    assert ei.value.code is api.ErrorCode.STORE_MISMATCH
+
+
+def test_session_alive_store_mismatch_is_not_expired():
+    check = client(FakeRunner(err("Account Not In This Store"))).session_alive()
+    assert check.state is not api.SessionState.EXPIRED
+    assert check.error.code is api.ErrorCode.STORE_MISMATCH
+
+
+def test_store_mismatch_refusal_not_written_to_journal(tmp_path):
+    import sys
+    sys.path.insert(0, "/workspace/apprestore/maks-share")
+    import license_guard as lg
+
+    journal = tmp_path / "licenses_acquired.jsonl"
+
+    def purchase():
+        return "failed" if api.classify_failure(PURCHASE_REFUSED_128) else "purchase_uncertain"
+
+    res = lg.acquire_and_record("492224193", 0, purchase=purchase, journal_path=journal,
+                                storefront="us", mode="real")
+    assert res.recorded is False and res.status is None
+    assert lg.read_counts(journal) == (0, 0)
