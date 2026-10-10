@@ -150,7 +150,7 @@ MESSAGES_RU: Mapping[ErrorCode, str] = {
     ErrorCode.SUBSCRIPTION_REQUIRED: "Нужна подписка Apple Arcade. Без неё скачать нельзя.",
     ErrorCode.NO_LONGER_AVAILABLE: "Apple не отдаёт пакет по обычному каналу. Если запасной путь не поможет — приложения нет для этого аккаунта.",
     ErrorCode.TERMS_CHANGED: "В App Store на телефоне примите обновлённые условия Apple, затем повторите.",
-    ErrorCode.APPLE_REJECTED: "Apple отклонила запрос. Проверьте страну Apple ID и что приложение бесплатное и доступно.",
+    ErrorCode.APPLE_REJECTED: "Apple отклонила запрос. Проверьте, что вы вошли в нужный Apple ID и приложение ему доступно.",
     ErrorCode.PAID_NOT_SUPPORTED: "Платные приложения без оплаты не загружаются.",
     ErrorCode.APP_NOT_FOUND: "В магазине этой страны карточки нет. Если приложение было у вас — ищем через покупки.",
     ErrorCode.NO_CATALOG_VERSION: "В каталоге Apple нет актуальной версии (часто снятое приложение). Нужна сохранённая версия или лицензия.",

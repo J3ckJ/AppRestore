@@ -25,7 +25,7 @@ from apprestore_gui.account_vault import (
     restore_session,
     save_session,
 )
-from apprestore_gui.auth_pty import AppleLogin, AuthResult, keychain_has_saved_account, probe_keychain
+from apprestore_gui.auth_pty import WRONG_CODE_TEXT, AppleLogin, AuthResult, keychain_has_saved_account, probe_keychain
 from apprestore_gui.device_form import device_form, device_noun
 from apprestore_gui.errors import NOT_OWNED_TEXT, explain_user_error, is_license_missing
 from apprestore_core.license_gate import (
@@ -647,16 +647,26 @@ class QuickSession(QObject):
 
     @Slot(str)
     def submitCode(self, code: str) -> None:
+        """«Подтвердить» / Enter on the 2FA sheet (Ника 04-auth §3): exactly six digits,
+        one code per ipatool process, typed into the SAME process. The code is not
+        kept here: it goes straight to the terminal."""
+
         code = code.strip()
-        if not code:
-            self._set_auth("need_code", "Введите код из сообщения Apple.")
-            return
+        if not re.fullmatch(r"\d{6}", code):
+            code = ""
+            return  # the button is inactive until six digits; ipatool would refuse anyway
         job = self._auth_job
         if job is None:
+            code = ""
             self._set_auth("out", "Вход уже завершился. Нажмите «Войти» ещё раз.")
             return
+        with self._lock:
+            waiting = self._phase == "need_code"
+        if not waiting:
+            return  # a second «Подтвердить» / Enter is ignored
         job.submit("code", code)
-        self._set_auth("running", "Код отправлен. Ждём ответ Apple…")
+        code = ""
+        self._set_auth("checking_code", "Проверяем…")
 
     @Slot()
     def cancelLogin(self) -> None:
@@ -788,7 +798,7 @@ class QuickSession(QObject):
 
     def _on_auth_status(self, text: str) -> None:
         with self._lock:
-            if self._phase in ("need_code", "need_passphrase"):
+            if self._phase in ("need_code", "checking_code", "need_passphrase"):
                 return
             self._auth_status = text
         self.changed.emit()
@@ -823,7 +833,11 @@ class QuickSession(QObject):
                 self._auth_status = auth.message
             else:
                 self._auth_status = auth.message or "Не удалось войти."
-                if self._phase == "running":
+                if auth.message == WRONG_CODE_TEXT:
+                    # TWO_FACTOR_REJECTED: back to the password form; nothing is relaunched,
+                    # the next «Войти» (a user action) makes Apple send a new code
+                    self._phase = "out"
+                elif self._phase in ("running", "checking_code"):
                     self._phase = "locked" if keychain_has_saved_account() else "out"
                 if unlock_attempt and self._pending_email:
                     self._passphrases.pop(self._pending_email.lower(), None)
@@ -866,7 +880,7 @@ class QuickSession(QObject):
         prompt = False
         follow = ""
         with self._lock:
-            if self._phase in ("running", "need_code", "need_passphrase"):
+            if self._phase in ("running", "need_code", "checking_code", "need_passphrase"):
                 return
             if self._signed and state != "in":
                 return

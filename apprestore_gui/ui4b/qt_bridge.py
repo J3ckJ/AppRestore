@@ -1139,7 +1139,7 @@ class Restore4b(QObject):
     def cancelLogin(self) -> None:
         """«Отмена»/Esc in the sheet: stop a running sign-in, then close the sheet."""
 
-        if self.source.auth_phase in ("running", "need_code"):
+        if self.source.auth_phase in ("running", "need_code", "checking_code"):
             self.source.cancel_login()
         self.closeSignIn()
 
@@ -1301,10 +1301,14 @@ WRONG_PASSWORD_PREFIX = "Apple не приняла пароль"
 def signin_view(*, open_: bool, phase: str, status: str, email: str, relogin: bool) -> dict[str, object]:
     """Texts of the sign-in sheet (Ника, часть 4 §2). Pure: tested without Qt."""
 
-    from apprestore_gui.auth_pty import WRONG_CODE_TEXT
+    from apprestore_gui.auth_pty import CODE_HINT, WRONG_CODE_TEXT
 
-    code = phase == "need_code"
-    error = status if (status.startswith(WRONG_PASSWORD_PREFIX) or status == WRONG_CODE_TEXT) else ""
+    # auth-code: the prompt is up (need_code) or the code was sent and Apple is
+    # answering (checking_code: button busy «Проверяем…», field locked)
+    checking = phase == "checking_code"
+    code = phase == "need_code" or checking
+    wrong_code = status == WRONG_CODE_TEXT  # auth-code-wrong → the password form
+    error = status if (status.startswith(WRONG_PASSWORD_PREFIX) or wrong_code) else ""
     if code:
         title = "Код подтверждения"
         sub = "Apple отправила код на ваши устройства: iPhone, iPad или Mac. Введите 6 цифр."
@@ -1317,18 +1321,21 @@ def signin_view(*, open_: bool, phase: str, status: str, email: str, relogin: bo
     return {
         "open": open_,
         "phase": phase,
-        "busy": phase == "running",
+        "busy": phase == "running" or checking,
         "code": code,
-        "status": "" if error else status,
+        "status": "" if (error or code) else status,
         "error": error,
         "email": email,
         # in the re-login sheet the address is fixed: same account (Ника #5)
         "emailReadOnly": bool(relogin and email),
         "title": title,
         "sub": sub,
-        "codeHint": "Код не пришёл — нажмите «Отмена» и войдите ещё раз, Apple пришлёт новый.",
+        "codeHint": CODE_HINT,
+        # the same quiet hint under the field and under the auth-code-wrong error
+        "hint": CODE_HINT if (code or wrong_code) else "",
+        "codePlaceholder": "Код из 6 цифр",  # Windows: one plain field instead of cells
         "fine": "Пароль уходит только в Apple. Программа его не хранит; вход остаётся на этом компьютере, в связке ключей.",
-        "go": "Подтвердить" if code else "Войти",
+        "go": ("Проверяем…" if checking else "Подтвердить") if code else "Войти",
     }
 
 

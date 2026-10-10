@@ -425,7 +425,7 @@ def test_signin_view_states() -> None:
     w = signin_view(open_=True, phase="out", status=WRONG_CODE_TEXT, email="m@example.com", relogin=False)
     assert w["error"] == WRONG_CODE_TEXT and not w["code"] and w["go"] == "Войти"
     c = signin_view(open_=True, phase="need_code", status="", email="m", relogin=False)
-    assert c["code"] and "Отмена" in c["codeHint"] and "снова" not in c["go"]
+    assert c["code"] and c["codeHint"].startswith("Код не пришёл? На iPhone") and "снова" not in c["go"]
     assert code_digits("482 913") == code_digits("482-913") == "482913"
     assert code_digits("1234567") == "123456"
 

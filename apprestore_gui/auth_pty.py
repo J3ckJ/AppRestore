@@ -67,10 +67,20 @@ def login_with_prompts(
     if not ipatool:
         return AuthResult(False, "ipatool не найден. Установите AppRestore или добавьте ipatool в PATH.")
 
-    cmd = [ipatool, "auth", "login", "--email", email]
-    if sys.platform == "win32":
-        return _login_windows(cmd, password, code, passphrase, timeout, on_output)
-    return _login_posix(cmd, password, code, passphrase, timeout, on_output)
+    # One driver on every platform (pywinpty on Windows, a POSIX pty elsewhere):
+    # Apple ID and password through the terminal prompts, output scrubbed.
+    return _drive_windows_login(
+        email=email,
+        password=password,
+        code=code,
+        passphrase=passphrase,
+        on_output=on_output,
+        on_status=None,
+        on_need=None,
+        inbox=None,
+        cancel=None,
+        timeout=timeout,
+    )
 
 
 def _feed_answers(buffer: str, answers: list[tuple[str, str, bool]]) -> tuple[str, list[str]]:
@@ -82,90 +92,6 @@ def _feed_answers(buffer: str, answers: list[tuple[str, str, bool]]) -> tuple[st
         # answers items: (needle, value, already_sent_box) - we mutate via sentinel in list
         pass
     return remaining, writes
-
-
-def _login_posix(
-    cmd: list[str],
-    password: str,
-    code: str,
-    passphrase: str,
-    timeout: float,
-    on_output: Callable[[str], None] | None,
-) -> AuthResult:
-    import pty
-
-    master, slave = pty.openpty()
-    env = child_env()
-    env.setdefault("TERM", "xterm-256color")
-    proc = subprocess.Popen(
-        cmd,
-        stdin=slave,
-        stdout=slave,
-        stderr=slave,
-        env=env,
-        close_fds=True,
-    )
-    os.close(slave)
-
-    sent_password = False
-    sent_code = False
-    sent_passphrase = False
-    buf = ""
-    deadline = time.monotonic() + timeout
-    try:
-        while proc.poll() is None and time.monotonic() < deadline:
-            ready, _, _ = select.select([master], [], [], 0.4)
-            if not ready:
-                continue
-            try:
-                chunk = os.read(master, 4096)
-            except OSError:
-                break
-            if not chunk:
-                break
-            text = chunk.decode("utf-8", errors="replace")
-            buf += text
-            if on_output:
-                on_output(text)
-            low = buf.lower()
-            if (not sent_password) and password and any(
-                k in low for k in ("password", "пароль", "enter password")
-            ):
-                os.write(master, (password + "\n").encode())
-                sent_password = True
-                buf = ""
-                continue
-            if (not sent_code) and code and any(
-                k in low for k in ("auth code", "verification", "2fa", "код", "one-time")
-            ):
-                os.write(master, (code + "\n").encode())
-                sent_code = True
-                buf = ""
-                continue
-            if (not sent_passphrase) and passphrase and "passphrase" in low:
-                os.write(master, (passphrase + "\n").encode())
-                sent_passphrase = True
-                buf = ""
-                continue
-        # wait a bit more
-        try:
-            proc.wait(timeout=max(1.0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            proc.send_signal(signal.SIGTERM)
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            return AuthResult(False, "Вход прерван по таймауту")
-    finally:
-        try:
-            os.close(master)
-        except OSError:
-            pass
-
-    if proc.returncode == 0:
-        return AuthResult(True, "Вход выполнен")
-    return AuthResult(False, f"Вход не удался (код {proc.returncode})")
 
 
 class PosixPtyProcess:
@@ -309,7 +235,12 @@ def _apple_login_host_reachable(env: dict[str, str], timeout: float = 8) -> bool
 
 #: Sign-in failed after a 2FA code went in: ipatool does not let you retry the
 #: code, the login is over (Ника, часть 4, auth-code-wrong).
-WRONG_CODE_TEXT = "Код не подошёл, и Apple завершила вход. Введите пароль ещё раз — придёт новый код."
+WRONG_CODE_TEXT = (
+    "Код не подошёл или устарел, и Apple завершила вход. "
+    "Введите пароль ещё раз и возьмите самый свежий код."
+)
+#: Ника, 04-auth §3: there is no «send again»; a fresh code comes from the iPhone settings.
+CODE_HINT = "Код не пришёл? На iPhone: Настройки → ваше имя → Вход и безопасность → Получить код проверки"
 _WRONG_CODE_HINTS = (
     "invalid verification code",
     "incorrect verification code",
@@ -322,12 +253,23 @@ _WRONG_CODE_HINTS = (
 )
 
 
+def is_two_factor_rejected(transcript: str) -> bool:
+    """Макс: «apple did not complete verification» / 5005 = ErrorCode.TWO_FACTOR_REJECTED
+    (the code was not accepted — e.g. a code from an earlier attempt), not an expired session."""
+
+    try:
+        from apprestore_core.ipatool_api import ErrorCode, classify_error
+    except Exception:  # noqa: BLE001
+        return "did not complete verification" in (transcript or "").casefold()
+    return classify_error(transcript or "") is ErrorCode.TWO_FACTOR_REJECTED
+
+
 def is_wrong_code(transcript: str, *, code_sent: bool = False) -> bool:
-    """True when the failure is the 2FA code (explicit text, or any non-network,
-    non-password failure right after a code was sent)."""
+    """True when the failure is the 2FA code (TWO_FACTOR_REJECTED, explicit text, or
+    any non-network, non-password failure right after a code was sent)."""
 
     text = (transcript or "").casefold()
-    if any(hint in text for hint in _WRONG_CODE_HINTS):
+    if is_two_factor_rejected(transcript) or any(hint in text for hint in _WRONG_CODE_HINTS):
         return True
     if not code_sent:
         return False
@@ -339,6 +281,8 @@ def is_wrong_code(transcript: str, *, code_sent: bool = False) -> bool:
 
 def _explain_login_failure(exit_status: object, transcript: str, *, code_sent: bool = False) -> str:
     text = transcript.casefold()
+    if is_two_factor_rejected(transcript):
+        return WRONG_CODE_TEXT  # before the network check: 5005 is Apple's answer, not a lost one
     network = (
         "failed to get bag" in text
         or "init.itunes.apple.com" in text
@@ -730,6 +674,48 @@ class KeychainRunner(Runner):
         )
 
 
+def login_argv(ipatool: str) -> list[str]:
+    """``ipatool auth login`` for the window (Макс, путь A): one interactive process on
+    a terminal. No ``--non-interactive`` (ipatool would skip «enter 2FA code: »), no
+    ``-e``/``-p``: the Apple ID and the password are typed at ipatool's own prompts,
+    so neither shows up in ``ps`` / argv / the environment (Лена, п.2)."""
+
+    return [ipatool, "auth", "login"]
+
+
+#: ipatool cde7d00 prompts, verbatim, printed without a newline (cmd/auth.go, prompt.go).
+PROMPT_APPLE_ID = "enter Apple ID (email address or phone number): "
+PROMPT_PASSWORD = "enter password: "
+PROMPT_CODE = "enter 2FA code: "
+
+
+class PromptScrubber:
+    """Drop whatever the terminal echoes after a prompt up to the end of that line
+    (Лена, п.1): the password and the 2FA code never reach the transcript, the
+    window or a log. Works across chunk boundaries."""
+
+    _PROMPTS = (PROMPT_APPLE_ID, PROMPT_PASSWORD, PROMPT_CODE)
+
+    def __init__(self) -> None:
+        self._muted = False
+        self._tail = ""
+
+    def feed(self, text: str) -> str:
+        out: list[str] = []
+        for ch in text:
+            if self._muted:
+                if ch == "\n":
+                    self._muted = False
+                    out.append(ch)
+                continue
+            out.append(ch)
+            self._tail = (self._tail + ch)[-64:]
+            if any(self._tail.casefold().endswith(p.casefold()) for p in self._PROMPTS):
+                self._muted = True
+                self._tail = ""
+        return "".join(out)
+
+
 def _prompt_hit(buffer: str, hints: tuple[str, ...]) -> bool:
     folded = buffer.casefold()
     return any(hint in folded for hint in hints)
@@ -842,6 +828,13 @@ class AppleLogin(QThread):
                 )
         except Exception as exc:  # noqa: BLE001 - the window must show the failure
             result = AuthResult(False, f"Вход не запустился: {exc}")
+        # nothing of the answers stays in this object once ipatool has answered
+        self._password = self._code = ""
+        while True:
+            try:
+                self._inbox.get_nowait()
+            except queue.Empty:
+                break
         self.done.emit(result)
 
     def _remember_proc(self, proc: object) -> None:
@@ -1009,7 +1002,7 @@ def _drive_windows_login(
     say("Запускаем ipatool. Первый вход может занять несколько минут: скачивается служебный компонент.")
     try:
         proc = pty_process.spawn(
-            [ipatool, "auth", "login", "--email", email],
+            login_argv(ipatool),
             env=env,
             dimensions=(32, 100),
         )
@@ -1018,7 +1011,8 @@ def _drive_windows_login(
     if capture_proc:
         capture_proc(proc)
 
-    secrets: list[str] = [item for item in (password, code, passphrase) if item]
+    secrets: list[str] = [item for item in (email, password, code, passphrase) if item]
+    scrub = PromptScrubber()
     chunks: queue.Queue[str] = queue.Queue()
     transcript = ""
 
@@ -1036,6 +1030,7 @@ def _drive_windows_login(
 
     threading.Thread(target=reader, name="ipatool-conpty-reader", daemon=True).start()
 
+    sent_email = False
     sent_password = False
     sent_code = False
     sent_passphrase = False
@@ -1060,6 +1055,7 @@ def _drive_windows_login(
                 continue
             secrets.append(cleaned)
             proc.write(cleaned + "\r")
+            cleaned = value = ""
             if kind == "code":
                 sent_code = True
                 say("Код отправлен. Ждём ответ Apple…")
@@ -1085,12 +1081,17 @@ def _drive_windows_login(
                 elapsed = int(time.monotonic() - started)
                 say(f"Всё ещё ждём ipatool, прошло {elapsed} с.")
             continue
-        text = _visible_output(raw, tuple(secrets))
+        text = scrub.feed(_visible_output(raw, tuple(secrets)))
         if text:
-            transcript = (transcript + text)[-6000:]
+            transcript = (transcript + text)[-6000:]  # in memory only, never written out
             if on_output:
                 on_output(text)
         buf = (buf + text)[-2000:]
+        if (not sent_email) and _prompt_hit(buf, ("enter apple id",)):
+            proc.write(email + "\r")
+            sent_email = True
+            buf = ""
+            continue
         if (not sent_passphrase) and _prompt_hit(buf, _PASSPHRASE_HINTS):
             if passphrase:
                 proc.write(passphrase + "\r")
@@ -1122,6 +1123,7 @@ def _drive_windows_login(
             buf = ""
             continue
 
+    secrets.clear()  # the code and the password are not kept after ipatool answered
     if stop.is_set():
         return AuthResult(False, "Вход отменён.")
     if proc.isalive():
@@ -1136,30 +1138,3 @@ def _drive_windows_login(
     if asked_code and not sent_code:
         return AuthResult(False, "Вход остановлен: код из сообщения не отправлен.")
     return AuthResult(False, _explain_login_failure(exit_status, transcript, code_sent=sent_code))
-
-
-def _login_windows(
-    cmd: list[str],
-    password: str,
-    code: str,
-    passphrase: str,
-    timeout: float,
-    on_output: Callable[[str], None] | None,
-) -> AuthResult:
-    email = ""
-    if "--email" in cmd:
-        index = cmd.index("--email")
-        if index + 1 < len(cmd):
-            email = cmd[index + 1]
-    return _drive_windows_login(
-        email=email,
-        password=password,
-        code=code,
-        passphrase=passphrase,
-        on_output=on_output,
-        on_status=None,
-        on_need=None,
-        inbox=None,
-        cancel=None,
-        timeout=timeout,
-    )

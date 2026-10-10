@@ -9,9 +9,34 @@ Sheet {
     readonly property var s: ui.signIn
     title: root.s.title || ""
     panelWidth: Theme.authSheetWidth
-    onCancel: ui.cancelLogin()
+    onCancel: { root.forgetCode(); ui.cancelLogin() }
     Keys.onReturnPressed: go.clicked()
     Keys.onEnterPressed: go.clicked()
+
+    // A code belongs to one sign-in (Лена п.3, Ника §3): the field is emptied right
+    // after «Подтвердить», on every new prompt and on any exit from the sheet; an old
+    // code would be rejected (TWO_FACTOR_REJECTED). After a failed sign-in the password
+    // is typed again.
+    readonly property bool isWindows: Qt.platform.os === "windows"
+    readonly property bool codePhase: !!root.s.code
+    readonly property string errorText: root.s.error || ""
+    readonly property string codeText: root.isWindows ? codeField.text : codeInput.text
+    onCodePhaseChanged: root.forgetCode()
+    onErrorTextChanged: if (errorText !== "") password.text = ""
+    onVisibleChanged: if (!visible) { root.forgetCode(); password.text = "" }
+    Component.onDestruction: root.forgetCode()
+
+    function forgetCode() {
+        codeInput.text = ""
+        codeField.text = ""
+    }
+    // only «Подтвердить» / Enter, only with exactly six digits — no auto-submit
+    function submitCode() {
+        var code = root.codeText
+        root.forgetCode()
+        if (/^\d{6}$/.test(code)) ui.submitCode(code)
+        code = ""
+    }
 
     Column {
         id: col
@@ -54,7 +79,7 @@ Sheet {
         Item {
             id: codeBox
             objectName: "signInCode"
-            visible: !!root.s.code
+            visible: !!root.s.code && !root.isWindows
             width: 6 * Theme.codeCellW + 5 * 10 + 14
             height: Theme.codeCellH
             Accessible.role: Accessible.EditableText
@@ -64,13 +89,13 @@ Sheet {
                 objectName: "signInCodeInput"
                 opacity: 0
                 width: 1; height: 1
-                focus: !!root.s.code
+                focus: !!root.s.code && !root.isWindows
+                readOnly: !!root.s.busy
                 maximumLength: 6
                 inputMethodHints: Qt.ImhDigitsOnly
                 validator: RegularExpressionValidator { regularExpression: /\d{0,6}/ }
-                onTextEdited: if (text.length === 6) ui.submitCode(text)
                 Keys.onPressed: function(e) {
-                    if (e.matches(StandardKey.Paste)) {
+                    if (e.matches(StandardKey.Paste) && !codeInput.readOnly) {
                         codeInput.text = ui.codeDigits(ui.clipboardText ? ui.clipboardText() : "")
                         e.accepted = true
                     }
@@ -99,12 +124,15 @@ Sheet {
                 }
             }
         }
-        Item { width: 1; height: 12; visible: !!root.s.code }
-        T {
-            visible: !!root.s.code
-            token: "note"; color: Theme.ink3Text
-            width: parent.width; wrapMode: Text.WordWrap
-            text: root.s.codeHint || ""
+        // Windows: one plain field «Код из 6 цифр» instead of the cells (Ника §3)
+        Field {
+            id: codeField
+            objectName: "signInCodeField"
+            visible: !!root.s.code && root.isWindows
+            digits: true
+            readOnly: !!root.s.busy
+            placeholder: root.s.codePlaceholder || ""
+            focus: !!root.s.code && root.isWindows
         }
 
         Item { width: 1; height: 8; visible: errorLine.visible }
@@ -117,6 +145,18 @@ Sheet {
             glyph: "info"
             color: Theme.errorText
             text: root.s.error || ""
+        }
+        // «Код не пришёл? На iPhone: …» — under the code field and under the
+        // auth-code-wrong error; quiet, wraps to two lines, never elided
+        Item { width: 1; height: 12; visible: codeHint.visible }
+        T {
+            id: codeHint
+            objectName: "signInCodeHint"
+            visible: (root.s.hint || "") !== ""
+            token: "note"; color: Theme.ink2
+            width: parent.width; wrapMode: Text.WordWrap
+            elide: Text.ElideNone
+            text: root.s.hint || ""
         }
         Item { width: 1; height: 16 }
         InfoLine {
@@ -144,9 +184,9 @@ Sheet {
                 objectName: "signInGo"
                 anchors.right: parent.right
                 text: root.s.go || "Войти"
-                enabledLook: !root.s.busy && (root.s.code ? codeInput.text.length === 6
+                enabledLook: !root.s.busy && (root.s.code ? /^\d{6}$/.test(root.codeText)
                                                           : (email.text.indexOf("@") > 0 && password.text.length > 0))
-                onClicked: if (enabledLook) { root.s.code ? ui.submitCode(codeInput.text) : ui.login(email.text, password.text) }
+                onClicked: if (enabledLook) { root.s.code ? root.submitCode() : ui.login(email.text, password.text) }
             }
         }
     }
@@ -180,9 +220,11 @@ Sheet {
             echoMode: f.secret ? TextInput.Password : TextInput.Normal
             inputMethodHints: f.digits ? Qt.ImhDigitsOnly : Qt.ImhNone
             maximumLength: f.digits ? 6 : 256
+            validator: f.digits ? digitsOnly : null
             clip: true
             selectByMouse: true
         }
+        RegularExpressionValidator { id: digitsOnly; regularExpression: /\d{0,6}/ }
         T {
             visible: input.text === "" && !input.activeFocus
             anchors.verticalCenter: parent.verticalCenter
