@@ -6,9 +6,9 @@
 
 ## Что нужно
 
-| | Windows 10/11 x64 | macOS (Apple Silicon или Intel) |
+| | Windows 10/11 x64 | macOS (Apple Silicon) |
 |---|---|---|
-| Python | 3.10–3.13, 64 бит, с python.org (галочка «Add to PATH») | 3.10–3.13 (python.org или Homebrew) |
+| Python | 3.10–3.12, 64 бит, с python.org (галочка «Add to PATH»); 3.13 не подходит: для него нет колеса `lzfse` | 3.10–3.13 (python.org или Homebrew); системный `/usr/bin/python3` (3.9) и 3.14 не подходят |
 | Git | Git for Windows | `xcode-select --install` |
 | Связь с iPhone | приложение «Устройства Apple» (Apple Devices) из Microsoft Store **или** iTunes с сайта Apple: ставят драйвер и службу Apple Mobile Device | ничего, usbmuxd встроен в систему |
 | ipatool | собранный с патчами AppRestore (см. ниже) | то же |
@@ -16,6 +16,9 @@
 
 iPhone подключается кабелем; при первом подключении на телефоне нажмите
 «Доверять» и введите код.
+
+На Mac с процессором Intel из исходников не установится `runtime.lock`:
+для `cryptography` 50.0.0 нет колеса под macOS x86_64.
 
 ## 1. Исходники и окружение
 
@@ -28,21 +31,29 @@ git switch cursor/redesign-704e
 macOS:
 
 ```bash
+python3 --version          # нужно 3.10–3.13; иначе вызовите нужный явно: python3.13 -m venv .venv
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install --require-hashes --only-binary=:all: -r requirements/build.lock
-python -m pip install --require-hashes --only-binary=:all: -r requirements/runtime.lock
+python -m pip install --require-hashes --only-binary=:all: --no-deps \
+  --find-links requirements/wheels -r requirements/build.lock
+python -m pip install --require-hashes --only-binary=:all: --no-deps \
+  --find-links requirements/wheels -r requirements/runtime.lock
 python -m pip install --no-deps --no-build-isolation -e .
 python -m pip install -r requirements/gui-build.txt   # PySide6 6.9.3 (+ pyinstaller, pytest-qt)
 ```
 
+`--find-links requirements/wheels` обязателен: `hexdump` 3.3 есть на PyPI
+только исходником, поэтому его колесо лежит в репозитории (хэш тот же, что в
+`runtime.lock`). Без флага pip пишет `No matching distribution found for
+hexdump==3.3`.
+
 Windows (PowerShell):
 
 ```powershell
-py -3.13 -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --require-hashes --only-binary=:all: -r requirements\build.lock
-python -m pip install --require-hashes --only-binary=:all: -r requirements\runtime.lock
+python -m pip install --require-hashes --only-binary=:all: --no-deps --find-links requirements\wheels -r requirements\build.lock
+python -m pip install --require-hashes --only-binary=:all: --no-deps --find-links requirements\wheels -r requirements\runtime.lock
 python -m pip install --no-deps --no-build-isolation -e .
 python -m pip install -r requirements\gui-build.txt   # PySide6 6.9.3 и pywinpty для входа в Apple ID
 ```
@@ -99,8 +110,7 @@ shasum -a 256 bin/ipatool                      # macOS
 Get-FileHash bin\ipatool.exe -Algorithm SHA256   # Windows
 ```
 
-На macOS после копирования: `chmod +x bin/ipatool` и, если Gatekeeper
-блокирует, `xattr -d com.apple.quarantine bin/ipatool`.
+На macOS после копирования: `chmod +x bin/ipatool`.
 
 ### Что будет со старым ipatool (без патчей)
 
@@ -131,13 +141,15 @@ python -m apprestore_gui.app --self-test --output selftest.json   # провер
 `QT_QPA_PLATFORM=offscreen python scripts/ui4b_live_shot.py out.png --onboarded`).
 
 `--self-test` проверяет pymobiledevice3, usbmux, ipatool, Qt и загрузку
-окна 4b (`ui4b qml (default UI)`); в отчёте не должно быть `false`, кроме
-`usbmux client` при отключённом телефоне.
+окна 4b (`ui4b qml (default UI)`). Итог — `"ok": true` в начале отчёта.
+Внутри `doctor` пункт `AppRestore runtime` из исходников всегда `false`
+(`required: false`): так проверка отмечает установку через `pip install -e`,
+это нормально.
 
 Тесты:
 
 ```bash
-python -m pip install --require-hashes -r requirements/test.lock
+python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements/test.lock
 QT_QPA_PLATFORM=offscreen python -m pytest tests --ignore=tests/test_gui_update_ui.py --ignore=tests/test_gui_updater.py
 ```
 
@@ -152,8 +164,10 @@ QT_QPA_PLATFORM=offscreen python -m pytest tests --ignore=tests/test_gui_update_
 | Телефон не виден (Windows) | нет службы Apple Mobile Device: поставьте «Устройства Apple» или iTunes, переподключите кабель, нажмите «Доверять» |
 | Телефон не виден (macOS) | разблокируйте iPhone и нажмите «Доверять»; кабель с передачей данных |
 | `metadata X != runtime Y` в self-test | установлены старые метаданные пакета: повторите `pip install --no-deps --no-build-isolation -e .` |
-| Окно не открывается в Windows по RDP / в виртуалке | Qt Quick нужен OpenGL/Direct3D: `set QT_QUICK_BACKEND=software` перед запуском |
-| Pip ругается на хэши | ставьте только по `*.lock` с `--require-hashes --only-binary=:all:`, Python 3.10–3.13 |
+| Окно не открывается в Windows по RDP / в виртуалке | Qt Quick нужен OpenGL/Direct3D: `$env:QT_QUICK_BACKEND = "software"` (PowerShell) перед запуском |
+| `No matching distribution found for hexdump==3.3` | нет `--find-links requirements/wheels` — команды из шага 1 |
+| `No matching distribution found for lzfse==0.4.2` (Windows) | venv на Python 3.13: пересоздайте на 3.12 (`py -3.12 -m venv .venv`) |
+| Pip ругается на хэши | ставьте только по `*.lock` с `--require-hashes --only-binary=:all: --no-deps`, Python 3.10–3.13 (Windows 3.10–3.12) |
 
 Пароль Apple ID программа передаёт только ipatool; журнал лицензий и кэш
 покупок лежат в папке данных пользователя и в репозиторий не попадают.
