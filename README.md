@@ -90,28 +90,32 @@ App Store кнопки «Загрузить» уже нет: приложени�
 2. Распакуйте архив в свою папку, например `C:\Users\<вы>\AppRestore`.
    Не кладите программу в `Program Files`: оттуда не работает обновление в
    один клик, у программы нет прав заменить свои файлы.
-3. Запустите `AppRestore.exe`.
-4. Если появится синее окно Windows SmartScreen «Система Windows защитила ваш
-   компьютер», нажмите **Подробнее**, затем **Выполнить в любом случае**.
-   Это предупреждение появляется потому, что у программы нет платной подписи
-   издателя.
+3. Проверьте, что архив не подменён. Сборка не подписана для Windows,
+   поэтому система её не знает и проверить её можете только вы. В PowerShell
+   выполните `Get-FileHash -Algorithm SHA256 .\AppRestore-GUI-Windows.zip` и
+   сравните результат со строкой этого файла в
+   [SHA256SUMS.txt](https://github.com/J3ckJ/AppRestore/releases/latest/download/SHA256SUMS.txt).
+   Если не совпадает, не запускайте программу.
+4. Запустите `AppRestore.exe`. Если появится синее окно Windows SmartScreen
+   «Система Windows защитила ваш компьютер», нажмите **Подробнее**, затем
+   **Выполнить в любом случае**. Окно появляется потому, что у программы нет
+   подписи издателя.
 
 ### macOS
 
-1. Скачайте [AppRestore-GUI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip)
-   и откройте его. Появится `AppRestore.app`.
-2. Перенесите `AppRestore.app` в папку «Программы».
-3. Сборка не подписана в Apple, поэтому при первом запуске macOS её не
-   откроет двойным щелчком. Сделайте так: щёлкните по программе правой кнопкой
-   мыши, выберите **Открыть**, затем ещё раз **Открыть**.
-4. Если кнопки «Открыть» нет (так бывает в новых версиях macOS), откройте
-   «Системные настройки», раздел «Конфиденциальность и безопасность»,
-   прокрутите вниз и нажмите **Всё равно открыть**. Или выполните в
-   «Терминале» одну команду:
-
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/AppRestore.app
-   ```
+1. Скачайте [AppRestore-GUI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip).
+2. Проверьте, что архив не подменён. Сборка не подписана и не нотаризована
+   Apple, поэтому macOS её не знает и проверить её можете только вы. В
+   «Терминале» выполните `shasum -a 256 ~/Downloads/AppRestore-GUI-macOS.zip`
+   и сравните результат со строкой этого файла в
+   [SHA256SUMS.txt](https://github.com/J3ckJ/AppRestore/releases/latest/download/SHA256SUMS.txt).
+   Если не совпадает, не открывайте программу.
+3. Откройте архив и перенесите `AppRestore.app` в папку «Программы».
+4. При первом запуске macOS скажет, что не может проверить программу, и не
+   откроет её. Откройте «Системные настройки», раздел «Конфиденциальность и
+   безопасность», прокрутите вниз и нажмите **Всё равно открыть** рядом с
+   AppRestore. В старых версиях macOS можно вместо этого щёлкнуть по программе
+   правой кнопкой мыши и выбрать **Открыть**.
 
 ### Как пользоваться
 
@@ -335,9 +339,11 @@ Download from
 - **Desktop app (no command line):**
   [Windows](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-Windows.zip),
   [macOS, Apple Silicon](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip).
-  Both builds are unsigned: on Windows click **More info** → **Run anyway**; on
-  macOS right-click → **Open** or run
-  `xattr -dr com.apple.quarantine /Applications/AppRestore.app`.
+  Both builds are unsigned (and not notarized by Apple), so first compare the
+  archive's SHA-256 (`Get-FileHash` on Windows, `shasum -a 256` on macOS) with
+  [SHA256SUMS.txt](https://github.com/J3ckJ/AppRestore/releases/latest/download/SHA256SUMS.txt).
+  Then on Windows click **More info**, then **Run anyway**; on macOS open
+  System Settings, Privacy & Security, and click **Open Anyway**.
 - **Terminal version:**
 
 ```powershell
