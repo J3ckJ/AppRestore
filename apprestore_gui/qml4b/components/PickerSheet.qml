@@ -496,7 +496,7 @@ Item {
                 width: goLabel.implicitWidth + 68
                 radius: Theme.radiusGo
                 color: ui.footer.goEnabled ? Theme.accent : Theme.goDisabled
-                T { id: goLabel; anchors.centerIn: parent; token: "go"; color: Theme.onAccent; text: ui.footer.go }
+                T { id: goLabel; anchors.centerIn: parent; token: "go"; color: Theme.inkOnAccent; text: ui.footer.go }
                 MouseArea { anchors.fill: parent; enabled: ui.footer.goEnabled; cursorShape: Qt.PointingHandCursor; onClicked: ui.restoreSelected() }
             }
         }

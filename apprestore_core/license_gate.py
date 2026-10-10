@@ -34,7 +34,7 @@ from typing import Any, Callable, TypeVar
 
 from .command import CommandError
 from .error_signal import _AUTH, _LICENSE, _NETWORK, _REGION, is_license_missing
-from .ipatool_api import ErrorCode, classify_error
+from .ipatool_api import MESSAGES_RU, ErrorCode, classify_error
 from .license_guard import DEFAULT_DAILY_LIMIT, DEFAULT_TOTAL_LIMIT, default_journal_path
 from .license_journal import (
     ACQUIRED_DOWNLOAD_FAILED,
@@ -81,6 +81,19 @@ _STORE_REFUSAL_FIELD = re.compile(r"failuretype\W{0,4}\d+|customermessage")
 _BARE_2040 = re.compile(r"\b2040\b")
 
 
+#: Shown for -128 (the GUI's explain_user_error passes it through as is).
+STORE_MISMATCH_TEXT = MESSAGES_RU[ErrorCode.STORE_MISMATCH]
+#: Start of refusal_text() for the limit: front ends match it to list the app
+#: under «не хватило лимита».
+LIMIT_REFUSAL_TEXT = "Лимит бесплатных лицензий исчерпан"
+
+
+def is_limit_refusal(message: str) -> bool:
+    """The gate refused because the 5/24 h or 15 total limit is used up."""
+
+    return LIMIT_REFUSAL_TEXT.casefold() in (message or "").casefold()
+
+
 def is_store_mismatch(message: str) -> bool:
     """Apple's -128 «Account Not In This Store» (Макс: ErrorCode.STORE_MISMATCH).
 
@@ -88,7 +101,10 @@ def is_store_mismatch(message: str) -> bool:
     sign-in differs from the Apple ID's country. A refusal: no journal line.
     """
 
-    return classify_error(message or "") is ErrorCode.STORE_MISMATCH
+    text = message or ""
+    if STORE_MISMATCH_TEXT.casefold() in text.casefold():
+        return True
+    return classify_error(text) is ErrorCode.STORE_MISMATCH
 
 
 def is_store_refusal(message: str) -> bool:
@@ -139,7 +155,7 @@ def refusal_text(verdict: Verdict) -> str:
         )
     if "лимит" in reason:
         return (
-            "Лимит бесплатных лицензий исчерпан: "
+            f"{LIMIT_REFUSAL_TEXT}: "
             f"за сутки {verdict.used_today}/{DEFAULT_DAILY_LIMIT}, "
             f"всего {verdict.used_total}/{DEFAULT_TOTAL_LIMIT}. "
             "Это приложение пока не добавляем."

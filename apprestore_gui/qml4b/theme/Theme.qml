@@ -158,7 +158,7 @@ QtObject {
     readonly property int radiusRowIcon: 8
 
     // Цвета, которые раньше были литералами в компонентах (вне Theme цветов нет)
-    readonly property color onAccent: "#FFFFFF"             // текст/галочка на тёмном и accent
+    readonly property color inkOnAccent: "#FFFFFF"             // текст/галочка на тёмном и accent
     readonly property color focusRingInner: "#FFFFFF"       // tokens.json
     readonly property color secondaryPressed: "#E6E4DE"     // спека §1.1 [предл.]
     readonly property color iconHairline: Qt.rgba(0, 0, 0, 0.1)

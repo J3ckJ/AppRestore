@@ -19,7 +19,7 @@ from apprestore_core.error_signal import (  # noqa: F401 - re-exported
     _signal,
     is_license_missing,
 )
-from apprestore_core.license_gate import is_store_refusal
+from apprestore_core.license_gate import STORE_MISMATCH_TEXT, is_store_mismatch, is_store_refusal
 
 IPATOOL_FALLBACK_TEXT = "ipatool не смог выполнить запрос. Повторите позже."
 
@@ -46,6 +46,9 @@ def explain_user_error(message: str) -> str:
     signal = _signal(raw)
     low = signal.casefold()
 
+    if is_store_mismatch(raw):
+        # -128: before every other rule; the 4b screen recognises this text.
+        return STORE_MISMATCH_TEXT
     if any(hint in low for hint in _AUTH):
         return (
             "Сессия Apple ID закрыта. Откройте её в разделе Apple ID "

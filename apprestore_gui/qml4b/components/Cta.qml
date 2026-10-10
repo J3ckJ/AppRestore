@@ -30,7 +30,7 @@ Tpl.AbstractButton {
         text: root.text
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
-        color: root.secondary ? (root.live ? Theme.ink : Theme.ink3) : Theme.onAccent
+        color: root.secondary ? (root.live ? Theme.ink : Theme.ink3) : Theme.inkOnAccent
     }
     background: Rectangle {
         radius: Theme.ctaRadius

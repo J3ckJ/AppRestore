@@ -477,3 +477,15 @@ def test_store_mismatch_detection(message: str, expected: bool) -> None:
     assert is_store_mismatch(message) is expected
     assert ErrorCode.STORE_MISMATCH not in SESSION_CODES
     assert ErrorCode.STORE_MISMATCH not in TRANSPORT_CODES
+
+
+def test_gui_text_for_store_mismatch_is_recognised_again() -> None:
+    from apprestore_core.license_gate import STORE_MISMATCH_TEXT, is_limit_refusal, is_store_mismatch, refusal_text
+    from apprestore_core.license_journal import Verdict
+    from apprestore_gui.errors import explain_user_error
+
+    text = explain_user_error(APPLE_128_ERROR)
+    assert text == STORE_MISMATCH_TEXT == "Магазин в текущем входе не совпадает со страной вашего Apple ID."
+    assert is_store_mismatch(text)
+    limit = refusal_text(Verdict(False, "лимит за сутки", 5, 7))
+    assert is_limit_refusal(limit) and not is_limit_refusal(text)

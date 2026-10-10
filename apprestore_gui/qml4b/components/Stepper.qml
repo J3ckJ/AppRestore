@@ -31,7 +31,7 @@ Row {
                         anchors.centerIn: parent
                         visible: modelData.state !== "ok"
                         token: "stepNum12"
-                        color: modelData.state === "on" ? Theme.onAccent : Theme.ink
+                        color: modelData.state === "on" ? Theme.inkOnAccent : Theme.ink
                         text: String(modelData.n)
                     }
                     Glyph { anchors.centerIn: parent; visible: modelData.state === "ok"; name: "check-ink"; size: 12 }
