@@ -1,0 +1,215 @@
+From 329215620c68271b3a7d8ab2e4466bacc6980145 Mon Sep 17 00:00:00 2001
+From: AppRestore <apprestore@localhost>
+Date: Sat, 10 Oct 2026 18:04:28 +0300
+Subject: [PATCH 2/2] feat(purchases): add --all to list the whole purchase
+ history in one call
+
+Apple returns the complete purchase history for every request and
+ipatool sliced it into pages locally, so walking 2.8k purchases in
+pages of 100 fetched the full history 29 times. --all returns the
+merged, date-sorted history as a single page (count == totalCount).
+Without the flag the paged behaviour is unchanged.
+---
+ cmd/purchases.go                         | 15 +++++++--
+ cmd/purchases_test.go                    | 41 ++++++++++++++++++++++++
+ pkg/appstore/appstore_owned_apps.go      | 19 ++++++++++-
+ pkg/appstore/appstore_owned_apps_test.go | 29 +++++++++++++++++
+ 4 files changed, 101 insertions(+), 3 deletions(-)
+
+diff --git a/cmd/purchases.go b/cmd/purchases.go
+index ca1c2d4..809157c 100644
+--- a/cmd/purchases.go
++++ b/cmd/purchases.go
+@@ -14,6 +14,8 @@ import (
+ func listPurchasesCmd() *cobra.Command {
+ 	var page, maxResults int
+ 
++	var all bool
++
+ 	var platformValue string
+ 
+ 	var platform appstore.Platform
+@@ -23,6 +25,9 @@ func listPurchasesCmd() *cobra.Command {
+ 		Short: "List apps owned by the authenticated App Store account",
+ 		Args:  cobra.NoArgs,
+ 		PreRunE: func(cmd *cobra.Command, args []string) error {
++			if all && (cmd.Flags().Changed("page") || cmd.Flags().Changed("max-results")) {
++				return errors.New("--all cannot be combined with --page or --max-results")
++			}
+ 			if page < 1 {
+ 				return errors.New("page must be greater than 0")
+ 			}
+@@ -60,12 +65,17 @@ func listPurchasesCmd() *cobra.Command {
+ 					acc = loginResult.Account
+ 				}
+ 
+-				output, err := dependencies.AppStore.OwnedApps(appstore.OwnedAppsInput{
++				input := appstore.OwnedAppsInput{
+ 					Account:  acc,
+ 					Page:     page,
+ 					Limit:    maxResults,
+ 					Platform: platform,
+-				})
++				}
++				if all {
++					input.Page, input.Limit, input.All = 0, 0, true
++				}
++
++				output, err := dependencies.AppStore.OwnedApps(input)
+ 				if err != nil {
+ 					return err
+ 				}
+@@ -94,6 +104,7 @@ func listPurchasesCmd() *cobra.Command {
+ 
+ 	cmd.Flags().IntVarP(&maxResults, "max-results", "l", appstore.DefaultOwnedAppsLimit, "maximum number of apps to return per page")
+ 	cmd.Flags().IntVarP(&page, "page", "p", 1, "page of owned apps to return")
++	cmd.Flags().BoolVar(&all, "all", false, "return the whole purchase history in one response (Apple sends it in full for every page anyway)")
+ 	cmd.Flags().StringVar(&platformValue, "platform", "", "Filter by platform: iphone (iOS), ipad (iPadOS), appletv (tvOS), visionos, or macos")
+ 
+ 	return cmd
+diff --git a/cmd/purchases_test.go b/cmd/purchases_test.go
+index 9c94d8d..aa2038d 100644
+--- a/cmd/purchases_test.go
++++ b/cmd/purchases_test.go
+@@ -64,6 +64,47 @@ var _ = Describe("List Purchases command", func() {
+ 		Entry("max results over limit", "max-results", "101", "100"),
+ 	)
+ 
++	It("requests the whole history with --all", func() {
++		store := &fakePurchasesAppStore{}
++		previousDependencies := dependencies
++		DeferCleanup(func() { dependencies = previousDependencies })
++		dependencies.AppStore = store
++		dependencies.Logger = log.NewLogger(log.Args{})
++		cmd := listPurchasesCmd()
++		cmd.SetArgs([]string{"--all", "--platform", "ios"})
++
++		Expect(cmd.Execute()).To(Succeed())
++		Expect(store.input.All).To(BeTrue())
++		Expect(store.input.Page).To(BeZero())
++		Expect(store.input.Limit).To(BeZero())
++		Expect(store.input.Platform).To(Equal(appstore.PlatformIPhone))
++	})
++
++	It("keeps the paged request without --all", func() {
++		store := &fakePurchasesAppStore{}
++		previousDependencies := dependencies
++		DeferCleanup(func() { dependencies = previousDependencies })
++		dependencies.AppStore = store
++		dependencies.Logger = log.NewLogger(log.Args{})
++		cmd := listPurchasesCmd()
++		cmd.SetArgs([]string{"--page", "2", "--max-results", "100"})
++
++		Expect(cmd.Execute()).To(Succeed())
++		Expect(store.input.All).To(BeFalse())
++		Expect(store.input.Page).To(Equal(2))
++		Expect(store.input.Limit).To(Equal(100))
++	})
++
++	DescribeTable("rejects --all with pagination flags before accessing the account", func(flag, value string) {
++		cmd := listPurchasesCmd()
++		Expect(cmd.Flags().Set("all", "true")).To(Succeed())
++		Expect(cmd.Flags().Set(flag, value)).To(Succeed())
++		Expect(cmd.PreRunE(cmd, nil)).To(MatchError(ContainSubstring("--all cannot be combined")))
++	},
++		Entry("with --page", "page", "2"),
++		Entry("with --max-results", "max-results", "100"),
++	)
++
+ 	It("is registered on the root command", func() {
+ 		cmd, _, err := rootCmd().Find([]string{"list-purchases"})
+ 
+diff --git a/pkg/appstore/appstore_owned_apps.go b/pkg/appstore/appstore_owned_apps.go
+index 33d5d1e..4d99586 100644
+--- a/pkg/appstore/appstore_owned_apps.go
++++ b/pkg/appstore/appstore_owned_apps.go
+@@ -29,6 +29,9 @@ type OwnedAppsInput struct {
+ 	Page     int
+ 	Limit    int
+ 	Platform Platform
++	// All returns the whole purchase history as one page. Apple sends the
++	// complete history for every request anyway; Page and Limit must be zero.
++	All bool
+ }
+ 
+ type OwnedAppsOutput struct {
+@@ -80,7 +83,11 @@ func (t *appstore) OwnedApps(input OwnedAppsInput) (OwnedAppsOutput, error) {
+ 	}
+ 
+ 	apps = ownedAppsSortedByPurchaseDate(apps)
+-	pageApps := ownedAppsPage(apps, input.Page, input.Limit)
++	pageApps := apps
++	if !input.All {
++		pageApps = ownedAppsPage(apps, input.Page, input.Limit)
++	}
++
+ 	output := OwnedAppsOutput{
+ 		Count:      len(pageApps),
+ 		TotalCount: len(apps),
+@@ -115,6 +122,16 @@ func normalizeOwnedAppsInput(input OwnedAppsInput) (OwnedAppsInput, error) {
+ 		return OwnedAppsInput{}, fmt.Errorf("invalid platform %q", input.Platform)
+ 	}
+ 
++	if input.All {
++		if input.Page > 1 || input.Limit != 0 {
++			return OwnedAppsInput{}, errors.New("page and limit cannot be combined with all")
++		}
++
++		input.Page = 1
++
++		return input, nil
++	}
++
+ 	if input.Page == 0 {
+ 		input.Page = 1
+ 	}
+diff --git a/pkg/appstore/appstore_owned_apps_test.go b/pkg/appstore/appstore_owned_apps_test.go
+index 24ccaed..32c9fc7 100644
+--- a/pkg/appstore/appstore_owned_apps_test.go
++++ b/pkg/appstore/appstore_owned_apps_test.go
+@@ -162,6 +162,31 @@ var _ = Describe("AppStore (OwnedApps)", func() {
+ 		Expect(signer.closeCalls).To(Equal(1))
+ 	})
+ 
++	It("returns the whole merged history as one page when All is set", func() {
++		expectSignerSetup()
++		first := append(dmapUint32("aeSI", 123), dmapUint32("aeSS", 3)...)
++		first = append(first, dmapUint32("aeMk", 131072)...)
++		first = append(first, dmapUint32("asdp", 100)...)
++		second := append(dmapUint32("aeSI", 456), dmapUint32("aeSS", 3)...)
++		second = append(second, dmapUint32("aeMk", 131072)...)
++		second = append(second, dmapUint32("asdp", 200)...)
++		listing := append(dmapTag("mlit", first), dmapTag("mlit", second)...)
++		expectStorefront("143441-1,34", dmapTag("adbs", dmapTag("mlcl", listing)))
++
++		mac := append(dmapUint32("aeSI", 789), dmapUint32("aeMk", 67108864)...)
++		mac = append(mac, dmapTag("aeSS", []byte{0, 0})...)
++		mac = append(mac, dmapUint32("asdp", 300)...)
++		expectStorefront("143441-1,13", dmapTag("adbs", dmapTag("mlcl", dmapTag("mlit", mac))))
++
++		output, err := as.OwnedApps(OwnedAppsInput{Account: account, All: true})
++		Expect(err).ToNot(HaveOccurred())
++		Expect(output.Page).To(Equal(1))
++		Expect(output.TotalCount).To(Equal(3))
++		Expect(output.Count).To(Equal(3))
++		Expect([]int64{output.Results[0].ID, output.Results[1].ID, output.Results[2].ID}).To(Equal([]int64{789, 456, 123}))
++		Expect(signer.closeCalls).To(Equal(1))
++	})
++
+ 	It("does not infer a platform from the storefront or app name", func() {
+ 		expectSignerSetup()
+ 		expectStorefront("143441-1,34", dmapTag("adbs", nil))
+@@ -379,6 +404,10 @@ var _ = Describe("AppStore (OwnedApps)", func() {
+ 		Entry("rejects a negative page", OwnedAppsInput{Page: -1, Limit: 10}, OwnedAppsInput{}, "page"),
+ 		Entry("rejects a negative limit", OwnedAppsInput{Page: 1, Limit: -1}, OwnedAppsInput{}, "limit"),
+ 		Entry("rejects a limit over 100", OwnedAppsInput{Page: 1, Limit: 101}, OwnedAppsInput{}, "100"),
++		Entry("all ignores the page limit", OwnedAppsInput{All: true}, OwnedAppsInput{Page: 1, All: true}, ""),
++		Entry("all accepts page one", OwnedAppsInput{All: true, Page: 1}, OwnedAppsInput{Page: 1, All: true}, ""),
++		Entry("all rejects a later page", OwnedAppsInput{All: true, Page: 2}, OwnedAppsInput{}, "cannot be combined with all"),
++		Entry("all rejects a limit", OwnedAppsInput{All: true, Limit: 100}, OwnedAppsInput{}, "cannot be combined with all"),
+ 		Entry("rejects an invalid platform", OwnedAppsInput{Platform: "invalid"}, OwnedAppsInput{}, "invalid platform"),
+ 		Entry("rejects unknown as a filter", OwnedAppsInput{Platform: PlatformUnknown}, OwnedAppsInput{}, "invalid platform"),
+ 	)
+-- 
+2.47.3
+

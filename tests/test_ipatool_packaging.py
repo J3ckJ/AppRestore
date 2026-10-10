@@ -77,7 +77,27 @@ def test_build_script_packs_through_python_with_fixed_mtime() -> None:
     assert "SOURCE_DATE_EPOCH" in script
     assert 'log -1 --format=%ct "$commit"' in script
     assert "tar -C" not in script and "-czf" not in script
-    assert "ipatool-auth-info-country.patch:" in script
+    assert "0001-ipatool-auth-info-country.patch:" in script
+    assert "0002-ipatool-list-purchases-all.patch:" in script
+    # A marker starting with "--" must not be read by grep as an option.
+    assert 'grep -a -F -q -e "$marker"' in script
+
+
+def test_patch_pins_match_files_and_order() -> None:
+    import re
+
+    script = (ROOT / "packaging" / "build-ipatool.sh").read_text(encoding="utf-8")
+    entries = re.findall(r'"([0-9]{4}-[\w.-]+\.patch):([0-9a-f]{64})"', script)
+    assert [name for name, _ in entries] == [
+        "0001-ipatool-auth-info-country.patch",
+        "0002-ipatool-list-purchases-all.patch",
+    ]
+    patches = ROOT / "packaging" / "patches"
+    for name, pinned in entries:
+        assert hashlib.sha256((patches / name).read_bytes()).hexdigest() == pinned, name
+    assert sorted(p.name for p in patches.glob("*.patch")) == [name for name, _ in entries]
+    for marker in ("appstore.CountryCodeFromStoreFront", "--all cannot be combined with --page or --max-results"):
+        assert f'"{marker}"' in script
 
 
 def test_go_toolchain_pin_matches_ci_workflow() -> None:

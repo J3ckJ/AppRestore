@@ -8,8 +8,10 @@
 #
 # On top of that commit AppRestore applies its own patches from
 # packaging/patches/ (each pinned by SHA-256 below):
-#   ipatool-auth-info-country.patch - `auth info` also prints the signed-in
-#   account's raw storeFront and its ISO countryCode. Read-only.
+#   0001-ipatool-auth-info-country.patch - `auth info` also prints the
+#   signed-in account's raw storeFront and its ISO countryCode. Read-only.
+#   0002-ipatool-list-purchases-all.patch - `list-purchases --all` returns the
+#   whole purchase history in one call; without the flag nothing changes.
 #
 # The archive is reproducible: packaging/pack_ipatool.py writes it with a fixed
 # mtime (SOURCE_DATE_EPOCH, else the commit time of $commit), uid/gid 0 and a
@@ -83,7 +85,8 @@ sha256_of() {
 
 # name:sha256 of every patch, applied in this order.
 patches=(
-  "ipatool-auth-info-country.patch:32f5b0db7a8aefbe31b6cc1b6dea0b3590a4db2a24c8790d959b88332ab34531"
+  "0001-ipatool-auth-info-country.patch:05d87977a554102c9b036306ec2c125febaa62433d2a080d588527a8225b7fb8"
+  "0002-ipatool-list-purchases-all.patch:025d9919871dba636a80559614a3ca402c37cf2be6965fb7a3203f4088e54445"
 )
 for entry in "${patches[@]}"; do
   patch_name="${entry%%:*}"
@@ -94,8 +97,8 @@ for entry in "${patches[@]}"; do
     echo "ipatool patch $patch_name SHA-256 mismatch: expected $patch_sha, got $actual_sha" >&2
     exit 1
   fi
-  git -C "$work/src" apply --check "$patch_file"
-  git -C "$work/src" apply "$patch_file"
+  git -C "$work/src" apply --check --whitespace=nowarn "$patch_file"
+  git -C "$work/src" apply --whitespace=nowarn "$patch_file"
 done
 
 go_reported="$(cd "$work/src" && go env GOVERSION)"
@@ -132,12 +135,14 @@ fi
 # contain them). The exported appstore.CountryCodeFromStoreFront symbol exists
 # only after the auth info country patch ("countryCode" alone is already in
 # v2.6.0, so it cannot serve as a marker; the build does not strip symbols).
+# The --all sentence exists only after the list-purchases --all patch.
 for marker in \
   "too many authentication redirects" \
   "unsupported authentication redirect status" \
-  "appstore.CountryCodeFromStoreFront"
+  "appstore.CountryCodeFromStoreFront" \
+  "--all cannot be combined with --page or --max-results"
 do
-  if ! grep -a -F -q "$marker" "$stage/bin/$name"; then
+  if ! grep -a -F -q -e "$marker" "$stage/bin/$name"; then
     echo "built ipatool is missing an expected fix: $marker" >&2
     exit 1
   fi

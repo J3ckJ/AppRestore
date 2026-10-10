@@ -1,8 +1,8 @@
 From fc9cb6d53b08bc1afe3601eb94d29c892190cb7c Mon Sep 17 00:00:00 2001
 From: AppRestore <apprestore@localhost>
 Date: Sat, 10 Oct 2026 17:42:29 +0300
-Subject: [PATCH] feat(auth): show the account's storefront and country in auth
- info
+Subject: [PATCH 1/2] feat(auth): show the account's storefront and country in
+ auth info
 
 auth info now reports the raw storeFront of the signed-in account (the
 X-Set-Apple-Store-Front value saved at login, e.g. "143469-16,29") and,
