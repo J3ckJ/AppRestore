@@ -68,6 +68,31 @@ def test_main_qml_loads_without_warnings(qapp, scenario: str) -> None:
     assert qml_path().is_file()
 
 
+def test_long_home_content_remains_reachable_at_minimum_height(qapp) -> None:
+    source = FakeSource("region")
+    controller = Restore4b(source, onboarded=True)
+    engine, icons, warnings = open_window(qapp, controller)
+    window = engine.rootObjects()[0]
+    window.setHeight(window.minimumHeight())
+    for _ in range(3):
+        qapp.processEvents()
+    scroll = window.findChild(QQuickItem, "homeScroll")
+    hero = window.findChild(QQuickItem, "homeHero")
+    assert scroll is not None and hero is not None
+    assert scroll.property("clip")
+    assert scroll.property("contentHeight") == hero.height()
+    assert scroll.property("contentHeight") > scroll.height()
+    bottom = scroll.property("contentHeight") - scroll.height()
+    scroll.setProperty("contentY", bottom)
+    qapp.processEvents()
+    assert scroll.property("contentY") > 0
+    source.changed.emit()  # same screen refresh does not reset user's position
+    qapp.processEvents()
+    assert scroll.property("contentY") == bottom
+    window.close()
+    assert warnings == []
+
+
 def test_picker_model_keeps_rows_on_toggle(qapp) -> None:
     model = PickerModel()
     resets: list[int] = []
@@ -93,6 +118,14 @@ def wait(qapp, predicate, rounds: int = 200) -> None:
     raise AssertionError("timeout")
 
 
+def begin_picker_restore(controller) -> None:
+    """Home CTA opens the picker; the second explicit action starts the chosen rows."""
+
+    controller.primaryAction()
+    assert controller.pickerOpen
+    controller.restoreSelected()
+
+
 def test_restore_checks_space_first_and_blocks_when_over(qapp) -> None:
     source = FakeSource("picker")
     controller = Restore4b(source)
@@ -108,8 +141,8 @@ def test_restore_checks_space_first_and_blocks_when_over(qapp) -> None:
 def test_restore_runs_store_apps_through_session_gate(qapp) -> None:
     source = FakeSource("missing")
     controller = Restore4b(source)
-    assert controller.home["cta"] == "Вернуть все 4"
-    controller.primaryAction()
+    assert controller.home["cta"] == "Выбрать и вернуть"
+    begin_picker_restore(controller)
     wait(qapp, lambda: bool(source.calls))
     assert source.calls[0][0] == "install_store"
     assert controller.home["state"] == "installing"
@@ -145,7 +178,7 @@ class FakeSession:
 
     def __init__(self) -> None:
         for name in ("changed", "sessionChanged", "purchasesChanged", "installProgress", "appRestored",
-                     "restoreSettled", "installSettled", "copySettled"):
+                     "restoreSettled", "installSettled", "copySettled", "keychainPrompt"):
             setattr(self, name, FakeSignal())
         self.calls: list[tuple[str, object]] = []
         self.connected = False
@@ -177,6 +210,9 @@ class FakeSession:
     def loadPurchases(self):
         self.calls.append(("loadPurchases", None))
 
+    def unlock(self, passphrase):
+        self.calls.append(("unlock", len(passphrase)))
+
 
 def test_session_source_uses_gated_quick_session_calls(qapp) -> None:
     session = FakeSession()
@@ -185,11 +221,13 @@ def test_session_source_uses_gated_quick_session_calls(qapp) -> None:
     source.restore_offloaded(["com.a"])
     source.install_ipa("/tmp/a.ipa")
     source.start_scan()
+    source.unlock("local-pass")
     assert session.calls == [
         ("installStore", "492224193"),
         ("restore", ["com.a"]),
         ("installSaved", "/tmp/a.ipa"),
         ("loadPurchases", None),
+        ("unlock", 10),
     ]
 
 
@@ -209,7 +247,7 @@ def test_relogin_returns_home_without_resuming(qapp) -> None:
     controller = Restore4b(source)
     asked: list[int] = []
     controller.signInRequested.connect(lambda: asked.append(1))
-    controller.primaryAction()
+    begin_picker_restore(controller)
     wait(qapp, lambda: bool(source.calls))
     first = controller.flow.queue.entries[0].item.store_id
     source.installSettled.emit(first, False, "Сессия Apple ID истекла. Войдите заново.")
@@ -223,7 +261,7 @@ def test_relogin_returns_home_without_resuming(qapp) -> None:
     source.auth_phase = "in"
     source.changed.emit()
     assert controller.home["state"] == "missing"
-    assert controller.home["cta"] == "Вернуть все 4"
+    assert controller.home["cta"] == "Выбрать и вернуть"
     assert [c[0] for c in source.calls] == ["install_store"]
 
 
@@ -267,7 +305,7 @@ def test_store_mismatch_screen_buttons(qapp) -> None:
     source = FakeSource("missing")
     source.account_email = "marina@example.com"
     controller = Restore4b(source)
-    controller.primaryAction()
+    begin_picker_restore(controller)
     wait(qapp, lambda: bool(source.calls))
     first = controller.flow.queue.entries[0].item.store_id
     source.installSettled.emit(first, False, "Account Not In This Store")
@@ -278,7 +316,7 @@ def test_store_mismatch_screen_buttons(qapp) -> None:
     controller.submitCode("111111")
     assert controller.home["state"] == "missing"
     assert [c[0] for c in source.calls].count("install_store") == 1
-    controller.primaryAction()
+    begin_picker_restore(controller)
     wait(qapp, lambda: [c[0] for c in source.calls].count("install_store") == 2)
     first = controller.flow.queue.entries[0].item.store_id
     source.installSettled.emit(first, False, "Account Not In This Store")
@@ -290,72 +328,26 @@ def test_store_mismatch_screen_buttons(qapp) -> None:
 # -- согласие на лицензии ---------------------------------------------------
 
 
-def _record(journal, n: int, prefix: str = "9") -> None:
-    from apprestore_core.license_guard import record_acquire
-
-    for i in range(n):
-        record_acquire(f"{prefix}{i:05d}", f"com.example.app{prefix}{i}", "us", journal_path=journal, price=0)
-
-
-def _open_consent(qapp, controller, source):
-    controller.primaryAction()
-    wait(qapp, lambda: bool(controller.consent.get("open")))
-    return controller.consent
-
-
-def test_consent_numbers_are_read_counts_every_time(qapp, tmp_path) -> None:
-    from apprestore_core.license_guard import read_counts
-
-    journal = tmp_path / "licenses_acquired.jsonl"
+def test_license_run_starts_without_the_sheet(qapp, tmp_path) -> None:
     source = FakeSource("consent")
-    source.journal = journal
-    _record(journal, 2)
+    source.journal = tmp_path / "licenses_acquired.jsonl"
     controller = Restore4b(source)
-    consent = _open_consent(qapp, controller, source)
-    today, total = read_counts(journal)
-    assert (consent["usedToday"], consent["usedTotal"]) == (today, total) == (2, 2)
-    assert consent["limit"] == f"Осталось сегодня — {5 - today} из 5 · Осталось всего — {15 - total} из 15"
-    assert consent["k"] == 2
-    assert not [c for c in source.calls if c[0] == "install_store"], "nothing starts before a choice"
-    controller.consentCancel()
-    assert not controller.consent["open"] and not controller.flow.running
-    # another process writes to the journal between two shows
-    _record(journal, 2, prefix="8")
-    consent = _open_consent(qapp, controller, source)
-    today, total = read_counts(journal)
-    assert (consent["usedToday"], consent["usedTotal"]) == (today, total) == (4, 4)
-    assert consent["limit"] == "Осталось сегодня — 1 из 5 · Осталось всего — 11 из 15"
+    begin_picker_restore(controller)
+    wait(qapp, lambda: bool(controller.flow.queue.entries))
+    assert not controller.consent.get("open")
+    labels = [entry.item.label for entry in controller.flow.queue.entries]
+    assert labels[-2:] == ["Сбер", "Т-Банк"]
     engine, icons, warnings = open_window(qapp, controller)
     window = engine.rootObjects()[0]
-    sheet = window.findChild(QQuickItem, "consentLimit")
-    assert sheet is not None and sheet.property("text") == consent["limit"]
+    assert window.findChild(QQuickItem, "consentSheet") is None
     assert warnings == []
     del window, engine, icons
-
-
-def test_consent_continue_and_owned_only(qapp, tmp_path) -> None:
-    source = FakeSource("consent")
-    source.journal = tmp_path / "j.jsonl"
-    controller = Restore4b(source)
-    _open_consent(qapp, controller, source)
-    controller.consentOwnedOnly()
-    started = [e.item.label for e in controller.flow.queue.entries]
-    assert "Сбер" not in started and "Т-Банк" not in started and started
-    assert controller.flow.queue.skipped["no_license"] == ["Сбер", "Т-Банк"]
-    controller.stop()
-    controller.dismissDone()
-    source2 = FakeSource("consent")
-    source2.journal = tmp_path / "j.jsonl"
-    c2 = Restore4b(source2)
-    _open_consent(qapp, c2, source2)
-    c2.consentContinue()
-    assert [e.item.label for e in c2.flow.queue.entries][-2:] == ["Сбер", "Т-Банк"]
 
 
 def test_no_consent_when_everything_is_on_the_account(qapp) -> None:
     source = FakeSource("missing")
     controller = Restore4b(source)
-    controller.primaryAction()
+    begin_picker_restore(controller)
     wait(qapp, lambda: bool(controller.flow.queue.entries))
     assert not controller.consent["open"] and controller.flow.running
 
@@ -434,8 +426,35 @@ def test_signin_view_states() -> None:
     assert w["error"] == WRONG_CODE_TEXT and not w["code"] and w["go"] == "Войти"
     c = signin_view(open_=True, phase="need_code", status="", email="m", relogin=False)
     assert c["code"] and c["codeHint"].startswith("Код не пришёл? На iPhone") and "снова" not in c["go"]
+    k = signin_view(open_=True, phase="locked", status="", email="m", relogin=False, keychain=True)
+    assert k["keychain"] and k["title"] == "Открыть связку ключей" and k["go"] == "Открыть"
+    assert "не пароль Apple ID" in k["sub"] and "stdin" in k["fine"]
     assert code_digits("482 913") == code_digits("482-913") == "482913"
     assert code_digits("1234567") == "123456"
+
+
+def test_keychain_prompt_opens_distinct_password_form_and_forwards_only_to_unlock(qapp) -> None:
+    source = FakeSource("signin")
+    source.auth_phase = "locked"
+    received: list[int] = []
+    source.unlock = lambda value: received.append(len(value))  # type: ignore[method-assign]
+    controller = Restore4b(source)
+    source.keychainPrompt.emit("person@example.com")
+    assert controller.signIn["open"] and controller.signIn["keychain"]
+    assert controller.signIn["title"] == "Открыть связку ключей"
+
+    engine, icons, warnings = open_window(qapp, controller)
+    window = engine.rootObjects()[0]
+    password = window.findChild(QQuickItem, "signInPassword")
+    email = window.findChild(QQuickItem, "signInEmail")
+    assert password is not None and password.property("visible") is True
+    assert email is not None and email.property("visible") is False
+    controller.unlock("separate-local-password")
+    assert received == [23]
+    assert "separate-local-password" not in repr(controller.signIn)
+    assert warnings == []
+    window.close()
+    del window, engine, icons
 
 
 def test_cancel_login_stops_running_signin(qapp) -> None:
@@ -487,7 +506,48 @@ def test_ipa_link_installs_only_a_local_file(qapp) -> None:
     assert asked == [True]
     controller.installIpaFile("file:///tmp/Example.ipa")
     assert ("install_ipa", "/tmp/Example.ipa") in source.calls
-    controller.link("Журнал")  # hidden link: does nothing
+    controller.link("Журнал")
+    assert controller.journal["open"]
+    controller.closeJournal()
+    assert not controller.journal["open"]
+
+
+def test_second_phone_and_saved_account_are_on_the_screen(qapp) -> None:
+    source = FakeSource("missing")
+    source.devices = lambda: [  # type: ignore[method-assign]
+        {"udid": "home", "name": "Домашний", "account": "one@example.com", "active": True, "noun": "iPhone"},
+        {"udid": "work", "name": "Рабочий", "account": "two@example.com", "active": False, "noun": "iPhone"},
+    ]
+    source.accounts = lambda: [  # type: ignore[method-assign]
+        {"email": "one@example.com", "devices": "Домашний", "active": True, "saved": True},
+        {"email": "two@example.com", "devices": "Рабочий", "active": False, "saved": True},
+    ]
+    seen: list[tuple[str, str]] = []
+    source.select_device = lambda udid: seen.append(("device", udid))  # type: ignore[method-assign]
+    source.use_account = lambda email: seen.append(("account", email))  # type: ignore[method-assign]
+    controller = Restore4b(source)
+    assert controller.home["pill"] == "Домашний"
+    assert len(controller.devices) == 2
+    controller.selectDevice("work")
+    controller.openAccount()
+    assert controller.account["others"][0]["email"] == "two@example.com"
+    assert controller.account["devices"] == "Домашний"
+    controller.useAccount("two@example.com")
+    source.loginPrompt.emit("two@example.com")
+    assert ("device", "work") in seen and ("account", "two@example.com") in seen
+    assert controller.signIn["open"] and controller.signIn["email"] == "two@example.com"
+    assert controller.signIn["keychain"] is False and controller.account["open"] is False
+    controller.closeSignIn()
+    engine, _icons, warnings = open_window(qapp, controller)
+    controller.openAccount()
+    controller.link("Журнал")
+    for _ in range(4):
+        qapp.processEvents()
+    window = engine.rootObjects()[0]
+    assert window.findChild(QQuickItem, "accountSheet") is not None
+    assert window.findChild(QQuickItem, "journalSheet") is not None
+    assert warnings == []
+    window.close()
 
 
 # -- смоук Лены, блокирующие пункты, на моках гейта ---------------------------------------------
@@ -543,32 +603,27 @@ def _gated_source(tmp_path, scenario="consent", paid=()):
     return source, journal, bought, notes
 
 
-def _run_choice(qapp, tmp_path, choice):
+def _run_restore(qapp, tmp_path):
     from apprestore_core.license_guard import read_counts
 
     source, journal, bought, notes = _gated_source(tmp_path)
     controller = Restore4b(source)
     before = read_counts(journal)
-    _open_consent(qapp, controller, source)
-    getattr(controller, choice)()
-    wait(qapp, lambda: not controller.flow.running)
+    begin_picker_restore(controller)
+    wait(qapp, lambda: controller.flow.queue.finished)
     return controller, source, journal, bought, notes, before, read_counts(journal)
 
 
-def test_smoke13_cancel_takes_nothing(qapp, tmp_path) -> None:
-    controller, source, journal, bought, notes, before, after = _run_choice(qapp, tmp_path, "consentCancel")
-    assert bought == [] and before == after and not [c for c in source.calls if c[0] == "install_store"]
-
-
-def test_smoke13_owned_only_takes_no_new_license(qapp, tmp_path) -> None:
-    controller, source, journal, bought, notes, before, after = _run_choice(qapp, tmp_path, "consentOwnedOnly")
-    assert bought == [] and before == after and notes == []
+def test_smoke13_sheet_does_not_block_the_free_license(qapp, tmp_path) -> None:
+    controller, source, journal, bought, notes, before, after = _run_restore(qapp, tmp_path)
+    assert not controller.consent.get("open")
+    assert len(bought) == 2 and after[0] - before[0] == 2
 
 
 def test_smoke12_17_continue_notice_then_plus_k_in_read_counts(qapp, tmp_path) -> None:
     import json
 
-    controller, source, journal, bought, notes, before, after = _run_choice(qapp, tmp_path, "consentContinue")
+    controller, source, journal, bought, notes, before, after = _run_restore(qapp, tmp_path)
     k = 2
     assert len(bought) == k and notes.count("Приложение будет добавлено на ваш Apple ID, если Apple его выдаст.") == k
     assert (after[0] - before[0], after[1] - before[1]) == (k, k)
@@ -582,17 +637,16 @@ def test_smoke14_paid_never_enters_k_or_purchase(qapp, tmp_path) -> None:
     paid_id = removed_items()[0].store_id  # Сбер: not on the account, price 2.99
     source, journal, bought, notes = _gated_source(tmp_path, paid=(paid_id,))
     controller = Restore4b(source)
-    consent = _open_consent(qapp, controller, source)
-    assert consent["k"] == 1 and "Сбер" not in consent["names"]
-    controller.consentContinue()
-    wait(qapp, lambda: not controller.flow.running)
+    begin_picker_restore(controller)
+    wait(qapp, lambda: controller.flow.queue.finished)
+    assert not controller.consent.get("open")
     assert paid_id not in bought and ("install_store", paid_id) not in source.calls
 
 
 def test_smoke12_notice_visible_in_queue(qapp, tmp_path) -> None:
     source = FakeSource("missing")
     controller = Restore4b(source)
-    controller.primaryAction()
+    begin_picker_restore(controller)
     wait(qapp, lambda: controller.flow.running)
     source.progress.emit(-1, "Приложение будет добавлено на ваш Apple ID, если Apple его выдаст.")
     rows = controller.home["queue"]
@@ -701,7 +755,7 @@ def test_unpatched_ipatool_no_consent_owned_go_marked_listed(qapp, tmp_path) -> 
     rows = [r for r in controller.selection.rows() if r.get("kind") == "app" and r["storeId"] in not_owned]
     assert rows and all(r["ipaHint"] == HOWTO_LINK and r["hasIpaHint"] for r in rows)
     home = controller.home
-    assert home["state"] == "needs_component" and home["number"] == 4 and home["cta"] == "Вернуть 2"
+    assert home["state"] == "needs_component" and home["number"] == 4 and home["cta"] == "Выбрать и вернуть"
     assert home["fine"] == QUIET_LINE and HOWTO_LINK in home["fine"]
     assert home["links"] == ["Найти другое приложение", DETAILS_LINK]
     assert "удалены из App Store" in home["lead"] and "уже на вашем Apple ID" in home["lead"]
@@ -712,6 +766,9 @@ def test_unpatched_ipatool_no_consent_owned_go_marked_listed(qapp, tmp_path) -> 
     before = source.license_counts()
     controller.link(DETAILS_LINK)
     controller.primaryAction()
+    assert controller.pickerOpen
+    controller.selectAll()
+    controller.restoreSelected()
     wait(qapp, lambda: any(c[0] == "install_store" for c in source.calls))
     wait(qapp, lambda: not controller.flow.running)
     assert not controller.consent.get("open")
@@ -789,7 +846,7 @@ def test_needs_patched_mid_run_switches_home_to_needs_component(qapp) -> None:
     source = FakeSource("missing")
     source.owned = set()  # unknown to the GUI that the binary is old
     controller = Restore4b(source)
-    controller.primaryAction()
+    begin_picker_restore(controller)
     wait(qapp, lambda: controller.flow.running)
     for entry in list(controller.flow.queue.entries):
         if entry.item.store_id:
@@ -840,7 +897,7 @@ def test_apple_id_link_opens_account_sheet_and_signs_out_after_confirm(qapp) -> 
 def test_sign_out_inactive_during_installation(qapp) -> None:
     source = _signed_in_source()
     controller = Restore4b(source)
-    controller.primaryAction()
+    begin_picker_restore(controller)
     wait(qapp, lambda: controller.flow.running)
     controller.openAccount()
     a = controller.account

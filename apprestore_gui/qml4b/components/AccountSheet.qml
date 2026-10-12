@@ -33,6 +33,66 @@ Sheet {
             Basic.ToolTip.text: root.a.email || ""
             MouseArea { id: emailHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
         }
+        T {
+            visible: (root.a.devices || "") !== ""
+            width: parent.width
+            topPadding: 6
+            token: "rowDev"
+            color: Theme.ink2
+            wrapMode: Text.WordWrap
+            text: root.a.devices || ""
+        }
+        Item { width: 1; height: 14; visible: (root.a.others || []).length > 0 }
+        T {
+            visible: (root.a.others || []).length > 0
+            token: "fieldLabel"
+            color: Theme.ink2
+            text: "Другие входы на этом компьютере"
+        }
+        Item { width: 1; height: 8; visible: (root.a.others || []).length > 0 }
+        Repeater {
+            model: root.a.others || []
+            delegate: Item {
+                required property var modelData
+                width: parent.width
+                height: otherRow.height + 10
+                Row {
+                    id: otherRow
+                    width: parent.width
+                    spacing: 12
+                    T {
+                        width: Math.max(40, parent.width - openLink.width - 12)
+                        token: "row"
+                        elide: Text.ElideMiddle
+                        text: modelData.email || ""
+                    }
+                    T {
+                        id: openLink
+                        enabled: !!root.a.switchEnabled
+                        token: "sheetLink"
+                        color: Theme.ink2
+                        text: modelData.saved ? "Открыть" : "Войти"
+                        Accessible.role: Accessible.Button
+                        Accessible.name: text + " " + (modelData.email || "")
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: ui.useAccount(modelData.email || "")
+                        }
+                    }
+                }
+            }
+        }
+        Item { width: 1; height: 14 }
+        Cta {
+            objectName: "addAccount"
+            secondary: true
+            compact: true
+            enabled: !!root.a.switchEnabled
+            text: root.a.addAccount || "Добавить Apple ID"
+            onClicked: ui.addAccount()
+        }
         Item { width: 1; height: 14 }
         InfoLine { maxWidth: parent.width; wrap: true; glyph: "lock"; text: root.a.fine || "" }
         Item { width: 1; height: 24 }

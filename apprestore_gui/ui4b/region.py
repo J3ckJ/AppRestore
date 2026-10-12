@@ -28,7 +28,7 @@ from apprestore_core.region_probe import RegionStatus
 
 from .store_labels import caption
 
-#: The region-group link and its explanation (Лена): only a file the user already has.
+#: Optional local-file fallback, not the only way to restore a delisted app.
 IPA_LINK = "Поставить из файла на компьютере…"
 IPA_MORE = "Если у вас сохранился собственный файл, например из старой резервной копии, его можно поставить с этого компьютера."
 

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+from pathlib import Path
 
 import pytest
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-
-import subprocess
-from pathlib import Path
+from PySide6.QtWidgets import QApplication
 
 from apprestore_core.region_probe import RegionStatus
 from apprestore_gui.ui4b import frequent
@@ -20,12 +22,17 @@ from apprestore_gui.ui4b.qt_bridge import Restore4b
 REPO = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(scope="module")
+def qapp():
+    return QApplication.instance() or QApplication([])
+
+
 def _b3f869a() -> list[dict]:
     """POPULAR_APPS exactly as in commit b3f869a (Eugene's decision 10.10)."""
 
     try:
         src = subprocess.run(["git", "show", "b3f869a:apprestore_gui/popular_apps.py"], cwd=REPO,
-                             capture_output=True, text=True, check=True).stdout
+                             capture_output=True, text=True, encoding="utf-8", check=True).stdout
     except (OSError, subprocess.CalledProcessError):
         pytest.skip("b3f869a is not in this checkout")
     ns: dict = {}
@@ -135,10 +142,8 @@ def test_frequent_row_goes_only_through_the_gate(qapp, tmp_path) -> None:
     assert row["action"] == "Поставить"
     before = read_counts(journal)
     c.finder.install(sid, row["name"])
-    qapp.processEvents()
-    assert c.consent["open"] and bought == [] and not [x for x in source.calls if x[0] == "install_store"]
-    c.consentContinue()
-    wait(qapp, lambda: not c.flow.running)
+    wait(qapp, lambda: bought == [sid])
+    assert not c.consent.get("open")
     assert bought == [sid]  # only via Tools.purchase_license inside run_with_free_license
     assert [x for x in source.calls if x[1:] == (sid,)] == [("install_store", sid)]
     assert read_counts(journal) != before  # the journal saw it (the gate's limit accounting)
@@ -153,16 +158,21 @@ def test_no_official_word_for_these_rows() -> None:
     assert "официальн" not in text.casefold()
 
 
-def test_icons_only_from_apple_cache_or_placeholder() -> None:
+def test_find_icons_use_the_book_then_a_site_mark() -> None:
     sheet = (REPO / "apprestore_gui" / "qml4b" / "components" / "FindSheet.qml").read_text(encoding="utf-8")
-    assert "storeId: r.storeId" in sheet  # AppIcon → iconBook (icons_cache, Apple artwork) or iconPlaceholder
+    assert "storeId: r.storeId" in sheet  # AppIcon → iconBook, else the placeholder square
     icon = (REPO / "apprestore_gui" / "qml4b" / "components" / "AppIcon.qml").read_text(encoding="utf-8")
     assert "iconPlaceholder" in icon
+    # The site list stays out of the shelf data. Only the window asks for it,
+    # and only after Apple's artwork.
     for path in (REPO / "apprestore_gui" / "ui4b").glob("*.py"):
+        if path.name == "window.py":
+            continue
         assert "ICON_SITES" not in path.read_text(encoding="utf-8"), path
 
 
-def test_window_queues_find_icons_without_a_site() -> None:
+def test_window_queues_find_icons_ahead_of_the_home_list() -> None:
     src = (REPO / "apprestore_gui" / "ui4b" / "window.py").read_text(encoding="utf-8")
     assert "controller.finder.changed.connect(queue_icons)" in src
-    assert 'items.append((str(row["storeId"]), "", ""))' in src  # site = "" → no favicon path
+    assert "ICON_SITES.get(store_id, \"\")" in src
+    assert "consider_async(find, front=True)" in src

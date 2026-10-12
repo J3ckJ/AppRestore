@@ -155,6 +155,9 @@ class AppRestoreTools:
         # Прокси для ipatool разрешаем один раз за процесс: проба сокета
         # не должна повторяться перед каждым вызовом.
         self._ipatool_proxy_env: dict[str, str] | None = None
+        # auth info is a process spawn. The country does not change until
+        # the next login or revoke, so Find must not ask for it per app.
+        self._account_country: str | None = None
 
     def _ipatool_env(self) -> dict[str, str]:
         """Прокси-окружение для дочернего ipatool.
@@ -1147,9 +1150,17 @@ class AppRestoreTools:
         if payload.get("authenticated") is False or payload.get("success") is False:
             return None
         self._ipatool_session_authenticated = True
+        # GUI login/account switching uses a PTY, not ipatool_login(). Refresh
+        # the country whenever its saved identity is read; never retain the
+        # previous account's country when this response lacks a storefront.
+        from .storefronts import account_country as country_of
+
+        country = str(country_of(payload) or "").strip().lower()
+        self._account_country = country or None
         return payload
 
     def ipatool_login(self, email: str) -> None:
+        self._account_country = None
         result = self.runner.run(
             self._ipatool_cmd("auth", "login", "--email", email),
             capture=False,
@@ -1166,6 +1177,7 @@ class AppRestoreTools:
         self._ipatool_session_authenticated = True
 
     def ipatool_revoke(self) -> None:
+        self._account_country = None
         result = self.runner.run(
             self._ipatool_cmd("auth", "revoke"),
             capture=False,
@@ -1198,7 +1210,9 @@ class AppRestoreTools:
             args.extend(["--app-id", store_id])
         else:
             args.extend(["--bundle-identifier", str(bundle_id)])
-        args.extend(["--output", str(output)])
+        # AppRestore restores iOS/iPadOS, not the tvOS/macOS build of a
+        # universal app. Let ipatool validate the package's iPhoneOS platform.
+        args.extend(["--platform", "iphone", "--output", str(output)])
         if "--purchase" in args:  # pragma: no cover - R2 tripwire
             raise ValueError("download must never carry --purchase")
         result = self.runner.run(
@@ -1210,10 +1224,33 @@ class AppRestoreTools:
         )
         if result.returncode != 0:
             detail = _public_tool_failure(result.stderr, result.stdout)
-            if detail:
-                raise ToolUnavailable(detail)
-            return False
+            if not detail:
+                # Empty output is itself the bug the window used to hide:
+                # a macOS .app inherited stderr into nowhere and reported
+                # only «ipatool failed».
+                detail = f"ipatool exited {result.returncode} and printed nothing"
+            raise ToolUnavailable(detail)
         return True
+
+    def probe_download(self, store_id: str, *, version_id: str = "") -> dict[str, object]:
+        """Read product metadata only; no purchase, package download or install."""
+        from .download_probe import positive_id, sanitize_download_probe
+
+        store_id = positive_id(store_id)
+        args = self._ipatool_cmd("--format", "json", "--non-interactive", "probe-download", "--app-id", store_id)
+        if version_id:
+            args.extend(["--external-version-id", positive_id(version_id)])
+        result = self.runner.run(args, capture=True, timeout=90, env=self._ipatool_env())
+        if result.returncode != 0:
+            # Do not echo error output: only the allowlisted JSON is a report.
+            raise ToolUnavailable("Не удалось проверить каналы загрузки; откройте связку в приложении.")
+        try:
+            payload = parse_json_output(result.stdout)
+            if not isinstance(payload, dict) or payload.get("success") is not True:
+                raise ValueError("probe did not complete")
+            return sanitize_download_probe(payload.get("probe"), store_id)
+        except (CatalogError, ValueError, TypeError) as exc:
+            raise ToolUnavailable("Проверка загрузки вернула некорректный ответ.") from exc
 
     def purchase_license(self, store_id: str, *, grant: object) -> dict[str, Any]:
         """``ipatool --format json purchase --app-id N``: take a free license.
@@ -1302,14 +1339,21 @@ class AppRestoreTools:
         ``countryCode`` first, else the raw ``storeFront`` via ``storefronts``.
         No session, an old ipatool without either field, or any error: ``""``.
         Purchase paths refuse on ``""``; only read-only paths may fall back.
+        A known country is remembered until login or revoke.
         """
 
-        from .storefronts import account_country
+        from .storefronts import account_country as country_of
 
+        cached = self._account_country
+        if cached:
+            return cached
         try:
-            return account_country(self.ipatool_auth_info())
+            country = str(country_of(self.ipatool_auth_info()) or "").strip().lower()
         except Exception:  # noqa: BLE001 - unknown country
             return ""
+        if country:
+            self._account_country = country
+        return country
 
     def search_apps(self, term: str, *, limit: int = 10) -> list[dict[str, str]]:
         """Search App Store via ipatool; may prompt for keychain passphrase."""

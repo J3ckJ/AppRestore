@@ -41,6 +41,7 @@ patch_markers=(
   "0001:appstore.CountryCodeFromStoreFront"
   "0002:--all cannot be combined with --page or --max-results"
   "0003:keychain-passphrase-stdin"
+  "0004:catalog-independent redownload does not match the requested app"
 )
 
 force=0

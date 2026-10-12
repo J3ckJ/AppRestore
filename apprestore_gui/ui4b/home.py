@@ -33,7 +33,7 @@ from apprestore_gui.ui4b.space import SPACE_OVER, DeviceSpace, plan_space
 STATE_DISCONNECTED = "disconnected"
 STATE_LOADING = "loading"
 STATE_SIGNIN = "signin"
-STATE_MISSING = "missing"  # few apps: «Вернуть все N»
+STATE_MISSING = "missing"  # few apps: the same explicit picker as for a large list
 STATE_MANY = "many"  # many apps: «Выбрать и вернуть» opens the picker
 STATE_REGION = "region"
 STATE_INSTALLING = "installing"
@@ -45,8 +45,9 @@ STATE_STORE_MISMATCH = "store_mismatch"  # -128, temporary look until Ника's
 STATE_APPLE_REJECTED = "apple_rejected"
 APPLE_REJECTED_LEAD = "Apple не выдаёт это приложение вашему Apple ID. Остальные приложения можно вернуть как обычно."
 
-#: Up to this many apps (and if they fit) the home screen offers «Вернуть все N»;
-#: more → «Выбрать и вернуть». Mirrors ``Theme.restoreAllMax`` (test keeps them equal).
+#: Up to this many apps the home screen may use the compact explanatory copy.
+#: The primary action always opens «Что вернуть»; it never starts a bulk restore.
+#: Mirrors ``Theme.restoreAllMax`` (a test keeps them equal).
 RESTORE_ALL_MAX = 8
 DIRECT_LIMIT = RESTORE_ALL_MAX
 PHONE_TILES = 16
@@ -135,7 +136,7 @@ def phone_tiles(inp: HomeInput, state: str) -> list[dict[str, object]]:
             continue
         label = item.label
         progress = -1.0
-        if item.group == GROUP_REGION:
+        if item.group == GROUP_REGION and not item.selectable:
             kind, label = "unavailable", "Недоступна"
         elif state == STATE_DONE and (entry is None or entry.state == DONE):
             kind = "new"
@@ -189,6 +190,8 @@ def link_action(name: str) -> str:
         return "howto"  # BUILD-ipatool.md / RUN-FROM-SOURCE.md
     if name == DETAILS_LINK:
         return "details"  # technical details of the missing component
+    if name == "Журнал":
+        return "journal"  # this run and the license journal, in plain language
     return ""
 
 
@@ -205,8 +208,7 @@ def home_view(inp: HomeInput) -> dict[str, object]:
     removed = [item for item in items if item.group == GROUP_REMOVED]
     offloaded = [item for item in items if item.group == GROUP_OFFLOADED]
     region = [item for item in items if item.group == GROUP_REGION]
-    # the home screen keeps region apps out of its count (they are chosen in «Что вернуть»)
-    selectable = [item for item in items if item.selectable and item.group != GROUP_REGION]
+    selectable = [item for item in items if item.selectable]
     #: the run's summary is the final screen only when nothing is left, or when it
     #: has something to say (failures, «не хватило лимита», skipped); otherwise the
     #: home screen with the fresh count
@@ -272,17 +274,17 @@ def home_view(inp: HomeInput) -> dict[str, object]:
                 lead="Магазин в текущем входе не совпадает со страной вашего Apple ID.",
                 cta="На главный",
                 cta2="Войти заново",
-                hint="После входа ничего не начнётся само: нажмите «Вернуть» ещё раз.",
+                hint="После входа ничего не начнётся само: нажмите «Выбрать и вернуть» ещё раз.",
             )
     elif inp.relogin and not (queue is not None and queue.active):
         # No promise to continue: after signing in the user is back on the
-        # home screen and presses «Вернуть» again.
+        # home screen and presses «Выбрать и вернуть» again.
         state = STATE_SIGNIN
         view.update(
             over="Сессия Apple ID истекла",
             title="Войдите\nзаново",
             lead="Apple попросил войти ещё раз. После входа вернётесь сюда "
-            "и снова нажмёте «Вернуть».",
+            "и снова нажмёте «Выбрать и вернуть».",
             cta="Войти заново",
             fine="Вход хранится только на этом компьютере, в связке ключей под вашим паролем. "
             "Код подтверждения придёт на ваши устройства Apple.",
@@ -408,29 +410,30 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             word2=line2,
             a11y=missing_a11y(n_all),
             lead=" ".join(parts),
-            cta=(f"Вернуть {m}" if m > 1 else "Вернуть") if m else "",
+            cta="Выбрать и вернуть" if m else "",
             cta2="" if m else HOWTO_LINK,
+            hint="Сначала покажем список, отметите нужные." if m else "",
             fine=inp.component_details or QUIET_LINE,
             links=["Найти другое приложение", DETAILS_LINK],
             pages=phone_pages(n_all),
         )
     elif region and len(selectable) <= RESTORE_ALL_MAX:
         state = STATE_REGION
-        names_ok = join_names([item.label for item in selectable])
+        names_ok = join_names([item.label for item in selectable if item.group != GROUP_REGION])
         names_na = join_names([item.label for item in region])
         # full names in the body and the link (Ника #7): «Альфа-Банк», not «Альфа»
         full_na = join_names([f"«{short_name_of(item.name)}»" for item in region])
         where = inp.region_name or "вашего региона"
-        verb = "недоступна" if len(region) == 1 else "недоступны"
         view.update(
-            over=f"{names_na} {verb}",
+            over=f"{names_na}: нет карточки в магазине",
             number=len(selectable),
             word=f"из {len(items)}",
-            word2="можно вернуть",
-            lead=(f"<b>{names_ok}</b> вернутся как обычно. " if names_ok else "")
+            word2="можно попробовать вернуть",
+            lead=(f"<b>{names_ok}</b> можно вернуть. " if names_ok else "")
             + f"{full_na} нет в App Store региона вашего Apple ID ({where}), "
-            f"и Apple не отдаёт {'его' if len(region) == 1 else 'их'} этой учётной записи.",
-            cta=f"Вернуть {len(selectable)}" if selectable else "",
+            "но сервер Apple может выдать ранее полученное приложение. Проверим при возврате.",
+            cta="Выбрать и вернуть" if selectable else "",
+            hint="Сначала покажем список, отметите нужные." if selectable else "",
             # «Войти с другим Apple ID» — отложено (Лена)
             links=[IPA_LINK],
             fine=IPA_MORE,
@@ -438,8 +441,9 @@ def home_view(inp: HomeInput) -> dict[str, object]:
     else:
         plan = plan_space(selectable, inp.space)
         count = len(items)
-        # спека §2.2: «Вернуть все N» при N ≤ restoreAllMax и если известные
-        # размеры помещаются (неизвестный размер = 0); иначе «Выбрать и вернуть».
+        # The threshold only chooses between compact and large-list copy.  Both
+        # variants open the picker: the home screen must never silently restore
+        # every app merely because the list happens to be short.
         many = len(selectable) > RESTORE_ALL_MAX or plan.verdict == SPACE_OVER
         links = ["Найти другое приложение", "Файлы IPA", "Apple ID"]
         if many:
@@ -450,7 +454,7 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             if removed:
                 parts.append(f"{len(removed)} {plural(len(removed), 'удалённое', 'удалённых', 'удалённых')} из App Store")
             if region:
-                parts.append(f"{len(region)} {plural(len(region), 'недоступно', 'недоступны', 'недоступны')} в регионе")
+                parts.append(f"{len(region)} без карточки в магазине страны Apple ID")
             lead = (", ".join(parts[:-1]) + " и " + parts[-1]) if len(parts) > 1 else (parts[0] if parts else "")
             lead += "."
             if plan.verdict == SPACE_OVER:
@@ -484,9 +488,9 @@ def home_view(inp: HomeInput) -> dict[str, object]:
             else:
                 lead = f"<b>{names}</b> пропали с телефона или сгружены. Их можно вернуть."
             if plan.unknown_count:
-                hint = "Телефон не отключайте. Размер части приложений узнаем при скачивании."
+                note = "Телефон не отключайте. Размер части приложений узнаем при скачивании."
             else:
-                hint = f"{_minutes(n)}. Телефон не отключайте."
+                note = f"{_minutes(n)}. Телефон не отключайте."
             line1, line2 = missing_caption(n, noun)
             view.update(
                 number=n,
@@ -494,8 +498,9 @@ def home_view(inp: HomeInput) -> dict[str, object]:
                 word2=line2,
                 a11y=missing_a11y(n),
                 lead=lead,
-                cta=f"Вернуть все {n}" if n > 1 else "Вернуть",
-                hint=hint,
+                cta="Выбрать и вернуть",
+                hint="Сначала покажем список, отметите нужные.",
+                fine=note,
                 links=links,
             )
     view["state"] = state

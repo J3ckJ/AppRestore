@@ -7,14 +7,22 @@ Rectangle {
     id: root
     property string text: ""
     property bool on: true
+    property bool pressable: false
+    signal clicked()
     height: Theme.pillHeight
     width: label.implicitWidth + 14 + Theme.pillDot + 9 + 16
     radius: height / 2
     color: Theme.card
     border.width: Theme.hair
     border.color: Theme.line
-    Accessible.role: Accessible.StaticText
-    Accessible.name: "Статус: " + root.text
+    Accessible.role: root.pressable ? Accessible.Button : Accessible.StaticText
+    Accessible.name: root.pressable ? ("Выбрать устройство: " + root.text) : ("Статус: " + root.text)
+    MouseArea {
+        anchors.fill: parent
+        enabled: root.pressable
+        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+        onClicked: root.clicked()
+    }
     Rectangle {
         id: dot
         x: 14

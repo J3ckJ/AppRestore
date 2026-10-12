@@ -31,6 +31,7 @@ SHOTS: tuple[tuple[str, str, str | None], ...] = (
     ("home-signin", "signin", "variant-4b-error.png"),
     ("home-relogin", "relogin", None),
     ("signin-sheet", "relogin", None),
+    ("signin-keychain", "relogin", None),
     ("signin-code", "signin", None),
     ("find-builtin", "missing", None),
     ("find-archive", "missing", None),
@@ -53,6 +54,12 @@ SHOTS: tuple[tuple[str, str, str | None], ...] = (
 
 def prepare(controller, source, scenario: str, name: str = "") -> None:
     """Bring the fake run to the concept's moment."""
+
+    if name == "signin-keychain":
+        source.auth_phase = "locked"
+        source.auth_status = ""
+        controller.openKeychain()
+        return
 
     if name == "signin-sheet":
         source.account_email = "marina@example.com"

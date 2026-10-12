@@ -91,6 +91,17 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("visible", result.stdout)
         self.assertIn("eof", result.stdout)
 
+    def test_packaged_app_without_a_tty_has_no_console(self) -> None:
+        from apprestore_core import command
+
+        with patch.object(command.sys, "frozen", True, create=True):
+            with patch("apprestore_core.command.os.isatty", return_value=False):
+                self.assertTrue(command._frozen_app_without_tty())
+            with patch("apprestore_core.command.os.isatty", return_value=True):
+                self.assertFalse(command._frozen_app_without_tty())
+        with patch.object(command.sys, "frozen", False, create=True):
+            self.assertFalse(command._frozen_app_without_tty())
+
 
 class ToolArgumentTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -129,6 +140,7 @@ class ToolArgumentTests(unittest.TestCase):
             self.tools.download_ipa(output, store_id="123")
             store_args = self.runner.calls[-1][0]
             self.assertNotIn("--purchase", store_args)
+            self.assertEqual(store_args[store_args.index("--platform") + 1], "iphone")
             self.assertEqual(self.runner.calls[-1][1].get("capture"), False)
             self.tools.download_ipa(output, bundle_id="com.example.alpha")
             self.assertNotIn("--purchase", self.runner.calls[-1][0])
@@ -200,6 +212,16 @@ class ToolArgumentTests(unittest.TestCase):
             self.tools.download_ipa(Path("out.ipa"), store_id="481627348")
         self.assertIn("failed to purchase app", str(caught.exception))
         self.assertNotIn("INF progress", str(caught.exception))
+
+    @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
+    def test_download_failure_without_output_names_the_exit(self, _resolve: object) -> None:
+        self.runner.returncode = 1
+        self.runner.stderr = ""
+        self.runner.stdout = ""
+        with self.assertRaises(ToolUnavailable) as caught:
+            self.tools.download_ipa(Path("out.ipa"), store_id="6817277802")
+        self.assertIn("printed nothing", str(caught.exception))
+        self.assertNotIn("ipatool failed", str(caught.exception))
 
     @patch("apprestore_core.tools.resolve_tool", return_value="ipatool")
     def test_login_marks_session_authenticated(self, _resolve: object) -> None:

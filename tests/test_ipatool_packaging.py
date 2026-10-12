@@ -22,6 +22,14 @@ def _pack_module():
     return module
 
 
+def _fetch_module():
+    spec = importlib.util.spec_from_file_location("fetch_ipatool", ROOT / "packaging" / "fetch_ipatool.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_same_binary_gives_same_archive_regardless_of_file_metadata(tmp_path: Path) -> None:
     pack = _pack_module().pack
     payload = os.urandom(4096) + b"appstore.CountryCodeFromStoreFront"
@@ -71,6 +79,16 @@ def test_archive_layout_and_headers_are_fixed(tmp_path: Path) -> None:
     assert len(gzip.decompress(archive.read_bytes())) == 10240
 
 
+def test_locally_built_archive_can_be_installed_into_gui_bundle(tmp_path: Path) -> None:
+    binary = tmp_path / "built.exe"
+    binary.write_bytes(b"MZ patched ipatool\0appstore.CountryCodeFromStoreFront")
+    archive = tmp_path / "ipatool.tar.gz"
+    _pack_module().pack(binary, "ipatool-2.6.0-windows-amd64.exe", MTIME, archive)
+    destination = tmp_path / "AppRestore"
+    _fetch_module().install_archive(archive, "windows-amd64", [destination])
+    assert (destination / "ipatool.exe").read_bytes() == binary.read_bytes()
+
+
 def test_build_script_packs_through_python_with_fixed_mtime() -> None:
     script = (ROOT / "packaging" / "build-ipatool.sh").read_text(encoding="utf-8")
     assert "packaging/pack_ipatool.py" in script
@@ -92,6 +110,8 @@ def test_patch_pins_match_files_and_order() -> None:
         "0001-ipatool-auth-info-country.patch",
         "0002-ipatool-list-purchases-all.patch",
         "0003-ipatool-keychain-passphrase-env-stdin.patch",
+        "0004-ipatool-delisted-redownload.patch",
+        "0005-ipatool-readonly-download-probe.patch",
     ]
     patches = ROOT / "packaging" / "patches"
     for name, pinned in entries:
@@ -101,6 +121,8 @@ def test_patch_pins_match_files_and_order() -> None:
         "appstore.CountryCodeFromStoreFront",
         "--all cannot be combined with --page or --max-results",
         "keychain-passphrase-stdin",
+        "catalog-independent redownload does not match the requested app",
+        "Inspect download channels without purchase, asset download or private response data",
     ):
         assert f'"{marker}"' in script
 
@@ -115,3 +137,14 @@ def test_go_toolchain_pin_matches_ci_workflow() -> None:
     assert 'export GOTOOLCHAIN="$go_toolchain"' in script
     versions = set(re.findall(r'go-version:\s*"([0-9.]+)"', workflow))
     assert versions == {pinned.group(1)}
+
+
+def test_gui_workflows_build_and_bundle_current_patched_ipatool() -> None:
+    for name in ("release.yml", "gui-build.yml"):
+        workflow = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        assert "packaging/build-ipatool.sh" in workflow, name
+        assert "--ipatool-archive" in workflow, name
+        assert "go-version: \"1.25.0\"" in workflow, name
+    selftest = (ROOT / "apprestore_gui" / "selftest.py").read_text(encoding="utf-8")
+    assert "capabilities.patched_build" in selftest
+    assert "appstore.CountryCodeFromStoreFront" in selftest

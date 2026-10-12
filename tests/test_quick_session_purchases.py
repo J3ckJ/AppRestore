@@ -86,6 +86,57 @@ def test_alive(session) -> None:
     assert prompts == [] and s.signedIn
 
 
+def test_unlocked_keychain_resolves_account_and_starts_purchases_without_passwordless_probe(
+    session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s, _prompts, _cache = session
+    s._account_email = ""  # opening a saved keychain, not a new Apple ID login
+    s._auth_status = "Сессия открыта."
+    s.service.keychain_ready = lambda: True
+    calls = []
+    s.service.core.tools.ipatool_auth_info = lambda: {"success": True, "email": EMAIL}
+    s._purchases = SimpleNamespace(
+        set_account=lambda email: calls.append(("account", email)),
+        start=lambda: calls.append(("purchases",)),
+    )
+    s._session_checker = SimpleNamespace(start=lambda: calls.append(("session",)))
+    monkeypatch.setattr(qs, "save_session", lambda email: calls.append(("save", email)))
+    monkeypatch.setattr(qs, "probe_keychain", lambda: pytest.fail("must use secure auth info after unlock"))
+    s._refresh_auth()
+    assert s.signedIn and s.accountEmail == EMAIL
+    assert calls == [("save", EMAIL), ("account", EMAIL), ("purchases",), ("session",)]
+
+
+def test_locked_startup_does_not_fetch_purchases_or_try_to_guess_an_account(
+    session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s, _prompts, _cache = session
+    s._signed = False
+    s._phase = "checking"
+    s._account_email = ""
+    s.service.keychain_ready = lambda: False
+    s.service.core.tools.ipatool_auth_info = lambda: pytest.fail("no passphrase provided")
+    s._purchases = SimpleNamespace(start=lambda: pytest.fail("no account yet"))
+    monkeypatch.setattr(qs, "probe_keychain", lambda: "locked")
+    prompted = []
+    s.keychainPrompt.connect(prompted.append)
+    s._refresh_auth()
+    assert not s.signedIn and s.accountEmail == "" and s.authPhase == "locked"
+    assert prompted == [""]
+
+
+def test_failed_secure_info_does_not_drop_an_already_open_session(
+    session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s, _prompts, _cache = session
+    s.service.keychain_ready = lambda: True
+    s.service.core.tools.ipatool_auth_info = lambda: None
+    monkeypatch.setattr(qs, "probe_keychain", lambda: "locked")
+    s._purchases = SimpleNamespace(start=lambda: pytest.fail("unverified account"))
+    s._refresh_auth()
+    assert s.signedIn and s.accountEmail == EMAIL
+
+
 def test_expired_offers_sign_in_again(session) -> None:
     s, prompts, _ = session
     _probe(s, _check(api.SessionState.EXPIRED, api.ErrorCode.TOKEN_EXPIRED))

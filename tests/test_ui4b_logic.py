@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from apprestore_core.models import MissingApp, OffloadedApp
-from apprestore_gui.ui4b import catalog, formatting, home, onboarding, scan, selection, space
+from apprestore_gui.ui4b import catalog, formatting, home, journal, onboarding, scan, selection, space
 from apprestore_gui.ui4b.catalog import (
     ACTION_IPA,
     ACTION_NONE,
@@ -382,11 +382,12 @@ def test_home_missing_state_texts_and_tiles() -> None:
         )
     )
     assert view["state"] == home.STATE_MISSING
-    assert view["number"] == 4 and view["word"] == "приложения" and view["word2"] == "не хватает"
-    assert view["cta"] == "Вернуть все 4"
+    assert view["number"] == 4 and view["word"] == "приложения" and view["word2"] == "пропали с iPhone"
+    assert view["cta"] == "Выбрать и вернуть"
     assert view["lead"].startswith("<b>Сбер, Т-Банк, ВТБ и Альфа</b> пропали с телефона")
-    # ВТБ size unknown → no minutes promise, honest note
-    assert view["hint"] == "Телефон не отключайте. Размер части приложений узнаем при скачивании."
+    # The picker sentence stays the hint. ВТБ's unknown size is the quieter line.
+    assert view["hint"] == "Сначала покажем список, отметите нужные."
+    assert "Размер части приложений узнаем при скачивании." in view["fine"]
     assert view["a11y"] == "Не хватает 4 приложений"
     kinds = [t["kind"] for t in view["tiles"]]
     assert len(kinds) == 16 and kinds[8:12] == ["slot"] * 4
@@ -411,8 +412,8 @@ def test_home_states() -> None:
     region_items = removed4()[:3] + [item("4", GROUP_REGION, 373, short_name="Альфа")]
     region = home.home_view(home.HomeInput(connected=True, signed_in=True, items=region_items, region_name="Россия"))
     assert region["state"] == home.STATE_REGION
-    assert region["number"] == 3 and region["word"] == "из 4" and region["cta"] == "Вернуть 3"
-    assert region["over"] == "Альфа недоступна"
+    assert region["number"] == 3 and region["word"] == "из 4" and region["cta"] == "Выбрать и вернуть"
+    assert region["over"] == "Альфа: нет карточки в магазине"
     queue = RestoreQueue()
     queue.start(removed4())
     queue.settle("1", True)
@@ -515,7 +516,7 @@ def test_session_failure_drops_the_run_and_signin_does_not_resume() -> None:
                                queue=flow.queue if flow.queue.entries else None,
                                relogin=flow.needs_signin))
     assert view["state"] == STATE_MISSING
-    assert view["cta"].startswith("Вернуть")
+    assert view["cta"] == "Выбрать и вернуть"
 
     # The user presses «Вернуть» again: a new run from the first app.
     flow.begin(items, space)
@@ -579,10 +580,10 @@ def test_restore_all_max_matches_theme() -> None:
     assert value == home.RESTORE_ALL_MAX == home.DIRECT_LIMIT == 8
 
 
-def test_return_all_up_to_8_if_it_fits() -> None:
+def test_home_always_offers_picker_even_when_everything_fits() -> None:
     roomy = space.DeviceSpace(128 * GB, 50 * GB)
     v12 = home.home_view(home.HomeInput(connected=True, signed_in=True, items=_sized(8), space=roomy))
-    assert v12["state"] == home.STATE_MISSING and v12["cta"] == "Вернуть все 8"
+    assert v12["state"] == home.STATE_MISSING and v12["cta"] == "Выбрать и вернуть"
     v13 = home.home_view(home.HomeInput(connected=True, signed_in=True, items=_sized(9), space=roomy))
     assert v13["state"] == home.STATE_MANY and v13["cta"] == "Выбрать и вернуть"
     assert v13["hint"] == "Сначала покажем список, отметите нужные."
@@ -591,7 +592,8 @@ def test_return_all_up_to_8_if_it_fits() -> None:
     assert over["cta"] == "Выбрать и вернуть"
     unknown = [item(str(i), GROUP_REMOVED, None, short_name=f"A{i}") for i in range(3)]
     v = home.home_view(home.HomeInput(connected=True, signed_in=True, items=unknown, space=tight))
-    assert v["cta"] == "Вернуть все 3" and "узнаем при скачивании" in v["hint"]
+    assert v["cta"] == "Выбрать и вернуть" and "узнаем при скачивании" in v["fine"]
+    assert v["hint"] == "Сначала покажем список, отметите нужные."
 
 
 def test_lead_one_and_many_names() -> None:
@@ -605,12 +607,63 @@ def test_lead_one_and_many_names() -> None:
 def test_caption_goes_through_one_function(monkeypatch) -> None:
     from apprestore_gui.ui4b import formatting
 
-    assert formatting.missing_caption(1) == ("приложение", "не хватает")
-    assert formatting.missing_caption(21) == ("приложение", "не хватает")
+    assert formatting.missing_caption(1) == ("приложение", "пропало с iPhone")
+    assert formatting.missing_caption(21) == ("приложение", "пропало с iPhone")
+    assert formatting.missing_caption(581, "iPhone") == ("приложение", "пропало с iPhone")
+    assert formatting.missing_caption(2) == ("приложения", "пропали с iPhone")
+    assert formatting.missing_caption(4) == ("приложения", "пропали с iPhone")
+    assert formatting.missing_caption(22, "iPad") == ("приложения", "пропали с iPad")
     assert formatting.missing_caption(5) == ("приложений", "не хватает")
+    assert formatting.missing_caption(11) == ("приложений", "не хватает")
     monkeypatch.setattr(home, "missing_caption", lambda n, noun="iPhone": ("приложение", f"пропало с {noun}"))
     v = home.home_view(home.HomeInput(connected=True, signed_in=True, items=_sized(1), space=space.DeviceSpace(128 * GB, 50 * GB)))
     assert v["word2"] == "пропало с iPhone"
+
+
+def test_journal_rows_stay_plain_and_skip_unknown() -> None:
+    rows = journal.journal_rows(
+        [{"name": "2GIS", "detail": "Apple: нет лицензии", "state": "failed"}],
+        [
+            {
+                "status": "acquired",
+                "bundle_id": "ru.example.app",
+                "time": "2026-10-12T09:15:00Z",
+                "storefront": "143469-16,29",
+                "price": 0,
+            },
+            {"status": "voided", "bundle_id": "hidden.bundle"},
+            {"status": "nope", "bundle_id": "also.hidden"},
+        ],
+    )
+    blob = json.dumps(rows, ensure_ascii=False)
+    assert "143469" not in blob and "price" not in blob and "hidden" not in blob
+    assert rows[0] == {"name": "2GIS", "detail": "Apple: нет лицензии", "kind": "run"}
+    assert rows[1]["name"] == "ru.example.app"
+    assert rows[1]["detail"] == "Лицензия получена · 2026-10-12 09:15"
+
+
+def test_voided_license_is_not_a_journal_line(tmp_path: Path) -> None:
+    path = tmp_path / "licenses.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "id": "a",
+                        "time": "2026-10-12T09:00:00+00:00",
+                        "track_id": "1",
+                        "bundle_id": "ru.example.app",
+                        "status": "acquired",
+                        "storefront": "143469",
+                    }
+                ),
+                json.dumps({"id": "v", "status": "voided", "voids": "a"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert journal.journal_rows([], journal.read_license_rows(path)) == []
 
 
 def test_short_names() -> None:
@@ -957,9 +1010,10 @@ def test_region_adapter_accepts_only_known_statuses() -> None:
 def test_links_only_lead_to_existing_things() -> None:
     from apprestore_gui.ui4b.home import link_action
 
-    for name in ("Журнал", "Почему это безопасно", "Как это работает", "Исходный код",
+    for name in ("Почему это безопасно", "Как это работает", "Исходный код",
                  "Войти с другим Apple ID", "Не получается подключить"):
         assert link_action(name) == ""
+    assert link_action("Журнал") == "journal"
     assert link_action("Поставить из файла на компьютере…") == "ipa"
     assert link_action("Найти другое приложение") == "find"
     assert link_action("Настройки") == "settings"

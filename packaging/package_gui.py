@@ -9,7 +9,8 @@ check version -> zip as AppRestore-GUI-Windows.zip / AppRestore-GUI-macOS.zip
 -> unpack the zip with the updater's own code and run --update-health-check
 on the unpacked copy.
 
-    python packaging/package_gui.py --out gui-dist [--expect-version 0.3.2]
+    python packaging/package_gui.py --out gui-dist --ipatool-archive ARCHIVE
+        [--expect-version 0.3.2]
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "packaging"))
 
 from apprestore_gui.updater import ASSET_BY_PLATFORM, HEALTH_FLAG, extract_zip  # noqa: E402
-from fetch_ipatool import current_asset, fetch  # noqa: E402
+from fetch_ipatool import current_asset, install_archive, install_license  # noqa: E402
 
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -49,6 +50,12 @@ def main() -> int:
     parser.add_argument("--dist", default=str(ROOT / "dist"))
     parser.add_argument("--out", required=True)
     parser.add_argument("--expect-version", default="")
+    parser.add_argument(
+        "--ipatool-archive",
+        type=Path,
+        required=True,
+        help="locally built patched archive; an unpatched legacy download is never accepted",
+    )
     args = parser.parse_args()
 
     dist = Path(args.dist)
@@ -72,7 +79,14 @@ def main() -> int:
         print(f"missing build output: {binary}", file=sys.stderr)
         return 1
 
-    fetch(current_asset(), [tool_dir])
+    ipatool_asset = current_asset()
+    archive = args.ipatool_archive.resolve()
+    if not archive.is_file():
+        print(f"missing locally built ipatool archive: {archive}", file=sys.stderr)
+        return 1
+    print(f"bundling locally built patched ipatool: {archive}")
+    install_archive(archive, ipatool_asset, [tool_dir])
+    install_license([tool_dir])
     if sys.platform == "darwin":
         # Apple's own tool must accept the generated .icns.
         with tempfile.TemporaryDirectory() as tmp:

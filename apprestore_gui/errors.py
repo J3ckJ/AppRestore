@@ -8,12 +8,16 @@ the part before ``Typical causes``.
 
 from __future__ import annotations
 
+import re
+
+from apprestore_core.ipatool_api import ErrorCode, MESSAGES_RU, SESSION_CODES, classify_error
 from apprestore_core.error_signal import (  # noqa: F401 - re-exported
     _AUTH,
     _DEVICE,
     _LICENSE,
     _NETWORK,
     _REGION,
+    _UNAVAILABLE,
     _body,
     _rank,
     _signal,
@@ -24,6 +28,45 @@ from apprestore_core.license_gate import STORE_MISMATCH_TEXT, is_store_mismatch,
 IPATOOL_FALLBACK_TEXT = "ipatool не смог выполнить запрос. Повторите позже."
 
 STORE_REFUSED_TEXT = "Apple сейчас не выдаёт это приложение для вашего аккаунта."
+
+
+class StoreOperationError(RuntimeError):
+    """A stage-aware, account-safe message; the original exception is the cause."""
+
+
+def explain_store_operation_error(message: str, *, phase: str, country: str = "") -> str:
+    """Never infer a license or country refusal just from download unavailability.
+
+    Diagnostics contain only a fixed error category and the account's country,
+    not the raw output, account identifiers, URLs or credentials.
+    """
+
+    signal = _signal(message)
+    code = classify_error(signal)
+    if code in SESSION_CODES:
+        reason = MESSAGES_RU[code]
+    elif code is ErrorCode.TEMPORARILY_UNAVAILABLE:
+        reason = "Apple ответила «временно недоступно»."
+    elif code is ErrorCode.LICENSE_REQUIRED:
+        reason = (
+            "Apple не выдала новую лицензию."
+            if phase == "license_request"
+            else "Apple не нашла лицензию на этом аккаунте."
+        )
+    elif code is ErrorCode.UNKNOWN:
+        reason = "Не удалось завершить операцию."
+    else:
+        reason = MESSAGES_RU[code]
+    label = {
+        "download": "Загрузка",
+        "license_request": "Запрос новой лицензии",
+        "licensed_download": "Лицензия получена, но загрузка или установка не завершилась",
+    }[phase]
+    diagnostic = f"этап: {phase}; ошибка: {code.value}"
+    country = str(country or "").upper()
+    if re.fullmatch(r"[A-Z]{2}", country):
+        diagnostic += f"; магазин: {country}"
+    return f"{label}: {reason} ({diagnostic})."
 
 NOT_OWNED_TEXT = (
     "Этого приложения нет на вашем Apple ID (нет лицензии). "
@@ -66,6 +109,11 @@ def explain_user_error(message: str) -> str:
         return STORE_MISMATCH_TEXT
     if is_store_refusal(low):
         return STORE_REFUSED_TEXT
+    if any(hint in low for hint in _UNAVAILABLE):
+        return (
+            "Apple не отдаёт эту версию. "
+            "Карточка в магазине её уже не открывает."
+        )
     if "valid apple id email" in low:
         return "Нужна почта Apple ID."
     if any(hint in low for hint in _LICENSE):
@@ -113,7 +161,7 @@ def explain_update_error(message: str) -> str:
 
     text = " ".join((message or "").split())
     if _has_cyrillic(text) and len(text) <= 240:
-        return text
+        return f"Не получилось: {text}"
     return "Обновление не установилось."
 
 

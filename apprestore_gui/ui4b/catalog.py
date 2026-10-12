@@ -4,8 +4,8 @@ Three groups, in the order the 4b picker shows them:
 
 * ``removed``   — gone from the phone and from the App Store; comes back from
   Apple's servers on the user's own Apple ID (license gate) or from a local IPA;
-* ``region``    — Apple does not give it to this account's region; shown, never
-  selectable (only a local IPA helps);
+* ``region``    — no public card in the account's country; Apple's licensed
+  download endpoint may still serve it. This label never blocks a download;
 * ``offloaded`` — iOS offloaded it, the icon is still on the phone.
 
 Sizes are honest lower bounds or unknown: a local IPA's file size is the
@@ -81,7 +81,7 @@ class RestoreItem:
     #: Short label under the phone icon («Сбер»); defaults to the name.
     short_name: str = ""
     ipa_path: str = ""
-    #: Why it cannot be chosen (region group).
+    #: Public catalog label or an explicit reason the action is disabled.
     note: str = ""
     #: region_probe only: "delisted" / "not_in_region" (apprestore_core.delisted_attempt);
     #: with an unknown price such an app may be attempted through the gate.
@@ -98,9 +98,10 @@ class RestoreItem:
 
     @property
     def selectable(self) -> bool:
-        if self.action == ACTION_NONE:
-            return False
-        return self.group != GROUP_REGION or self.attemptable
+        # Catalog visibility says nothing about an existing license. Paid
+        # purchases and local IPAs are also restorable; only the license gate
+        # decides whether a NEW license may be requested.
+        return self.action != ACTION_NONE
 
     @property
     def label(self) -> str:

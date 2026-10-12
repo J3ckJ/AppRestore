@@ -294,9 +294,9 @@ def test_voided_pair_counts_zero(tmp_path):
             "app_id": "492224193", "bundle_id": "", "storefront": "us",
             "status": "purchase_uncertain", "price": 0.0, "mode": "real"}
     _append_raw(journal, orig)
-    assert lg.read_counts(journal) == (1, 1)          # до гашения считается
+    assert lg.read_counts(journal, now=_now) == (1, 1)  # до гашения считается
     lg.record_void(None, "erroneous: 2040", legacy_match=(orig["time"], orig["track_id"]), journal_path=journal)
-    assert lg.read_counts(journal) == (0, 0)          # после гашения — 0/0
+    assert lg.read_counts(journal, now=_now) == (0, 0)  # после гашения — 0/0
     lines = [l for l in journal.read_text(encoding="utf-8").splitlines() if l.strip()]
     assert len(lines) == 2                            # обе строки на месте (append-only)
 
@@ -310,7 +310,7 @@ def test_void_without_ref_does_not_break_counts(tmp_path):
                           "status": "voided"})                 # без поля voids
     _append_raw(journal, {"time": "2026-10-10T10:06:00+00:00", "track_id": "999",
                           "status": "voided", "voids": {"time": "nope", "track_id": "nope"}})
-    assert lg.read_counts(journal) == (1, 1)          # считается только 'good'
+    assert lg.read_counts(journal, now=_now) == (1, 1)  # считается только 'good'
 
 
 def test_void_matches_only_same_time_and_track(tmp_path):
@@ -320,9 +320,9 @@ def test_void_matches_only_same_time_and_track(tmp_path):
     b = {"time": "2026-10-10T09:30:00+00:00", "track_id": "111", "status": "acquired"}
     _append_raw(journal, a)
     _append_raw(journal, b)
-    assert lg.read_counts(journal) == (2, 2)
+    assert lg.read_counts(journal, now=_now) == (2, 2)
     lg.record_void(None, "fix", legacy_match=(a["time"], a["track_id"]), journal_path=journal)
-    assert lg.read_counts(journal) == (1, 1)          # погашена только a, b осталась
+    assert lg.read_counts(journal, now=_now) == (1, 1)  # погашена только a, b осталась
 
 
 # -------------------------------------------------------------- id + void по id
@@ -338,9 +338,9 @@ def test_new_record_has_uuid_id(tmp_path):
 def test_void_by_id_cancels_exactly_that_entry(tmp_path):
     journal = tmp_path / "licenses_acquired.jsonl"
     e = lg.record_acquire("389801252", status="purchase_uncertain", journal_path=journal)
-    assert lg.read_counts(journal) == (1, 1)
+    assert lg.read_counts(journal, now=_now) == (1, 1)
     lg.record_void(e["id"], "mistake", track_id="389801252", journal_path=journal)
-    assert lg.read_counts(journal) == (0, 0)
+    assert lg.read_counts(journal, now=_now) == (0, 0)
     # ссылка записана как id-строка, не словарь
     lines = journal.read_text(encoding="utf-8").splitlines()
     import json as _j
@@ -368,11 +368,11 @@ def test_amends_to_voided_status_counts_zero(tmp_path):
     """`amends` НЕ алиас voids: это смена статуса; последний статус voided -> 0."""
     journal = tmp_path / "licenses_acquired.jsonl"
     e = lg.record_acquire("389801252", status="acquired", journal_path=journal)
-    assert lg.read_counts(journal) == (1, 1)
+    assert lg.read_counts(journal, now=_now) == (1, 1)
     _append_raw(journal, {"id": "void-x", "time": "2026-10-10T13:00:00+00:00",
                           "track_id": "389801252", "status": "voided", "amends": e["id"],
                           "reason": "via update_status"})
-    assert lg.read_counts(journal) == (0, 0)
+    assert lg.read_counts(journal, now=_now) == (0, 0)
 
 
 def test_legacy_pair_still_works_without_id(tmp_path):
@@ -380,10 +380,10 @@ def test_legacy_pair_still_works_without_id(tmp_path):
     journal = tmp_path / "licenses_acquired.jsonl"
     _append_raw(journal, {"time": "2026-10-10T15:16:42+00:00", "track_id": "492224193",
                           "status": "purchase_uncertain", "price": 0.0})   # без id
-    assert lg.read_counts(journal) == (1, 1)
+    assert lg.read_counts(journal, now=_now) == (1, 1)
     lg.record_void(None, "legacy fix",
                    legacy_match=("2026-10-10T15:16:42+00:00", "492224193"), journal_path=journal)
-    assert lg.read_counts(journal) == (0, 0)
+    assert lg.read_counts(journal, now=_now) == (0, 0)
 
 
 # -------------------------------------------------------------- цепочки amends

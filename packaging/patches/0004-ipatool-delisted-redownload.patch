@@ -1,0 +1,240 @@
+diff --git a/pkg/appstore/appstore_download_product.go b/pkg/appstore/appstore_download_product.go
+index 9aef9ff..4fa8ba5 100644
+--- a/pkg/appstore/appstore_download_product.go
++++ b/pkg/appstore/appstore_download_product.go
+@@ -77,8 +77,8 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+ 		return res, platform, nil
+ 	}
+ 
+-	// Try redownload when volumeStore returns no items, either silently or
+-	// with the message-only "No Longer Available" response.
++	// Try the account's redownload channel for empty/availability responses.
++	// A 2059 from volumeStore is not proof that a previous purchase is gone.
+ 	if bag == nil {
+ 		fetched, err := t.fetchURLBag(guid)
+ 		if err != nil {
+@@ -97,6 +97,7 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+ 		return res, platform, err
+ 	}
+ 
++	catalogIndependent := false
+ 	if externalVersionID == "" && (platform == "" || platform == PlatformIPhone || platform == PlatformIPad) {
+ 		// Unpinned redownloads can fail or return a tvOS package. Select
+ 		// the current iOS build before sending.
+@@ -105,9 +106,10 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+ 		}
+ 
+ 		externalVersionID, err = t.lookupLatestExternalVersionID(acc, app, platform)
+-		if err != nil {
++		if err != nil && !errors.Is(err, errPlatformAppNotFound) && !errors.Is(err, errPlatformOffersNotFound) {
+ 			return res, platform, fmt.Errorf("failed to resolve latest iOS version for redownload: %w", err)
+ 		}
++		catalogIndependent = err != nil
+ 	}
+ 
+ 	redownloadRes, err := t.downloadClient.Send(t.downloadProductRequest(redownload, acc, app, guid, externalVersionID))
+@@ -126,10 +128,34 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+ 	if err != nil {
+ 		return redownloadRes, platform, fmt.Errorf("failed to send redownload request: %w", err)
+ 	}
++	if catalogIndependent {
++		// AppRestore: a missing catalog card is not a redownload refusal.
++		// Apple selects the licensed build; Download still validates iPhoneOS
++		// in the package before writing metadata or replicating Apple's SINF.
++		if err := validateCatalogIndependentDownloadResponse(redownloadRes, app); err != nil {
++			return redownloadRes, platform, err
++		}
++	}
+ 
+ 	return redownloadRes, platform, nil
+ }
+ 
++func validateCatalogIndependentDownloadResponse(res http.Result[downloadResult], app App) error {
++	if res.Data.FailureType != "" || res.Data.CustomerMessage != "" || len(res.Data.Items) == 0 {
++		return nil // Keep Apple's refusal for the normal account/license handler.
++	}
++	if res.StatusCode != gohttp.StatusOK || len(res.Data.Items) != 1 {
++		return errors.New("catalog-independent redownload must contain exactly one item")
++	}
++	metadata := res.Data.Items[0].Metadata
++	bundleID, ok := metadata["softwareVersionBundleId"].(string)
++	if fmt.Sprint(metadata["itemId"]) != fmt.Sprint(app.ID) || !ok || bundleID == "" ||
++		(app.BundleID != "" && bundleID != app.BundleID) {
++		return errors.New("catalog-independent redownload does not match the requested app")
++	}
++	return nil
++}
++
+ func isEmptyRedownloadError(err error) bool {
+ 	var unexpected *http.UnexpectedResponseError
+ 
+@@ -199,13 +225,18 @@ func newDownloadEndpoint(endpoint, path string) (downloadProductEndpoint, error)
+ 	}, nil
+ }
+ 
+-// Limit recovery to the observed availability response; other customer messages
+-// and structured failures must retain their normal error handling.
++// Only availability failures may use another read-only channel. Missing
++// licenses, authentication failures, store mismatches and other refusals must
++// retain their normal handling. Never purchase or change storefront here.
+ func isUnavailableDownloadProductResponse(res http.Result[downloadResult]) bool {
+ 	message := strings.ToLower(strings.TrimSpace(res.Data.CustomerMessage))
+-
+-	return res.StatusCode == gohttp.StatusOK &&
+-		res.Data.FailureType == "" && len(res.Data.Items) == 0 &&
++	if res.StatusCode != gohttp.StatusOK || len(res.Data.Items) != 0 {
++		return false
++	}
++	if res.Data.FailureType == FailureTypeTemporarilyUnavailable {
++		return true
++	}
++	return res.Data.FailureType == "" &&
+ 		(message == "no longer available" || strings.HasSuffix(message, " no longer available"))
+ }
+ 
+diff --git a/pkg/appstore/appstore_download_product_test.go b/pkg/appstore/appstore_download_product_test.go
+index 683eb65..bdaa495 100644
+--- a/pkg/appstore/appstore_download_product_test.go
++++ b/pkg/appstore/appstore_download_product_test.go
+@@ -103,6 +103,62 @@ var _ = Describe("AppStore (Download Product)", func() {
+ 		Expect(actual).To(Equal(expected))
+ 	})
+ 
++	It("tries a same-account redownload after volumeStore 2059 even without a catalog card", func() {
++		app = App{ID: 1117817509, BundleID: "com.example.bank"}
++		account.StoreFront = "143469-16,29"
++		bag := validBagResult()
++		bag.URLBag.RedownloadEndpoint = testRedownloadEndpoint
++		primary := http.Result[downloadResult]{StatusCode: gohttp.StatusOK,
++			Data: downloadResult{FailureType: FailureTypeTemporarilyUnavailable, CustomerMessage: "Item is temporarily unavailable"}}
++		expected := http.Result[downloadResult]{StatusCode: gohttp.StatusOK,
++			Data: downloadResult{Items: []downloadItemResult{{Metadata: map[string]interface{}{
++				"itemId": app.ID, "softwareVersionBundleId": app.BundleID,
++			}}}}}
++		gomock.InOrder(
++			mockDownloadClient.EXPECT().Send(gomock.Any()).Return(primary, nil),
++			mockBagClient.EXPECT().Send(gomock.Any()).Return(http.Result[bagResult]{StatusCode: gohttp.StatusOK, Data: bag}, nil),
++			mockPlatformClient.EXPECT().Send(gomock.Any()).Return(http.Result[platformVersionLookupResult]{StatusCode: gohttp.StatusOK}, nil).Times(3),
++			mockDownloadClient.EXPECT().Send(gomock.Any()).Do(func(req http.Request) {
++				Expect(req.URL).To(Equal(testRedownloadEndpoint + "?guid=" + testGUID))
++				Expect(req.Headers).To(HaveKeyWithValue("iCloud-DSID", account.DirectoryServicesID))
++				payload := req.Payload.(*http.XMLPayload).Content
++				Expect(payload).To(HaveKeyWithValue("salableAdamId", app.ID))
++				Expect(payload).ToNot(HaveKey("appExtVrsId"))
++				Expect(payload).ToNot(HaveKey("pricingParameters"))
++			}).Return(expected, nil),
++		)
++		actual, resolved, err := store.sendDownloadProduct(context.Background(), account, app, testGUID, "", PlatformIPhone)
++		Expect(err).ToNot(HaveOccurred())
++		Expect(actual).To(Equal(expected))
++		Expect(resolved).To(Equal(PlatformIPhone))
++	})
++
++	DescribeTable("does not reinterpret account/license refusals as availability",
++		func(failure string) {
++			response := http.Result[downloadResult]{StatusCode: gohttp.StatusOK,
++				Data: downloadResult{FailureType: failure, CustomerMessage: "No Longer Available"}}
++			mockDownloadClient.EXPECT().Send(gomock.Any()).Return(response, nil)
++			actual, _, err := store.sendDownloadProduct(context.Background(), account, app, testGUID, testVersionID, PlatformIPhone)
++			Expect(err).ToNot(HaveOccurred())
++			Expect(actual).To(Equal(response))
++		},
++		Entry("license", FailureTypeLicenseNotFound),
++		Entry("expired token", FailureTypePasswordTokenExpired),
++		Entry("sign in", FailureTypeSignInRequired),
++		Entry("store mismatch", "-128"),
++		Entry("purchase refusal", "2040"),
++	)
++
++	DescribeTable("does not retry malformed availability responses",
++		func(status, items int) {
++			response := http.Result[downloadResult]{StatusCode: status,
++				Data: downloadResult{FailureType: FailureTypeTemporarilyUnavailable, Items: make([]downloadItemResult, items)}}
++			Expect(isUnavailableDownloadProductResponse(response)).To(BeFalse())
++		},
++		Entry("HTTP failure", 403, 0),
++		Entry("response already has items", 200, 1),
++	)
++
+ 	It("falls back to redownloadProduct without requiring SAP configuration", func() {
+ 		primary := http.Result[downloadResult]{StatusCode: gohttp.StatusOK}
+ 		expected := http.Result[downloadResult]{
+@@ -365,13 +421,41 @@ var _ = Describe("AppStore (Download Product)", func() {
+ 			Expect(err).To(MatchError(ContainSubstring("failed to resolve latest iOS version for redownload")))
+ 		})
+ 
+-		It("does not send an unpinned request when the app is absent from the catalog", func() {
+-			mockPlatformClient.EXPECT().Send(gomock.Any()).
+-				Return(http.Result[platformVersionLookupResult]{StatusCode: gohttp.StatusOK}, nil).Times(3)
+-
+-			_, _, err := store.sendDownloadProduct(context.Background(), account, app, testGUID, "", PlatformIPhone)
+-			Expect(err).To(MatchError(ContainSubstring("platform version lookup returned no app")))
+-		})
++		DescribeTable("redownloads a delisted app without a public catalog version",
++			func(platform Platform, missingOffers bool) {
++				catalog := platformVersionLookupResult{}
++				if missingOffers {
++					catalog.Results = map[string]platformVersionLookupItem{strconv.FormatInt(app.ID, 10): {}}
++				}
++				expected := http.Result[downloadResult]{StatusCode: gohttp.StatusOK,
++					Data: downloadResult{Items: []downloadItemResult{{
++						Metadata: map[string]interface{}{"itemId": app.ID, "softwareVersionBundleId": "com.example.delisted"},
++					}}}}
++				gomock.InOrder(
++					mockPlatformClient.EXPECT().Send(gomock.Any()).
++						Return(http.Result[platformVersionLookupResult]{StatusCode: gohttp.StatusOK, Data: catalog}, nil).Times(3),
++					mockDownloadClient.EXPECT().Send(gomock.Any()).Do(func(req http.Request) {
++						Expect(req.URL).To(Equal(testRedownloadEndpoint + "?guid=" + testGUID))
++						Expect(req.Headers).To(HaveKeyWithValue("iCloud-DSID", account.DirectoryServicesID))
++						payload := req.Payload.(*http.XMLPayload).Content
++						Expect(payload).To(HaveKeyWithValue("salableAdamId", app.ID))
++						Expect(payload).ToNot(HaveKey("appExtVrsId"))
++						Expect(payload).ToNot(HaveKey("pricingParameters"))
++					}).Return(expected, nil),
++				)
++				actual, resolved, err := store.sendDownloadProduct(context.Background(), account, app, testGUID, "", platform)
++				Expect(err).ToNot(HaveOccurred())
++				Expect(actual).To(Equal(expected))
++				if platform == "" {
++					Expect(resolved).To(Equal(PlatformIPhone))
++				} else {
++					Expect(resolved).To(Equal(platform))
++				}
++			},
++			Entry("iPhone, missing card", PlatformIPhone, false),
++			Entry("iPad, missing offers", PlatformIPad, true),
++			Entry("default platform, missing card", Platform(""), false),
++		)
+ 
+ 		It("does not send an unpinned request when the catalog version is missing", func() {
+ 			latestVersion.Results[strconv.FormatInt(app.ID, 10)] = platformVersionLookupItem{
+@@ -399,6 +483,29 @@ var _ = Describe("AppStore (Download Product)", func() {
+ 
+ })
+ 
++var _ = Describe("AppRestore catalog-independent redownload", func() {
++	It("rejects another app, missing identity and ambiguous items", func() {
++		app := App{ID: 987654321, BundleID: "com.example.delisted"}
++		for _, metadata := range []map[string]interface{}{
++			{"itemId": 123, "softwareVersionBundleId": app.BundleID},
++			{"itemId": app.ID, "softwareVersionBundleId": "com.example.other"},
++			{"itemId": app.ID}, nil,
++		} {
++			res := http.Result[downloadResult]{StatusCode: gohttp.StatusOK,
++				Data: downloadResult{Items: []downloadItemResult{{Metadata: metadata}}}}
++			Expect(validateCatalogIndependentDownloadResponse(res, app)).To(HaveOccurred())
++		}
++		res := http.Result[downloadResult]{StatusCode: gohttp.StatusOK,
++			Data: downloadResult{Items: []downloadItemResult{{}, {}}}}
++		Expect(validateCatalogIndependentDownloadResponse(res, app)).To(HaveOccurred())
++	})
++	It("keeps Apple's license refusal for normal handling", func() {
++		res := http.Result[downloadResult]{StatusCode: gohttp.StatusOK,
++			Data: downloadResult{FailureType: FailureTypeLicenseNotFound, CustomerMessage: "License not found"}}
++		Expect(validateCatalogIndependentDownloadResponse(res, App{ID: 123})).To(Succeed())
++	})
++})
++
+ var _ = Describe("AppStore (Download Customer Messages)", func() {
+ 	DescribeTable("preserves Apple's message and response metadata when fallback is unavailable",
+ 		func(call func(*appstore) error) {

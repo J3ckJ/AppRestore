@@ -21,6 +21,42 @@ def qapp():
     return app
 
 
+def test_a_stored_miss_is_not_fetched_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cache = ArtworkCache(cache_dir=tmp_path)
+    calls: list[str] = []
+
+    def fake_get(url: str) -> bytes:
+        calls.append(url)
+        return b'{"resultCount":0,"results":[]}'
+
+    monkeypatch.setattr(cache, "_http_get", fake_get)
+    assert cache.lookup(store_id="1406492297", country="ru") == {"artwork": None}
+    assert cache.lookup(store_id="1406492297", country="ru") == {"artwork": None}
+    assert len(calls) == 1
+
+
+def test_prime_store_ids_asks_once_per_country(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cache = ArtworkCache(cache_dir=tmp_path)
+    calls: list[str] = []
+
+    def fake_get(url: str) -> bytes:
+        calls.append(url)
+        return json.dumps({
+            "results": [{
+                "trackId": 492224193,
+                "trackName": "Сбер",
+                "artworkUrl100": "https://example.invalid/sber.jpg",
+            }]
+        }).encode()
+
+    monkeypatch.setattr(cache, "_http_get", fake_get)
+    cache.prime_store_ids(["492224193", "1406492297"])
+    assert len(calls) == 2  # ru, then us
+    assert cache.lookup(store_id="492224193", country="ru")["artwork"].endswith("sber.jpg")
+    assert cache.lookup(store_id="1406492297", country="ru") == {"artwork": None}
+    assert len(calls) == 2
+
+
 def test_safe_key_strips_odd_chars() -> None:
     assert " " not in _safe_key("a b/c?")
 
@@ -94,4 +130,37 @@ def test_rounded_icon_file_prefers_store_artwork(
     saved = QImage(str(path))
     assert not saved.isNull()
     assert saved.width() == 192
+    assert all("example.test" not in url for url in calls)
+
+
+def test_rounded_icon_uses_a_direct_url_when_apple_has_no_artwork(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, qapp
+) -> None:
+    from PySide6.QtCore import QBuffer, QIODevice
+    from PySide6.QtGui import QColor, QImage
+
+    cache = ArtworkCache(cache_dir=tmp_path)
+    picture = QImage(24, 24, QImage.Format.Format_RGB32)
+    picture.fill(QColor("#25D366"))
+    buffer = QBuffer()
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    assert picture.save(buffer, "PNG")
+    png = bytes(buffer.data())
+    buffer.close()
+    calls: list[str] = []
+
+    def fake_get(url: str) -> bytes:
+        calls.append(url)
+        if "lookup" in url:
+            return b'{"resultCount":0,"results":[]}'
+        return png
+
+    monkeypatch.setattr(cache, "_http_get", fake_get)
+    path = cache.rounded_icon_file(
+        store_id="9",
+        site="example.test",
+        icon_url="https://example.invalid/old.png",
+    )
+    assert path is not None and path.is_file()
+    assert "https://example.invalid/old.png" in calls
     assert all("example.test" not in url for url in calls)

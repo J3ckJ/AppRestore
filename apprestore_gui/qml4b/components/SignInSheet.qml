@@ -19,9 +19,11 @@ Sheet {
     // is typed again.
     readonly property bool isWindows: Qt.platform.os === "windows"
     readonly property bool codePhase: !!root.s.code
+    readonly property bool keychainPhase: !!root.s.keychain
     readonly property string errorText: root.s.error || ""
     readonly property string codeText: root.isWindows ? codeField.text : codeInput.text
     onCodePhaseChanged: root.forgetCode()
+    onKeychainPhaseChanged: password.text = ""
     onErrorTextChanged: if (errorText !== "") password.text = ""
     onVisibleChanged: if (!visible) { root.forgetCode(); password.text = "" }
     Component.onDestruction: root.forgetCode()
@@ -53,26 +55,32 @@ Sheet {
         }
         Item { width: 1; height: 22 }
 
-        T { visible: !root.s.code; token: "fieldLabel"; color: Theme.ink2; text: "Почта Apple ID" }
-        Item { width: 1; height: 7; visible: !root.s.code }
+        T { visible: !root.codePhase && !root.keychainPhase; token: "fieldLabel"; color: Theme.ink2; text: "Почта Apple ID" }
+        Item { width: 1; height: 7; visible: !root.codePhase && !root.keychainPhase }
         Field {
             id: email
             objectName: "signInEmail"
-            visible: !root.s.code
+            visible: !root.codePhase && !root.keychainPhase
             readOnly: !!root.s.emailReadOnly || !!root.s.busy
             text: root.s.email || ""
         }
-        Item { width: 1; height: 16; visible: !root.s.code }
-        T { visible: !root.s.code; token: "fieldLabel"; color: Theme.ink2; text: "Пароль" }
-        Item { width: 1; height: 7; visible: !root.s.code }
+        Item { width: 1; height: 16; visible: !root.codePhase && !root.keychainPhase }
+        T {
+            visible: !root.codePhase
+            token: "fieldLabel"
+            color: Theme.ink2
+            text: root.keychainPhase ? "Пароль связки ключей" : "Пароль Apple ID"
+        }
+        Item { width: 1; height: 7; visible: !root.codePhase }
         Field {
             id: password
             objectName: "signInPassword"
-            visible: !root.s.code
+            visible: !root.codePhase
             secret: true
             readOnly: !!root.s.busy
             error: (root.s.error || "") !== ""
-            focus: !root.s.code
+            focus: !root.codePhase
+            placeholder: root.keychainPhase ? "Не пароль Apple ID" : ""
         }
 
         // 2FA: one hidden TextInput, six drawn cells (paste, Backspace, macOS autofill work)
@@ -161,7 +169,7 @@ Sheet {
         Item { width: 1; height: 16 }
         InfoLine {
             maxWidth: col.width
-            visible: !root.s.code
+            visible: !root.codePhase
             wrap: true
             glyph: "lock"
             text: root.s.fine || ""
@@ -184,9 +192,14 @@ Sheet {
                 objectName: "signInGo"
                 anchors.right: parent.right
                 text: root.s.go || "Войти"
-                enabledLook: !root.s.busy && (root.s.code ? /^\d{6}$/.test(root.codeText)
-                                                          : (email.text.indexOf("@") > 0 && password.text.length > 0))
-                onClicked: if (enabledLook) { root.s.code ? root.submitCode() : ui.login(email.text, password.text) }
+                enabledLook: !root.s.busy && (root.codePhase ? /^\d{6}$/.test(root.codeText)
+                                                : root.keychainPhase ? password.text.length > 0
+                                                : (email.text.indexOf("@") > 0 && password.text.length > 0))
+                onClicked: if (enabledLook) {
+                    if (root.codePhase) root.submitCode()
+                    else if (root.keychainPhase) { var secret = password.text; password.text = ""; ui.unlock(secret); secret = "" }
+                    else { var appleSecret = password.text; password.text = ""; ui.login(email.text, appleSecret); appleSecret = "" }
+                }
             }
         }
     }

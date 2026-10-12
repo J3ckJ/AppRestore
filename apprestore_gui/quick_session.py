@@ -24,10 +24,17 @@ from apprestore_gui.account_vault import (
     next_account_step,
     restore_session,
     save_session,
+    saved_accounts,
 )
 from apprestore_gui.auth_pty import WRONG_CODE_TEXT, AppleLogin, AuthResult, keychain_has_saved_account, probe_keychain
 from apprestore_gui.device_form import device_form, device_noun
-from apprestore_gui.errors import NOT_OWNED_TEXT, explain_user_error, is_license_missing
+from apprestore_gui.errors import (
+    NOT_OWNED_TEXT,
+    StoreOperationError,
+    explain_store_operation_error,
+    explain_user_error,
+    is_license_missing,
+)
 from apprestore_core.license_gate import (
     STORE_MISMATCH_TEXT,
     LicenseDenied,
@@ -366,6 +373,9 @@ class QuickSession(QObject):
             if label and label not in names:
                 names.append(label)
         current = self._account_email.strip()
+        for email in saved_accounts():
+            if not any(key.lower() == email.lower() for key in grouped):
+                grouped[email] = []
         if current and not any(email.lower() == current.lower() for email in grouped):
             grouped[current] = []
         rows: list[dict[str, object]] = []
@@ -627,6 +637,24 @@ class QuickSession(QObject):
 
     @Slot(str, str)
     def login(self, email: str, password: str) -> None:
+        if not self._acquire_account_change():
+            return
+        try:
+            self._login_idle(email, password)
+        finally:
+            self._tool_lock.release()
+
+    def _acquire_account_change(self) -> bool:
+        with self._lock:
+            busy = self._busy or self._files_busy or self._auth_job is not None
+        if busy or self.purchasesBusy or self._session_checker.running or not self._tool_lock.acquire(blocking=False):
+            with self._lock:
+                self._auth_status = "Дождитесь завершения текущего запроса перед сменой Apple ID."
+            self.changed.emit()
+            return False
+        return True
+
+    def _login_idle(self, email: str, password: str) -> None:
         email = email.strip()
         if "@" not in email:
             self._set_auth("out", "Укажите почту Apple ID.")
@@ -870,13 +898,26 @@ class QuickSession(QObject):
             threading.Thread(target=self._refresh_auth, name="apprestore-auth", daemon=True).start()
 
     def _refresh_auth(self) -> None:
-        state = probe_keychain()
         email = ""
-        if state == "in":
+        info = None
+        # probe_keychain starts a passwordless child: a file keyring is locked
+        # again in EACH process, even immediately after a successful unlock.
+        # Use the GUI's secure stdin runner while it holds the passphrase.
+        if self.service.keychain_ready():
             try:
-                email = account_email(self.service.core.tools.ipatool_auth_info())
+                with self._tool_lock:
+                    info = self.service.core.tools.ipatool_auth_info()
             except Exception:
-                email = ""
+                info = None
+        state = "in" if info else probe_keychain()
+        if state == "in":
+            if info is None:
+                try:
+                    with self._tool_lock:
+                        info = self.service.core.tools.ipatool_auth_info()
+                except Exception:
+                    info = None
+            email = account_email(info)
         prompt = False
         follow = ""
         with self._lock:
@@ -911,6 +952,11 @@ class QuickSession(QObject):
         if state == "in" and saved:
             save_session(saved)
             self._follow_purchases_account(saved)
+            # The onboarding scan can fire while _on_auth_done still has no
+            # email (unlocking an existing account, not logging in anew). That
+            # scan was a no-op; load once the actual account is known. start()
+            # is idempotent while a load is running.
+            self._purchases.start()
             self._session_checker.start()
         elif state == "out":
             # No saved session at all: nothing may stay cached.
@@ -970,6 +1016,14 @@ class QuickSession(QObject):
 
     @Slot(str)
     def _begin_switch(self, email: str) -> None:
+        if not self._acquire_account_change():
+            return
+        try:
+            self._switch_idle(email)
+        finally:
+            self._tool_lock.release()
+
+    def _switch_idle(self, email: str) -> None:
         email = email.strip()
         if "@" not in email:
             return
@@ -1083,11 +1137,19 @@ class QuickSession(QObject):
                 self.changed.emit()
             self._consider_account()
             return
+        # A re-read of the same phone must not blank the offloaded list. The
+        # missing-app list stays, so an empty publish shows only those (the
+        # «37» after one restore: 33 removed + 4 other-region, 500+ offloaded gone).
+        with self._lock:
+            same_phone = selected == self._loaded_udid
+            kept_rows = list(self._rows) if same_phone else []
+            kept_keys = dict(self._by_key) if same_phone else {}
         self._publish(
             connected=True,
             loading=True,
             note="",
-            rows=[],
+            rows=kept_rows,
+            by_key=kept_keys,
             udid=selected,
             form=form,
             noun=noun,
@@ -1215,7 +1277,8 @@ class QuickSession(QObject):
                     finally:
                         if hasattr(runner, "on_output"):
                             runner.on_output = previous
-            except LicenseDenied as denied:
+            except (LicenseDenied, StoreOperationError) as denied:
+                self._relogin_if_store_mismatch(denied)
                 self.installSettled.emit(store_id, False, str(denied))
                 return
             except Exception as exc:  # noqa: BLE001
@@ -1231,14 +1294,47 @@ class QuickSession(QObject):
 
     def _restore_store_gated(self, udid: str, store_id: str, acquire: bool) -> None:
         core = self.service.core
-        run_with_free_license(
-            store_id,
-            lambda: core.restore_by_store_id(udid, store_id),
-            tools=core.tools,
-            acquire=acquire,
-            notify=lambda text: self.installProgress.emit(-1, text),
-            mode="gui",
-        )
+        attempts = 0
+        purchase_started = False
+
+        def attempt() -> object:
+            nonlocal attempts
+            attempts += 1
+            return core.restore_by_store_id(udid, store_id)
+
+        def notify(text: str) -> None:
+            nonlocal purchase_started
+            purchase_started = True  # the gate calls this immediately before purchase
+            self.installProgress.emit(-1, text)
+
+        try:
+            run_with_free_license(
+                store_id,
+                attempt,
+                tools=core.tools,
+                acquire=acquire,
+                notify=notify,
+                mode="gui",
+            )
+        except LicenseDenied:
+            raise
+        except Exception as exc:
+            # The same 2059 can come from download OR purchase. Record the
+            # operation actually attempted instead of guessing from the text.
+            country = ""
+            try:
+                country = str(core.tools.account_country() or "").strip().upper()
+            except Exception:  # noqa: BLE001 - the original error still goes up
+                country = ""
+            if attempts > 1 or purchase_started or is_license_missing(str(exc)):
+                phase = (
+                    "licensed_download" if attempts > 1
+                    else "license_request" if purchase_started else "download"
+                )
+                raise StoreOperationError(
+                    explain_store_operation_error(str(exc), phase=phase, country=country)
+                ) from exc
+            raise
 
     def _download_copy_gated(self, app: InstalledApp) -> object:
         service = self.service

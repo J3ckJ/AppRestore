@@ -166,15 +166,32 @@ class CommandError(RuntimeError):
         super().__init__(detail)
 
 
-def _parent_has_no_console() -> bool:
-    """True for a windowed Windows process (e.g. the frozen GUI)."""
+def _frozen_app_without_tty() -> bool:
+    """A packaged app with nowhere for ipatool to print (macOS .app from Finder)."""
 
-    if os.name != "nt":
+    if not getattr(sys, "frozen", False):
         return False
+    stream = getattr(sys, "stderr", None)
     try:
-        return not ctypes.windll.kernel32.GetConsoleWindow()  # type: ignore[attr-defined]
-    except (AttributeError, OSError):
-        return False
+        return stream is None or not os.isatty(stream.fileno())
+    except (AttributeError, OSError, ValueError):
+        return True
+
+
+def _parent_has_no_console() -> bool:
+    """True when ipatool has no terminal, so its text must be captured.
+
+    A windowed Windows process has no console. A macOS .app started from
+    Finder has no tty either: without a capture, a failed download reaches
+    the window only as «ipatool failed».
+    """
+
+    if os.name == "nt":
+        try:
+            return not ctypes.windll.kernel32.GetConsoleWindow()  # type: ignore[attr-defined]
+        except (AttributeError, OSError):
+            return False
+    return _frozen_app_without_tty()
 
 
 #: Never handed to a child process: the keychain passphrase goes only through

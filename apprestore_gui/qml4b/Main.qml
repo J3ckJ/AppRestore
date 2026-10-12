@@ -2,6 +2,8 @@ import QtQuick
 import QtQml
 import QtQuick.Dialogs
 import QtQuick.Window
+import QtQuick.Controls as Controls
+import QtQuick.Controls.Basic as Basic
 import "theme"
 import "components"
 
@@ -20,6 +22,10 @@ Window {
     readonly property var home: ui.home
     readonly property bool onboarding: ui.screen === "onboarding"
     readonly property string noun: (home.pill || "iPhone").split(" ")[0]
+    property bool deviceMenu: false
+    readonly property bool sheetUp: ui.pickerOpen || !!ui.signIn.open || !!ui.consent.open
+        || !!ui.account.open || !!ui.find.open || !!ui.settings.open || !!ui.files.open || !!ui.journal.open
+    onSheetUpChanged: if (sheetUp) deviceMenu = false
 
     // Ресайз (спека §2.1): телефон справа, низ всегда режется окном.
     readonly property real phoneW: Math.max(360, Math.min(Theme.phoneW, 0.309 * width))
@@ -35,7 +41,7 @@ Window {
         Keys.onEnterPressed: win.enter()
     }
     function enter() {
-        if (!win.onboarding && !ui.pickerOpen && !ui.signIn.open && !ui.consent.open && !ui.account.open && !ui.find.open && !ui.settings.open && !ui.files.open && (win.home.cta || "") !== "")
+        if (!win.onboarding && !win.deviceMenu && !win.sheetUp && (win.home.cta || "") !== "")
             ui.primaryAction()
     }
 
@@ -60,25 +66,54 @@ Window {
         steps: ui.stepper
     }
     Pill {
+        id: statusPill
         anchors.right: parent.right
         anchors.rightMargin: Theme.padX
         y: Theme.topY
         text: win.home.pill || ""
         on: !!win.home.pillOn
+        pressable: (ui.devices || []).length > 1
+        onClicked: win.deviceMenu = !win.deviceMenu
     }
 
     // -- left column --------------------------------------------------------------
-    HomeHero {
-        id: hero
-        objectName: "homeHero"
+    Flickable {
+        id: heroScroll
+        objectName: "homeScroll"
         visible: !win.onboarding
         x: Theme.padX
         y: win.heroTop
         width: win.heroW
-        view: win.home
-        onPrimary: ui.primaryAction()
-        onSecondary: ui.secondaryAction()
-        onLink: function(name) { ui.link(name) }
+        height: Math.max(0, win.height - y - 24)
+        contentWidth: width
+        contentHeight: hero.height
+        clip: true
+        flickableDirection: Flickable.VerticalFlick
+        boundsBehavior: Flickable.StopAtBounds
+        Controls.ScrollBar.vertical: Basic.ScrollBar { policy: Controls.ScrollBar.AsNeeded }
+        Component.onCompleted: lastState = win.home.state || ""
+        onVisibleChanged: if (visible) contentY = 0
+        Connections {
+            target: ui
+            function onChanged() {
+                // A new screen starts at its headline; refreshing counts on
+                // the same screen must not steal the user's scroll position.
+                if (heroScroll.lastState !== (win.home.state || "")) {
+                    heroScroll.contentY = 0
+                    heroScroll.lastState = win.home.state || ""
+                }
+            }
+        }
+        property string lastState: ""
+        HomeHero {
+            id: hero
+            objectName: "homeHero"
+            width: parent.width
+            view: win.home
+            onPrimary: ui.primaryAction()
+            onSecondary: ui.secondaryAction()
+            onLink: function(name) { ui.link(name) }
+        }
     }
     Onboarding {
         visible: win.onboarding
@@ -103,11 +138,83 @@ Window {
         pageDots: win.home.pages || 0
     }
 
+    MouseArea {
+        anchors.fill: parent
+        z: 30
+        visible: win.deviceMenu
+        onClicked: win.deviceMenu = false
+    }
+    Rectangle {
+        visible: win.deviceMenu && (ui.devices || []).length > 1
+        z: 40
+        width: 300
+        height: deviceCol.height + 16
+        anchors.right: statusPill.right
+        anchors.top: statusPill.bottom
+        anchors.topMargin: 8
+        radius: 16
+        color: Theme.sheet
+        border.width: Theme.hair
+        border.color: Theme.line
+        Column {
+            id: deviceCol
+            x: 8
+            y: 8
+            width: parent.width - 16
+            spacing: 2
+            Repeater {
+                model: ui.devices || []
+                delegate: Item {
+                    required property var modelData
+                    width: deviceCol.width
+                    height: deviceBody.height + 12
+                    Column {
+                        id: deviceBody
+                        y: 6
+                        width: parent.width - 8
+                        x: 8
+                        spacing: 2
+                        T {
+                            width: parent.width
+                            token: "row"
+                            elide: Text.ElideRight
+                            color: modelData.active ? Theme.ink : Theme.ink2
+                            text: modelData.name || modelData.noun || "Телефон"
+                        }
+                        T {
+                            visible: (modelData.account || "") !== ""
+                            width: parent.width
+                            token: "rowDev"
+                            elide: Text.ElideMiddle
+                            color: Theme.ink3Text
+                            text: modelData.account || ""
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            ui.selectDevice(modelData.udid || "")
+                            win.deviceMenu = false
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // -- «Что вернуть» -------------------------------------------------------------
     Loader {
         anchors.fill: parent
         active: ui.pickerOpen
         sourceComponent: PickerSheet {}
+    }
+
+    Loader {
+        anchors.fill: parent
+        active: !!ui.journal.open
+        focus: active
+        sourceComponent: JournalSheet {}
     }
 
     // -- «Apple ID» when signed in: who, «Выйти» (04-auth §2a) -------------------------

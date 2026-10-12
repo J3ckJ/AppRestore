@@ -14,6 +14,10 @@
 #   whole purchase history in one call; without the flag nothing changes.
 #   0003-ipatool-keychain-passphrase-env-stdin.patch - keychain passphrase via
 #   --keychain-passphrase-stdin (AppRestore uses only this; never argv/env).
+#   0004-ipatool-delisted-redownload.patch - licensed iOS redownload remains
+#   possible without a public catalog card; verify the returned app identity.
+#   0005-ipatool-readonly-download-probe.patch - compare download channels
+#   without purchasing/downloading and without private response data.
 #
 # The archive is reproducible: packaging/pack_ipatool.py writes it with a fixed
 # mtime (SOURCE_DATE_EPOCH, else the commit time of $commit), uid/gid 0 and a
@@ -90,6 +94,8 @@ patches=(
   "0001-ipatool-auth-info-country.patch:05d87977a554102c9b036306ec2c125febaa62433d2a080d588527a8225b7fb8"
   "0002-ipatool-list-purchases-all.patch:025d9919871dba636a80559614a3ca402c37cf2be6965fb7a3203f4088e54445"
   "0003-ipatool-keychain-passphrase-env-stdin.patch:76fdf028e6e6a5c11b9be9f647ab8281e17c2e4bd6ee1a22fa57c7d1c38e115c"
+  "0004-ipatool-delisted-redownload.patch:b97e7938e587c99650410f706e18992a9aad0289d58a2cff47619857d47feb8b"
+  "0005-ipatool-readonly-download-probe.patch:84cb1dd65ed7ea48a8020462b1aaa5c3cc67781ac9ca9a47b7e3367af3cfb2aa"
 )
 for entry in "${patches[@]}"; do
   patch_name="${entry%%:*}"
@@ -110,6 +116,14 @@ if [[ "$go_reported" != "$go_toolchain" ]]; then
   exit 1
 fi
 echo "go toolchain: $go_reported"
+
+# The delisted fallback and identity/platform guards must pass with the same
+# patches that ship. Mocks are generated locally; no Apple account is needed.
+(
+  cd "$work/src"
+  go generate ./pkg/...
+  go test ./pkg/appstore ./cmd
+)
 
 stage="$work/stage"
 mkdir -p "$stage/bin"
@@ -145,7 +159,9 @@ for marker in \
   "unsupported authentication redirect status" \
   "appstore.CountryCodeFromStoreFront" \
   "--all cannot be combined with --page or --max-results" \
-  "keychain-passphrase-stdin"
+  "keychain-passphrase-stdin" \
+  "catalog-independent redownload does not match the requested app" \
+  "Inspect download channels without purchase, asset download or private response data"
 do
   if ! grep -a -F -q -e "$marker" "$stage/bin/$name"; then
     echo "built ipatool is missing an expected fix: $marker" >&2

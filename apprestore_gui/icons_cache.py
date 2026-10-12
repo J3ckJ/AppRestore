@@ -79,7 +79,9 @@ class ArtworkCache:
         else:
             return None
         cached = self._index.get(key)
-        if isinstance(cached, dict) and cached.get("artwork"):
+        # A stored miss ({"artwork": None}) is an answer too. Re-fetching it
+        # made every delisted icon wait on two iTunes lookups.
+        if isinstance(cached, dict) and "artwork" in cached:
             return cached
         try:
             raw = self._http_get(f"{LOOKUP}?{urllib.parse.urlencode(params)}")
@@ -103,6 +105,61 @@ class ArtworkCache:
         self._index[key] = info
         self._save_index()
         return info
+
+    def prime_store_ids(self, store_ids: list[str]) -> None:
+        """Fill the artwork index for many store ids in one lookup per country.
+
+        The open sheet used to ask iTunes once per icon. A miss then waited
+        out the timeout twice (RU, then US) before the site mark was tried.
+        """
+
+        ids: list[str] = []
+        seen: set[str] = set()
+        for raw in store_ids:
+            sid = str(raw or "")
+            if sid.isdigit() and sid not in seen:
+                seen.add(sid)
+                ids.append(sid)
+        if not ids:
+            return
+        for country in ("ru", "us"):
+            missing = [
+                sid for sid in ids
+                if not (
+                    isinstance(self._index.get(f"id:{sid}:{country}"), dict)
+                    and "artwork" in self._index[f"id:{sid}:{country}"]
+                )
+            ]
+            for start in range(0, len(missing), 40):
+                self._prime_chunk(missing[start:start + 40], country)
+
+    def _prime_chunk(self, ids: list[str], country: str) -> None:
+        params = urllib.parse.urlencode({"id": ",".join(ids), "country": country})
+        try:
+            raw = self._http_get(f"{LOOKUP}?{params}")
+            payload = json.loads(raw.decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+            return
+        found: set[str] = set()
+        for item in payload.get("results") or []:
+            if not isinstance(item, dict):
+                continue
+            track = str(item.get("trackId") or "")
+            if track not in ids:
+                continue
+            found.add(track)
+            self._index[f"id:{track}:{country}"] = {
+                "artwork": item.get("artworkUrl512")
+                or item.get("artworkUrl100")
+                or item.get("artworkUrl60"),
+                "name": item.get("trackName") or item.get("trackCensoredName"),
+                "bundleId": item.get("bundleId"),
+                "trackId": track or None,
+            }
+        for sid in ids:
+            if sid not in found:
+                self._index[f"id:{sid}:{country}"] = {"artwork": None}
+        self._save_index()
 
     def local_path_for(self, url: str) -> Path:
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
@@ -223,15 +280,23 @@ class ArtworkCache:
         store_id: str = "",
         bundle_id: str = "",
         site: str = "",
+        icon_url: str = "",
         size: int = 192,
     ) -> Path | None:
-        """A squircle PNG for one app. Store artwork wins over the site mark."""
+        """A squircle PNG for one app.
+
+        Apple's artwork first, then a direct ``icon_url``, then the public
+        site mark. The neutral placeholder is what the window draws when
+        all three miss.
+        """
 
         source: Path | None = None
         info = self.artwork_info(store_id=store_id, bundle_id=bundle_id)
         artwork = info.get("artwork") if info else None
         if isinstance(artwork, str) and artwork:
             source = self.fetch_file(artwork)
+        if source is None and icon_url.startswith(("https://", "http://")):
+            source = self.fetch_file(icon_url)
         if source is None and site:
             source = self._favicon_file(site)
         if source is None:
@@ -373,6 +438,18 @@ def _rounded_image(image: QImage, size: int) -> QImage:
     return out
 
 
+def _icon_parts(item: tuple[str, ...]) -> tuple[str, str, str, str]:
+    store_id = str(item[0] or "") if item else ""
+    bundle_id = str(item[1] or "") if len(item) > 1 else ""
+    site = str(item[2] or "") if len(item) > 2 else ""
+    icon_url = str(item[3] or "") if len(item) > 3 else ""
+    return store_id, bundle_id, site, icon_url
+
+
+def _icon_token(store_id: str, bundle_id: str, site: str, icon_url: str) -> str:
+    return f"{store_id}|{bundle_id}|{site}|{icon_url}"
+
+
 class IconBook(QObject):
     """Local icon files for the Quick UI. Lookup never blocks the window.
 
@@ -438,8 +515,11 @@ class IconBook(QObject):
     def _apply(self, keys: list, path: str) -> None:
         self.remember([str(k) for k in keys], path)
 
-    def _load_one(self, store_id: str, bundle_id: str, site: str) -> bool:
-        path = self.cache.rounded_icon_file(store_id=store_id, bundle_id=bundle_id, site=site)
+    def _load_one(self, store_id: str, bundle_id: str, site: str, icon_url: str = "") -> bool:
+        kwargs = {"store_id": store_id, "bundle_id": bundle_id, "site": site}
+        if icon_url:
+            kwargs["icon_url"] = icon_url
+        path = self.cache.rounded_icon_file(**kwargs)
         if path is None:
             return False
         info_bundle = ""
@@ -454,11 +534,12 @@ class IconBook(QObject):
             self._found.emit(keys, str(path))
         return True
 
-    def load_now(self, items: list[tuple[str, str, str]]) -> None:
-        for store_id, bundle_id, site in items:
-            token = f"{store_id}|{bundle_id}|{site}"
+    def load_now(self, items: list[tuple[str, ...]]) -> None:
+        for item in items:
+            store_id, bundle_id, site, icon_url = _icon_parts(item)
+            token = _icon_token(store_id, bundle_id, site, icon_url)
             try:
-                ok = self._load_one(store_id, bundle_id, site)
+                ok = self._load_one(store_id, bundle_id, site, icon_url)
             except Exception:  # noqa: BLE001 - one bad icon must not stop the rest
                 ok = False
                 with self._lock:
@@ -481,14 +562,22 @@ class IconBook(QObject):
             return False
         return count == 0 or time.monotonic() - last >= self.RETRY_S
 
-    def consider_async(self, items: list[tuple[str, str, str]]) -> None:
+    def consider_async(self, items: list[tuple[str, ...]], *, front: bool = False) -> None:
+        """Queue icon lookups. ``front`` is for the sheet the user is looking at."""
+
+        fresh: list[tuple[str, str, str, str]] = []
         with self._lock:
-            for store_id, bundle_id, site in items:
-                token = f"{store_id}|{bundle_id}|{site}"
-                if not (store_id or bundle_id or site) or not self._due(token):
+            for item in items:
+                store_id, bundle_id, site, icon_url = _icon_parts(item)
+                token = _icon_token(store_id, bundle_id, site, icon_url)
+                if not (store_id or bundle_id or site or icon_url) or not self._due(token):
                     continue
                 self._pending.add(token)
-                self._queue.append((store_id, bundle_id, site))
+                fresh.append((store_id, bundle_id, site, icon_url))
+            if front:
+                self._queue[0:0] = fresh
+            else:
+                self._queue.extend(fresh)
             if not self._queue or self._worker is not None:
                 return
             self._worker = threading.Thread(target=self._drain, name="apprestore-icons", daemon=True)
@@ -496,13 +585,25 @@ class IconBook(QObject):
         worker.start()
 
     def _drain(self) -> None:
+        # One icon at a time, so a sheet opened mid-queue can jump ahead.
+        # The iTunes answer for the icons waiting at the front is one request.
         while True:
             with self._lock:
                 if not self._queue:
                     self._worker = None
                     return
-                batch, self._queue = self._queue[:], []
-            self.load_now(batch)
+                ids = [item[0] for item in self._queue[:40] if item and str(item[0]).isdigit()]
+            if ids:
+                try:
+                    self.cache.prime_store_ids(ids)
+                except Exception:  # noqa: BLE001 - a failed prime falls back to one-by-one
+                    pass
+            with self._lock:
+                if not self._queue:
+                    self._worker = None
+                    return
+                item = self._queue.pop(0)
+            self.load_now([item])
 
 
 def prefetch_many(

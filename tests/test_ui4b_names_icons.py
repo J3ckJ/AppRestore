@@ -161,6 +161,17 @@ def _wait(qapp, cond, s=3.0):
     return cond()
 
 
+def test_open_sheet_icons_jump_ahead_of_the_home_queue(qapp, tmp_path) -> None:
+    book = IconBook(cache=FakeArt(_png(tmp_path), fail_first=False))
+    book._worker = object()
+    book.consider_async([("1", "", ""), ("2", "", "")])
+    book.consider_async([("9", "", "example.test")], front=True)
+    assert [item[0] for item in book._queue] == ["9", "1", "2"]
+    book._queue.clear()
+    book._pending.clear()
+    book._worker = None
+
+
 def test_icon_book_retries_after_a_miss_and_updates_on_gui_thread(qapp, tmp_path, monkeypatch) -> None:
     book = IconBook(cache=FakeArt(_png(tmp_path)))
     monkeypatch.setattr(IconBook, "RETRY_S", 0.0)

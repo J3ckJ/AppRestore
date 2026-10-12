@@ -6,6 +6,7 @@ import plistlib
 import re
 import threading
 import time
+import urllib.parse
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, wait
@@ -899,6 +900,65 @@ def lookup_itunes_offer(
                 "country": country,
             }
     return None
+
+
+def lookup_itunes_offers(
+    store_ids: Iterable[str],
+    country: str,
+) -> dict[str, dict[str, object] | None]:
+    """Prices for many ids in one country, a few lookup requests instead of one per id.
+
+    Missing ids map to ``None``. No fallback country: a price from another
+    storefront is not this Apple ID's price.
+    """
+
+    wanted: list[str] = []
+    seen: set[str] = set()
+    for raw in store_ids:
+        resolved = _store_id_from_value(raw)
+        if not resolved or resolved in seen:
+            continue
+        seen.add(resolved)
+        wanted.append(resolved)
+    out: dict[str, dict[str, object] | None] = {sid: None for sid in wanted}
+    country = (country or "").strip().lower()
+    if not country or not wanted:
+        return out
+    for start in range(0, len(wanted), 50):
+        chunk = wanted[start:start + 50]
+        payload = _http_json(
+            "https://itunes.apple.com/lookup?"
+            + urllib.parse.urlencode({"id": ",".join(chunk), "country": country}),
+            timeout=8,
+        )
+        if not isinstance(payload, Mapping):
+            continue
+        results = payload.get("results")
+        if not isinstance(results, list):
+            continue
+        for row in results:
+            if not isinstance(row, Mapping):
+                continue
+            resolved = _store_id_from_value(row.get("trackId"))
+            if resolved not in out:
+                continue
+            raw_price = row.get("price")
+            price: float | None
+            if isinstance(raw_price, (int, float)) and not isinstance(raw_price, bool):
+                price = float(raw_price)
+            else:
+                price = None
+            bundle_id = row.get("bundleId")
+            out[resolved] = {
+                "storeId": resolved,
+                "bundleId": bundle_id if isinstance(bundle_id, str) else "",
+                "name": _clean_text(row.get("trackName"), resolved),
+                "artist": _clean_text(row.get("artistName") or row.get("sellerName"), ""),
+                "price": price,
+                "currency": str(row.get("currency") or ""),
+                "country": country,
+            }
+    return out
 
 
 # Renames / sanctions aliases: query → extra search terms.

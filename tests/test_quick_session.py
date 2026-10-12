@@ -1,7 +1,74 @@
 from pathlib import Path
 
-from apprestore_core.models import InstalledApp, IpaMetadata, OffloadedApp
+import pytest
+
+from apprestore_core.models import Device, InstalledApp, IpaMetadata, OffloadedApp
 from apprestore_gui.quick_session import library_card, offloaded_card, phone_card
+
+
+@pytest.mark.parametrize(
+    "acquire,purchase_started,attempts,phase",
+    [(False, False, 1, "download"), (True, True, 1, "license_request"), (True, True, 2, "licensed_download")],
+)
+def test_store_failure_tracks_the_operation_not_just_the_error_text(
+    monkeypatch: pytest.MonkeyPatch, acquire: bool, purchase_started: bool, attempts: int, phase: str
+) -> None:
+    from types import SimpleNamespace
+    from apprestore_gui import quick_session as qs
+    from apprestore_gui.errors import StoreOperationError
+
+    calls = []
+    core = SimpleNamespace(
+        tools=SimpleNamespace(account_country=lambda: "ru"),
+        restore_by_store_id=lambda udid, sid: calls.append((udid, sid)),
+    )
+    session = SimpleNamespace(service=SimpleNamespace(core=core), installProgress=SimpleNamespace(emit=lambda *_: None))
+
+    def gate(sid, attempt, **kwargs):
+        attempt()
+        if purchase_started:
+            kwargs["notify"]("Лицензия")
+        if attempts > 1:
+            attempt()
+        raise RuntimeError("received error: 2059")
+
+    monkeypatch.setattr(qs, "run_with_free_license", gate)
+    with pytest.raises(StoreOperationError) as error:
+        qs.QuickSession._restore_store_gated(session, "UDID", "1117817509", acquire)
+    assert f"этап: {phase}" in str(error.value)
+    assert "temporarily_unavailable" in str(error.value)
+    assert len(calls) == attempts
+    assert "для страны" not in str(error.value)
+    assert error.value.__cause__ is not None
+
+
+def test_reread_of_the_same_phone_keeps_the_offloaded_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    from apprestore_gui import quick_session as qs
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(qs, "load_bindings", lambda: {})
+    session = qs.QuickSession()
+    app = OffloadedApp(bundle_id="app.one", name="One", version="1", store_id="1")
+    session._rows = [qs.offloaded_card(app)]
+    session._by_key = {app.bundle_id: app}
+    session._loaded_udid = "UDID"
+    session._udid = "UDID"
+    session._ready = True
+    session._force = True
+    session._device_cache["UDID"] = Device(udid="UDID")
+    seen: list[int] = []
+
+    def offloaded(_udid: str) -> list[OffloadedApp]:
+        seen.append(len(session.offloaded_snapshot()))
+        return [app]
+
+    session.service.connected_udids = lambda: ["UDID"]  # type: ignore[method-assign]
+    session.service.offloaded = offloaded  # type: ignore[method-assign]
+    session._poll_once()
+    assert seen == [1]
 
 
 def test_offloaded_card_uses_bundle_id_as_the_window_key() -> None:

@@ -113,10 +113,10 @@ def test_legacy_attempt_a_voided_by_pair_counts_zero(tmp_path):
     _append(j, {"time": "2026-10-10T15:16:42+00:00", "track_id": "492224193", "app_id": "492224193",
                 "bundle_id": "", "storefront": "us", "status": "purchase_uncertain", "price": 0.0,
                 "mode": "real"})
-    assert lg.read_counts(j) == (1, 1)
+    assert lg.read_counts(j, now=_now) == (1, 1)
     lg.record_void(None, "erroneous: 2040", legacy_match=("2026-10-10T15:16:42+00:00", "492224193"),
                    journal_path=j)
-    assert lg.read_counts(j) == (0, 0)
+    assert lg.read_counts(j, now=_now) == (0, 0)
 
 
 def test_legacy_row_is_not_voided_by_amends(tmp_path):
@@ -126,7 +126,7 @@ def test_legacy_row_is_not_voided_by_amends(tmp_path):
                 "status": "purchase_uncertain", "price": 0.0})
     _append(j, {"id": "x", "time": "2026-10-10T15:20:00+00:00", "track_id": "492224193",
                 "status": "voided", "amends": {"time": "2026-10-10T15:16:42+00:00", "track_id": "492224193"}})
-    assert lg.read_counts(j) == (1, 1)
+    assert lg.read_counts(j, now=_now) == (1, 1)
 
 
 def test_amendment_keeps_original_time_for_daily_window(tmp_path):

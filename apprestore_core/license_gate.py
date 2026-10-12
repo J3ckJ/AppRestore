@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from .command import CommandError
-from .error_signal import _AUTH, _LICENSE, _NETWORK, _REGION, is_license_missing
+from .error_signal import _AUTH, _LICENSE, _NETWORK, _REGION, _UNAVAILABLE, is_license_missing
 from .ipatool_api import MESSAGES_RU, ErrorCode, classify_error
 from .license_guard import DEFAULT_DAILY_LIMIT, DEFAULT_TOTAL_LIMIT, default_journal_path
 from .license_journal import (
@@ -60,7 +60,7 @@ UNKNOWN_COUNTRY_TEXT = (
 )
 
 # Apple (or ipatool before sending anything) said no: no transaction happened.
-_EXPLICIT_REFUSAL = _AUTH + _REGION + _LICENSE + (
+_EXPLICIT_REFUSAL = _AUTH + _REGION + _UNAVAILABLE + _LICENSE + (
     "failed to purchase",
     "purchasing paid apps",
     "paid app",
@@ -246,6 +246,8 @@ def run_with_free_license(
         if reason:
             raise LicenseDenied(NEEDS_PATCHED_IPATOOL_TEXT) from missing
         raise LicenseDenied(UNKNOWN_COUNTRY_TEXT) from missing
+    # Country code only, in the log. The license sentence itself stays as it is.
+    print(f"  license: store={store_id} country={country}")
     offer: dict[str, object] | None = None
     if store_id.isdigit():
         try:
@@ -293,7 +295,9 @@ def run_with_free_license(
     except PreflightBlocked:
         raise LicenseDenied(NEEDS_PATCHED_IPATOOL_TEXT) from missing
     if entry is None:
-        raise LicenseDenied(refusal_text(verdict), verdict) from missing
+        text = refusal_text(verdict)
+        text = f"{text} Страна аккаунта: {country.upper()}."
+        raise LicenseDenied(text, verdict) from missing
     # The download runs outside the lock; the status update takes it again.
     try:
         return attempt()

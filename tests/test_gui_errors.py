@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from apprestore_gui.errors import explain_update_error, explain_user_error
+from apprestore_gui.errors import explain_store_operation_error, explain_update_error, explain_user_error
 from apprestore_gui.main_window import friendly_restore_error
 
 _ESSAY = (
@@ -17,6 +17,43 @@ _ESSAY = (
 
 
 class ExplainUserErrorTests(unittest.TestCase):
+    def test_read_only_2059_does_not_invent_a_license_or_country_refusal(self) -> None:
+        text = explain_store_operation_error(
+            "received error: 2059", phase="download", country="ru"
+        )
+        self.assertIn("временно недоступно", text)
+        self.assertIn("этап: download", text)
+        self.assertIn("temporarily_unavailable", text)
+        self.assertIn("магазин: RU", text)
+        self.assertNotIn("не выдала лицензию", text)
+        self.assertNotIn("для страны", text)
+        self.assertNotIn("Карточка", text)
+
+    def test_purchase_2059_names_the_actual_operation(self) -> None:
+        text = explain_store_operation_error(
+            "failed to purchase item: item is temporarily unavailable", phase="license_request"
+        )
+        self.assertIn("Запрос новой лицензии", text)
+        self.assertIn("license_request", text)
+        self.assertNotIn("Лицензия получена", text)
+
+    def test_failure_after_acquisition_does_not_claim_the_license_was_refused(self) -> None:
+        text = explain_store_operation_error(
+            "received error: 2059", phase="licensed_download"
+        )
+        self.assertIn("Лицензия получена", text)
+        self.assertNotIn("не выдала", text)
+
+    def test_stage_diagnostics_never_quote_private_or_unknown_tool_output(self) -> None:
+        text = explain_store_operation_error(
+            "unexpected payload for private@example.com token=secret device=123456",
+            phase="license_request", country="RU; private@example.com"
+        )
+        self.assertIn("ошибка: unknown", text)
+        self.assertNotIn("private", text)
+        self.assertNotIn("secret", text)
+        self.assertNotIn("123456", text)
+
     def test_closed_session_points_at_apple_id(self) -> None:
         text = friendly_restore_error(
             "ipatool is not authenticated; run `apprestore auth`"
@@ -40,7 +77,8 @@ class ExplainUserErrorTests(unittest.TestCase):
             "store=1 with --purchase: failed to purchase item with param 'GAME': "
             "item is temporarily unavailable). " + _ESSAY
         )
-        self.assertIn("страны", text)
+        self.assertIn("не отдаёт эту версию", text)
+        self.assertNotIn("стран", text)
         self.assertNotIn("Получить", text)
 
     def test_purchase_refusal_names_the_refusal(self) -> None:
@@ -62,10 +100,15 @@ class ExplainUserErrorTests(unittest.TestCase):
         self.assertNotIn("лиценз", text.casefold())
         self.assertNotIn("стран", text)
 
-    def test_temporary_unavailability_is_the_store_country(self) -> None:
+    def test_temporary_unavailability_is_not_blamed_on_the_country(self) -> None:
         text = explain_user_error(
             "failed to purchase item with param 'GAME': item is temporarily unavailable"
         )
+        self.assertIn("не отдаёт эту версию", text)
+        self.assertNotIn("стран", text)
+
+    def test_an_explicit_region_refusal_still_names_the_country(self) -> None:
+        text = explain_user_error("this app is not available in your country")
         self.assertIn("страны", text)
         self.assertIn("не меняет", text)
 
@@ -97,6 +140,26 @@ class ExplainUserErrorTests(unittest.TestCase):
         )
         self.assertIn("boom from apple", text)
         self.assertNotIn("Операции", text)
+
+    def test_bare_ipatool_failed_is_not_the_english_essay(self) -> None:
+        text = explain_user_error(
+            "could not download App Store ID 6817277802 ("
+            "store=6817277802 without --purchase: ipatool failed; "
+            "store=6817277802 with --purchase: ipatool failed). " + _ESSAY
+        )
+        self.assertIn("Файл не скачался", text)
+        self.assertNotIn("Typical causes", text)
+        self.assertNotIn("doctor", text)
+        self.assertNotIn("--acquire", text)
+
+    def test_captured_store_error_names_the_license(self) -> None:
+        text = explain_user_error(
+            "could not download App Store ID 6817277802 ("
+            "store=6817277802 without --purchase: license is required). " + _ESSAY
+        )
+        self.assertIn("лиценз", text)
+        self.assertNotIn("ipatool failed", text)
+        self.assertNotIn("doctor", text)
 
     def test_closed_console_is_a_closed_session(self) -> None:
         text = explain_user_error(

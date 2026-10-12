@@ -83,7 +83,7 @@ def test_purchase_license_is_called_from_the_gate_only() -> None:
                 func = node.func
                 name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
                 if name == "purchase_license":
-                    callers.append(str(path.relative_to(ROOT)))
+                    callers.append(path.relative_to(ROOT).as_posix())
             # getattr(tools, "purchase_license") would dodge the call check
             if isinstance(node, ast.Constant) and node.value == "purchase_license":
                 callers.append(f"{path.relative_to(ROOT)} (string)")
@@ -92,7 +92,7 @@ def test_purchase_license_is_called_from_the_gate_only() -> None:
 
 def test_grants_are_minted_by_the_gate_only() -> None:
     minters = [
-        str(path.relative_to(ROOT))
+        path.relative_to(ROOT).as_posix()
         for path, tree in _trees()
         for node in ast.walk(tree)
         if isinstance(node, (ast.Name, ast.Attribute))

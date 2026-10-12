@@ -44,6 +44,45 @@ def current_asset() -> str:
     raise SystemExit(f"unsupported platform for the GUI bundle: {sys.platform}")
 
 
+def install_archive(archive: Path, asset: str, destinations: list[Path]) -> None:
+    """Install one already verified/built archive into GUI bundle directories."""
+
+    suffix = ".exe" if asset.startswith("windows") else ""
+    expected_leaf = f"ipatool-{IPATOOL_VERSION}-{asset}{suffix}"
+    with tarfile.open(archive, "r:gz") as tar:
+        members = [m for m in tar.getmembers() if m.isfile()]
+        if len(members) != 1 or Path(members[0].name).name != expected_leaf:
+            raise SystemExit(
+                f"unexpected ipatool archive layout: {[m.name for m in tar.getmembers()]}"
+            )
+        member = members[0]
+        if not 0 < member.size <= MAX_BINARY_BYTES:
+            raise SystemExit("ipatool binary size is out of range")
+        source = tar.extractfile(member)
+        assert source is not None
+        data = source.read()
+    name = f"ipatool{suffix}"
+    for destination in destinations:
+        destination.mkdir(parents=True, exist_ok=True)
+        target = destination / name
+        target.write_bytes(data)
+        if not suffix:
+            target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        print(f"ipatool {IPATOOL_VERSION} ({asset}) -> {target}")
+
+
+def install_license(destinations: list[Path]) -> None:
+    # ipatool is MIT licensed: ship its license text next to the binary.
+    license_url = (
+        "https://raw.githubusercontent.com/majd/ipatool/"
+        f"{IPATOOL_SOURCE_COMMIT}/LICENSE"
+    )
+    with urllib.request.urlopen(license_url, timeout=60) as response:  # noqa: S310
+        license_text = response.read()
+    for destination in destinations:
+        (destination / "ipatool-LICENSE.txt").write_bytes(license_text)
+
+
 def fetch(asset: str, destinations: list[Path]) -> None:
     expected = ARCHIVE_SHA256[asset]
     url = f"{ARCHIVE_BASE}/ipatool-{IPATOOL_VERSION}-{asset}.tar.gz"
@@ -54,37 +93,8 @@ def fetch(asset: str, destinations: list[Path]) -> None:
         actual = hashlib.sha256(archive.read_bytes()).hexdigest()
         if actual != expected:
             raise SystemExit(f"ipatool SHA-256 mismatch: expected {expected}, got {actual}")
-        suffix = ".exe" if asset.startswith("windows") else ""
-        expected_leaf = f"ipatool-{IPATOOL_VERSION}-{asset}{suffix}"
-        with tarfile.open(archive, "r:gz") as tar:
-            members = [m for m in tar.getmembers() if m.isfile()]
-            if len(members) != 1 or Path(members[0].name).name != expected_leaf:
-                raise SystemExit(
-                    f"unexpected ipatool archive layout: {[m.name for m in tar.getmembers()]}"
-                )
-            member = members[0]
-            if not 0 < member.size <= MAX_BINARY_BYTES:
-                raise SystemExit("ipatool binary size is out of range")
-            source = tar.extractfile(member)
-            assert source is not None
-            data = source.read()
-    name = f"ipatool{suffix}"
-    for destination in destinations:
-        destination.mkdir(parents=True, exist_ok=True)
-        target = destination / name
-        target.write_bytes(data)
-        if not suffix:
-            target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        print(f"ipatool {IPATOOL_VERSION} ({asset}) -> {target}")
-    # ipatool is MIT licensed: ship its license text next to the binary.
-    license_url = (
-        "https://raw.githubusercontent.com/majd/ipatool/"
-        f"{IPATOOL_SOURCE_COMMIT}/LICENSE"
-    )
-    with urllib.request.urlopen(license_url, timeout=60) as response:  # noqa: S310
-        license_text = response.read()
-    for destination in destinations:
-        (destination / "ipatool-LICENSE.txt").write_bytes(license_text)
+        install_archive(archive, asset, destinations)
+    install_license(destinations)
 
 
 def main() -> int:

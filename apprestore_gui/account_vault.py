@@ -67,6 +67,27 @@ def has_session(email: str, root: Path | None = None) -> bool:
     return (vault_path(email, root) / "account").is_file()
 
 
+def saved_accounts(root: Path | None = None) -> list[str]:
+    """List saved sessions without opening encrypted credential files."""
+
+    store = root or vault_root()
+    try:
+        folders = list(store.iterdir())
+    except OSError:
+        return []
+    result: dict[str, str] = {}
+    for folder in folders:
+        if folder.is_symlink() or not folder.is_dir() or not (folder / "account").is_file():
+            continue
+        try:
+            email = (folder / "email.txt").read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            email = folder.name  # Sessions saved before multi-account enumeration.
+        if "@" in email and _folder_name(email) == folder.name:
+            result[email.lower()] = email
+    return [result[key] for key in sorted(result)]
+
+
 def save_session(email: str, *, live: Path | None = None, root: Path | None = None) -> bool:
     email = email.strip()
     if "@" not in email:
@@ -78,6 +99,7 @@ def save_session(email: str, *, live: Path | None = None, root: Path | None = No
     store = dest.parent
     dest.mkdir(parents=True, exist_ok=True)
     _copy_session(source, dest)
+    (dest / "email.txt").write_text(email, encoding="utf-8")
     _mark_active(email, store)
     return True
 

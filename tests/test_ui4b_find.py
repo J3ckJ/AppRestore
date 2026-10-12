@@ -228,6 +228,22 @@ def test_empty_field_shows_only_the_vetted_frequent_list(qapp) -> None:
     assert [r["storeId"] for r in v["rows"][1:]] == [r["storeId"] for r in frequent.load()]
 
 
+def test_frequent_buttons_show_before_the_price_lookups(qapp) -> None:
+    """The vetted list must not wait on a lookup per app before «Поставить»."""
+
+    pending: list = []
+    src = FakeSource("missing")
+    src.owned = set()
+    c = Restore4b(src, find_options={"delisted": Delisted(), "spawn": pending.append})
+    c.finder.openWith("")
+    apps = rows(c)
+    assert apps and all(r["action"] == F.INSTALL for r in apps)
+    assert len(pending) == 1
+    pending.pop(0)()
+    apps = rows(c)
+    assert apps and all(r["action"] == "" and r["actionNote"] == F.UNKNOWN_PRICE for r in apps)
+
+
 def test_install_goes_the_usual_path_and_closes_the_sheet(qapp) -> None:
     src = FakeSource("missing")
     src.find_store = [{"storeId": "2", "name": "App 2", "source": "appstore"}]
@@ -335,6 +351,10 @@ def test_apple_rejected_screen_mark_in_memory_no_region_group_no_retry(qapp, tmp
     c, _ = controller(source=src)
     alfa = [i for i in c.selection.items if i.store_id][3]
     c.primaryAction()
+    assert c.pickerOpen
+    c.clearAll()
+    c.toggle(alfa.key)
+    c.restoreSelected()
     for _ in range(5):
         qapp.processEvents()
     assert c.flow.running
@@ -365,6 +385,11 @@ def test_store_mismatch_keeps_its_own_screen(qapp) -> None:
     c, _ = controller(source=src)
     sid = [i for i in c.selection.items if i.store_id][0].store_id
     c.primaryAction()
+    assert c.pickerOpen
+    c.clearAll()
+    item = next(i for i in c.selection.items if i.store_id == sid)
+    c.toggle(item.key)
+    c.restoreSelected()
     for _ in range(5):
         qapp.processEvents()
     assert c.flow.running
@@ -493,14 +518,10 @@ def test_find_install_goes_consent_with_k_then_flag_reaches_gate_registry(qapp, 
     import time
 
     deadline = time.monotonic() + 5
-    while not c.consent.get("open") and time.monotonic() < deadline:
+    while delisted_attempt.flag_for("11") != "delisted" and time.monotonic() < deadline:
         qapp.processEvents()
         time.sleep(0.01)
-    assert c.consent.get("open"), "consent first: the app counts in K"
-    assert c._consent_plan is not None and [i.store_id for i in c._consent_plan.need] == ["11"]
-    assert delisted_attempt.flag_for("11") == ""  # nothing before the choice
-    assert c.consent["attempt"] == "Если приложение окажется платным, Apple откажет в выдаче. Отказ лимит не тратит"
-    c.consentContinue()
+    assert not c.consent.get("open")
     assert delisted_attempt.flag_for("11") == "delisted"
     assert delisted_attempt.attempted("11")
     c.finder.openWith("банк")

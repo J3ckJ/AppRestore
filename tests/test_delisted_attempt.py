@@ -73,7 +73,7 @@ def test_plan_counts_flagged_unknown_price_in_k_known_paid_stays_paid() -> None:
     assert licenses.plan_licenses(items[:1], owned={"1"}, prices={}).k == 0  # on the account
 
 
-def test_picker_region_row_selectable_home_count_unchanged() -> None:
+def test_picker_region_row_is_counted_as_a_download_candidate() -> None:
     items = region.apply_statuses([item("1"), item("2"), item("3")], {"3": RegionStatus.NOT_IN_REGION})
     sel = selection.Selection(items)
     if "store:3" in {i.key for i in sel.selected_items()}:
@@ -81,13 +81,30 @@ def test_picker_region_row_selectable_home_count_unchanged() -> None:
     assert sel.toggle("store:3") and "3" in {i.store_id for i in sel.selected_items()}
     assert {r["key"]: r for r in sel.rail_rows()}[GROUP_REGION]["sub"] == "выбрано 1"
     v = home.home_view(home.HomeInput(connected=True, signed_in=True, items=items))
-    assert v["state"] == "region" and v["cta"] == "Вернуть 2"  # home keeps region apps out
+    assert v["state"] == "region" and v["cta"] == "Выбрать и вернуть"
+    assert v["number"] == 3  # no public card does not prove a download is unavailable
+    assert "Apple не отдаёт" not in v["lead"]
+
+
+def test_catalog_label_never_blocks_paid_purchase_or_local_ipa() -> None:
+    from dataclasses import replace
+    from apprestore_gui.ui4b.catalog import ACTION_IPA
+
+    app = region.apply_statuses([item(STORE)], {STORE: RegionStatus.NOT_IN_REGION})[0]
+    delisted_attempt.record_prices({STORE: 6.99})
+    assert not app.attemptable  # cannot request a new paid license
+    assert app.selectable  # existing license must still get a read-only download
+    assert licenses.plan_licenses([app], owned={STORE}, prices={STORE: 6.99}).rest == (app,)
+    assert replace(app, action=ACTION_IPA, ipa_path="saved.ipa").selectable
+    delisted_attempt.mark_attempted([STORE])
+    assert app.selectable  # a previous acquisition attempt is not a license verdict
 
 
 def test_gate_without_flag_still_refuses_unknown_price(tmp_path) -> None:
     tools = Tools()
-    with pytest.raises(LicenseDenied, match="не показывает его цену"):
+    with pytest.raises(LicenseDenied, match="не показывает его цену") as denied:
         run_with_free_license(STORE, Download(tools), tools=tools, lookup=Lookup(found=False), journal=tmp_path / "j")
+    assert "Страна аккаунта: US" in str(denied.value)
     assert tools.purchases == [] and not (tmp_path / "j").exists()
     flagged(RegionStatus.UNKNOWN)
     with pytest.raises(LicenseDenied):

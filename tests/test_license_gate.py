@@ -273,6 +273,21 @@ def test_other_errors_are_not_a_reason_to_purchase(tmp_path: Path) -> None:
     assert tools.purchases == [] and lookup.calls == []
 
 
+def test_temporary_unavailability_on_download_still_takes_a_free_license(tmp_path: Path) -> None:
+    tools = Tools()
+
+    def attempt() -> str:
+        if tools.licensed:
+            return "installed"
+        raise RuntimeError("store=1 without --purchase: item is temporarily unavailable")
+
+    assert (
+        run_with_free_license(STORE, attempt, tools=tools, lookup=Lookup(0), journal=tmp_path / "j.jsonl")
+        == "installed"
+    )
+    assert tools.purchases == [STORE]
+
+
 # ---------------------------------------------------------------- purchase_uncertain
 
 

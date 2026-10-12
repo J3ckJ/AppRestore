@@ -93,7 +93,8 @@ def region_items() -> list[RestoreItem]:
     return [
         RestoreItem(
             key=f"store:{sid}", name=name, short_name=short, developer=dev, group=GROUP_REGION,
-            action=ACTION_NONE, store_id=sid, size_bytes=size * MB, note=caption(RegionStatus.NOT_IN_REGION),
+            action=ACTION_STORE, store_id=sid, size_bytes=size * MB, note=caption(RegionStatus.NOT_IN_REGION),
+            store_status=RegionStatus.NOT_IN_REGION.value,
         )
         for sid, name, short, dev, size in REGION
     ]
@@ -161,7 +162,8 @@ class FakeSource(SourceBase):
         elif scenario == "region":
             alfa = removed_items()[3]
             self._items = removed_items()[:3] + [
-                replace(alfa, group=GROUP_REGION, action=ACTION_NONE, note=caption(RegionStatus.NOT_IN_REGION))
+                replace(alfa, group=GROUP_REGION, action=ACTION_STORE,
+                        store_status=RegionStatus.NOT_IN_REGION.value, note=caption(RegionStatus.NOT_IN_REGION))
             ]
             self._phone = phone
         elif scenario in ("many", "picker", "picker-search", "picker-nospace", "picker-offline"):

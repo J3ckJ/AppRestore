@@ -31,6 +31,7 @@ def build(settings: QSettings) -> tuple[QQmlApplicationEngine | None, list[Any]]
     FakeSource lives only in tests, ``selftest`` and ``scripts/ui4b_screenshots.py``."""
 
     from apprestore_gui.icons_cache import IconBook
+    from apprestore_gui.popular_apps import ICON_SITES
     from apprestore_gui.quick_session import QuickSession
     from apprestore_gui.ui4b.qt_bridge import Restore4b, SessionSource
     from apprestore_gui.ui4b.settings import ARCHIVE_DEFAULT, ARCHIVE_KEY
@@ -49,19 +50,24 @@ def build(settings: QSettings) -> tuple[QQmlApplicationEngine | None, list[Any]]
             settings.setValue(ONBOARDED_KEY, True)
 
     def queue_icons() -> None:
-        items: list[tuple[str, str, str]] = []
+        home: list[tuple[str, ...]] = []
         for item in controller.selection.items:
-            items.append((item.store_id, item.bundle_id, ""))
+            home.append((item.store_id, item.bundle_id, ""))
         # phone tiles too: artwork from icons_cache, otherwise a Theme.iconPlaceholder square
         for app in source.phone_apps():
-            items.append((app.store_id, app.bundle_id, ""))
-        # «Найти» rows («Часто ищут» included): Apple artwork via icons_cache (iTunes
-        # lookup → mzstatic.com, anonymous) or the placeholder; never a site mark
+            home.append((app.store_id, app.bundle_id, ""))
+        # «Найти», including «Часто ищут». Apple artwork first; a direct icon
+        # URL or the public site mark when the listing no longer has artwork.
+        # These go ahead of the home queue: the sheet is what the user is looking at.
+        find: list[tuple[str, ...]] = []
         if controller.finder.open:
             for row in controller.finder.view.get("rows", []):
-                if row.get("kind") == "app" and str(row.get("storeId") or "").isdigit():
-                    items.append((str(row["storeId"]), "", ""))
-        icon_book.consider_async(items)
+                store_id = str(row.get("storeId") or "")
+                if row.get("kind") == "app" and store_id.isdigit():
+                    find.append((store_id, "", ICON_SITES.get(store_id, ""), str(row.get("iconUrl") or "")))
+        if find:
+            icon_book.consider_async(find, front=True)
+        icon_book.consider_async(home)
 
     def open_doc(path: str) -> None:
         from PySide6.QtCore import QUrl
@@ -102,7 +108,8 @@ def build(settings: QSettings) -> tuple[QQmlApplicationEngine | None, list[Any]]
     return engine, keep
 
 
-def main() -> int:
+def main(*, diagnostic_targets: list[tuple[str, str]] | None = None, diagnostic_output: Path | None = None,
+         diagnostic_country: str = "", diagnostic_owned_control: bool = False) -> int:
     from PySide6.QtQuickControls2 import QQuickStyle
     from PySide6.QtWidgets import QApplication
 
@@ -116,6 +123,10 @@ def main() -> int:
     engine, keep = build(QSettings("AppRestore", "AppRestore"))
     if engine is None:
         return 1
+    if diagnostic_targets and diagnostic_output is not None:
+        from apprestore_gui.download_diagnostics import DownloadDiagnostics
+        keep.append(DownloadDiagnostics(keep[0], diagnostic_targets, diagnostic_output,
+                                        expected_country=diagnostic_country, owned_control=diagnostic_owned_control))
     app.exec()
     del keep
     return 0

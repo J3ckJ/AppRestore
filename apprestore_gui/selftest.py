@@ -67,8 +67,10 @@ def _usbmux_client() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         name = type(exc).__name__
         # Connection refused / no daemon / no devices: the client itself works.
-        return {"devices": [], "note": f"usbmux not reachable or no devices ({name}: {exc})"}
-    return {"devices": udids}
+        return {"device_count": 0, "note": f"usbmux not reachable or no devices ({name})"}
+    # Packaging prints this report in CI/diagnostics. Never include a connected
+    # phone's UDID just to prove that the client imports and enumerates devices.
+    return {"device_count": len(udids)}
 
 
 def _dispatcher() -> dict[str, Any]:
@@ -96,10 +98,30 @@ def _ipatool() -> dict[str, str]:
     path = resolve_tool("ipatool")
     if not path:
         raise FileNotFoundError("ipatool not found next to the app or on PATH")
-    ok, detail = AppRestoreTools()._ipatool_check(path)
+    tools = AppRestoreTools()
+    ok, detail = tools._ipatool_check(path)
     if not ok:
         raise RuntimeError(detail)
-    return {"path": path, "detail": detail}
+    capabilities = tools.ipatool_capabilities()
+    if capabilities is None or not capabilities.patched_build:
+        raise RuntimeError(
+            "bundled ipatool lacks AppRestore patches 0002/0003; "
+            f"capabilities={capabilities!r}"
+        )
+    # Patch 0001 cannot be proven from ``auth info`` before a user signs in.
+    # The Go symbol is deliberately kept as an offline binary marker by the
+    # reproducible builder; checking it here makes a wrong release impossible.
+    marker = b"appstore.CountryCodeFromStoreFront"
+    binary = Path(path).read_bytes()
+    if marker not in binary:
+        raise RuntimeError("bundled ipatool lacks AppRestore patch 0001 (account country)")
+    if b"catalog-independent redownload does not match the requested app" not in binary:
+        raise RuntimeError("bundled ipatool lacks AppRestore patch 0004 (delisted redownload)")
+    return {
+        "path": path,
+        "detail": detail,
+        "capabilities": "account-country,list-purchases-all,keychain-passphrase-stdin,delisted-redownload",
+    }
 
 
 def _gui_resources() -> dict[str, Any]:

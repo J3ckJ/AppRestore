@@ -494,11 +494,16 @@ def health_check() -> int:
         from PySide6 import QtWidgets  # noqa: F401
 
         from apprestore_core import __version__
+        from apprestore_core.frozen import is_frozen
         from apprestore_gui.theme import resources_dir
 
         if not (resources_dir() / "fonts").is_dir():
             return 3
-        if metadata.version("apprestore") != __version__:
+        # The updater only runs this contract against a frozen bundle.  An
+        # editable source checkout may legitimately have stale distribution
+        # metadata until the developer reinstalls it; that must not make the
+        # source application report itself as unhealthy.
+        if is_frozen() and metadata.version("apprestore") != __version__:
             return 4
     except Exception:  # noqa: BLE001
         return 2

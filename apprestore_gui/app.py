@@ -85,7 +85,25 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="with --self-test: also write the JSON report to this file",
     )
+    parser.add_argument("--diagnose-download", action="append", default=[], metavar="APP_ID[:VERSION_ID]",
+                        help="with --ui quick: inspect read-only download channels once after GUI unlock")
+    parser.add_argument("--diagnostics-output", default="build/diagnostics/download-probe.json",
+                        help="safe JSON report for --diagnose-download (no credentials or asset URLs)")
+    parser.add_argument("--diagnostics-country", default="", metavar="COUNTRY",
+                        help="wait for this account country; never change the storefront")
+    parser.add_argument("--diagnostics-owned-control", action="store_true",
+                        help="also inspect one app from this signed-in account's purchase history")
     args = parser.parse_args(raw)
+
+    if args.diagnose_download:
+        if args.ui != "quick" or args.demo or args.self_test or args.screenshot_dir:
+            parser.error("download diagnostics require the real --ui quick window")
+        from apprestore_gui.download_diagnostics import diagnostic_country, parse_targets
+        try:
+            diagnostic_targets = parse_targets(args.diagnose_download)
+            expected_country = diagnostic_country(args.diagnostics_country)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     if args.self_test:
         from pathlib import Path
@@ -98,6 +116,10 @@ def main(argv: list[str] | None = None) -> int:
         _release_windows_console()
         from apprestore_gui.ui4b.window import main as quick_4b_main
 
+        if args.diagnose_download:
+            from pathlib import Path
+            return quick_4b_main(diagnostic_targets=diagnostic_targets, diagnostic_output=Path(args.diagnostics_output),
+                                 diagnostic_country=expected_country, diagnostic_owned_control=args.diagnostics_owned_control)
         return quick_4b_main()
 
     if args.ui == "quick-legacy":

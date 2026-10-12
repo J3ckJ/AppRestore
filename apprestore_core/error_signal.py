@@ -29,14 +29,19 @@ _LICENSE = (
     "9610",
     "no purchase",
 )
+# Apple named the store country. 2059 / "temporarily unavailable" is a
+# different answer: the card is not being issued, often after it left the
+# public catalog. That must not be told as "wrong country".
 _REGION = (
-    "temporarily unavailable",
-    "2059",
     "another store",
     "другого магазина",
     "unavailable in this region",
     "unavailable for this apple id",
     "not available in your country",
+)
+_UNAVAILABLE = (
+    "temporarily unavailable",
+    "2059",
 )
 _AUTH = (
     "not authenticated",
@@ -71,6 +76,8 @@ def _rank(fragment: str) -> int:
         return 100
     if any(hint in low for hint in _REGION):
         return 90
+    if any(hint in low for hint in _UNAVAILABLE):
+        return 85
     if "failed to purchase" in low or "purchasing paid apps" in low:
         return 80
     if any(hint in low for hint in _LICENSE):
@@ -118,4 +125,9 @@ def is_license_missing(message: str) -> bool:
     low = _signal(raw).casefold()
     if any(hint in low for hint in _AUTH + _NETWORK + _DEVICE + _REGION):
         return False
-    return any(hint in low for hint in _LICENSE)
+    if any(hint in low for hint in _LICENSE):
+        return True
+    # A download that has not purchased yet. Apple often answers 2059
+    # instead of "license is required" when the card is gone from the
+    # public catalog. The gate still checks the price and the limits.
+    return any(hint in low for hint in _UNAVAILABLE)

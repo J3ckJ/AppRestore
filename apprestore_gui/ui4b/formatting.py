@@ -28,14 +28,19 @@ def apps_word(count: int) -> str:
 
 
 def missing_caption(count: int, noun: str = "iPhone") -> tuple[str, str]:
-    """Two lines next to the big number: «приложения / не хватает».
+    """Two lines next to the big number, with natural Russian agreement.
 
-    The one place for this wording. «1 приложение не хватает» is awkward
-    (genitive is needed); Ника suggests «пропало с iPhone» for 1, 21, 31…
-    The decision is Евгений's; until then the spec default stays.
+    «1 приложение пропало с iPhone», «4 приложения пропали с iPhone»,
+    «5 приложений не хватает».
     """
 
-    return apps_word(count), "не хватает"
+    word = apps_word(count)
+    form = plural(count, "one", "few", "many")
+    if form == "one":
+        return word, f"пропало с {noun}"
+    if form == "few":
+        return word, f"пропали с {noun}"
+    return word, "не хватает"
 
 
 def missing_a11y(count: int) -> str:

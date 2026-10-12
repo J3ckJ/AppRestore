@@ -1,0 +1,635 @@
+diff --git a/cmd/root.go b/cmd/root.go
+--- a/cmd/root.go
++++ b/cmd/root.go
+@@ -50,5 +50,6 @@
+ 	cmd.AddCommand(authCmd())
+ 	cmd.AddCommand(downloadCmd())
++	cmd.AddCommand(probeDownloadCmd())
+ 	cmd.AddCommand(listPurchasesCmd())
+ 	cmd.AddCommand(purchaseCmd())
+ 	cmd.AddCommand(searchCmd())
+diff --git a/pkg/appstore/appstore_probe_download.go b/pkg/appstore/appstore_probe_download.go
+new file mode 100644
+index 0000000..1faaf16
+--- /dev/null
++++ b/pkg/appstore/appstore_probe_download.go
+@@ -0,0 +1,323 @@
++package appstore
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	gohttp "net/http"
++	"net/url"
++	"regexp"
++	"strconv"
++	"strings"
++	"time"
++
++	"github.com/majd/ipatool/v2/pkg/http"
++)
++
++// ProbeDownload only requests product metadata. It never purchases, downloads
++// an asset, installs, logs in again, or returns URLs, cookies, SINF or identity.
++type DownloadProbeInput struct {
++	Context           context.Context
++	Account           Account
++	App               App
++	ExternalVersionID string
++}
++
++type DownloadProbeChannel struct {
++	Channel         string `json:"channel"`
++	Status          string `json:"status"`
++	HTTPStatus      int    `json:"httpStatus,omitempty"`
++	FailureType     string `json:"failureType,omitempty"`
++	VersionID       string `json:"versionId,omitempty"`
++	PackageOffered  bool   `json:"packageOffered"`
++	LicenseMaterial bool   `json:"licenseMaterial"`
++	IdentityMatches bool   `json:"identityMatches"`
++}
++
++type DownloadProbeOutput struct {
++	AppID    int64                  `json:"appId"`
++	Country  string                 `json:"country"`
++	Channels []DownloadProbeChannel `json:"channels"`
++}
++
++var probeStoreHost = regexp.MustCompile(`^(p[0-9]{1,5}-)?buy\.itunes\.apple\.com$`)
++
++var errProbeRedirect = errors.New("invalid diagnostic redirect")
++var errProbeRedirectLimit = errors.New("diagnostic redirect limit")
++
++// Follow only a bounded redirect to the exact same product operation on an
++// approved Apple Store host. Never allow a redirect to purchase or asset URLs.
++func (t *appstore) sendProbeProduct(req http.Request) (http.Result[downloadResult], error) {
++	for attempt := 0; attempt <= 3; attempt++ {
++		res, err := t.downloadClient.Send(req)
++		if err != nil || !http.IsAuthenticationRedirect(res.StatusCode) {
++			return res, err
++		}
++		if attempt == 3 {
++			return res, errProbeRedirectLimit
++		}
++		location, locErr := res.GetHeader("Location")
++		base, baseErr := url.Parse(req.URL)
++		next, nextErr := url.Parse(location)
++		if locErr != nil || baseErr != nil || nextErr != nil {
++			return res, errProbeRedirect
++		}
++		next = base.ResolveReference(next)
++		host := strings.ToLower(next.Host)
++		allowedHost := probeStoreHost.MatchString(host) || host == downloadDispatchDomain
++		if next.Scheme != "https" || !allowedHost || next.User != nil || next.Fragment != "" ||
++			next.Path != base.Path || next.RawPath != "" {
++			return res, errProbeRedirect
++		}
++		// Preserve the device GUID, not any new account/region/purchase params.
++		query := next.Query()
++		if len(query) > 1 || (len(query) == 1 && query.Get("guid") != base.Query().Get("guid")) {
++			return res, errProbeRedirect
++		}
++		if len(query) == 0 {
++			next.RawQuery = base.RawQuery
++		}
++		req.URL = next.String()
++	}
++	return http.Result[downloadResult]{}, errProbeRedirectLimit
++}
++
++func positiveProbeID(value string) bool {
++	if value == "" || len(value) > 18 {
++		return false
++	}
++	for _, char := range value {
++		if char < '0' || char > '9' {
++			return false
++		}
++	}
++	id, err := strconv.ParseInt(value, 10, 64)
++	return err == nil && id > 0
++}
++
++func safeProbeFailure(value string) string {
++	if len(value) > 12 {
++		return "unknown"
++	}
++	if _, err := strconv.ParseInt(value, 10, 32); err != nil {
++		return "unknown"
++	}
++	return value
++}
++
++func probeResponse(channel string, app App, version string, res http.Result[downloadResult], err error) DownloadProbeChannel {
++	out := DownloadProbeChannel{Channel: channel, Status: "network_or_protocol_error", HTTPStatus: res.StatusCode}
++	if err != nil {
++		if errors.Is(err, errProbeRedirect) {
++			out.Status = "invalid_redirect"
++		} else if errors.Is(err, errProbeRedirectLimit) {
++			out.Status = "redirect_limit"
++		}
++		var unexpected *http.UnexpectedResponseError
++		if errors.As(err, &unexpected) {
++			out.HTTPStatus = unexpected.StatusCode
++		}
++		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
++			out.Status = "cancelled_or_timeout"
++		}
++		return out // never print err: it may contain authenticated URLs or response data
++	}
++	if res.Data.FailureType != "" {
++		out.FailureType = safeProbeFailure(res.Data.FailureType)
++		switch res.Data.FailureType {
++		case FailureTypeLicenseNotFound:
++			out.Status = "license_required"
++		case FailureTypeTemporarilyUnavailable:
++			out.Status = "unavailable"
++		case FailureTypePasswordTokenExpired, FailureTypeSignInRequired, FailureTypeDeviceVerificationFailed:
++			out.Status = "authentication_required"
++		case "-128":
++			out.Status = "store_mismatch"
++		default:
++			out.Status = "apple_refused"
++		}
++		return out
++	}
++	if res.StatusCode != gohttp.StatusOK {
++		out.Status = "http_error"
++		return out
++	}
++	if res.Data.CustomerMessage != "" {
++		out.Status = "apple_refused"
++		return out
++	}
++	if len(res.Data.Items) == 0 {
++		out.Status = "empty"
++		return out
++	}
++	if len(res.Data.Items) != 1 {
++		out.Status = "invalid_response"
++		return out
++	}
++	item := res.Data.Items[0]
++	bundle, ok := item.Metadata["softwareVersionBundleId"].(string)
++	actualVersion := fmt.Sprint(item.Metadata["softwareVersionExternalIdentifier"])
++	if positiveProbeID(actualVersion) {
++		out.VersionID = actualVersion
++	}
++	out.IdentityMatches = fmt.Sprint(item.Metadata["itemId"]) == fmt.Sprint(app.ID) && ok && bundle != "" &&
++		(app.BundleID == "" || bundle == app.BundleID) && (version == "" || version == actualVersion)
++	if !out.IdentityMatches {
++		out.Status = "identity_mismatch"
++		return out
++	}
++	out.PackageOffered = item.URL != ""
++	for _, sinf := range item.Sinfs {
++		if len(sinf.Data) > 0 {
++			out.LicenseMaterial = true
++			break
++		}
++	}
++	out.Status = "metadata_only"
++	if out.PackageOffered && out.LicenseMaterial {
++		out.Status = "package_and_license_offered"
++	}
++	return out
++}
++
++func (t *appstore) probeVersion(ctx context.Context, acc Account, app App) (string, DownloadProbeChannel) {
++	result := DownloadProbeChannel{Channel: "version_lookup", Status: "version_unavailable"}
++	country, err := countryCodeFromStoreFront(acc.StoreFront)
++	if err != nil {
++		result.Status = "country_unavailable"
++		return "", result
++	}
++	metadataPlatform, _ := PlatformIPhone.metadataPlatform()
++	for _, catalog := range []string{metadataPlatform, "iphone", "ipad"} {
++		req := t.platformVersionLookupRequest(app.ID, country, catalog)
++		req.Context, req.NoRedirects = ctx, true
++		res, sendErr := t.platformClient.Send(req)
++		result.HTTPStatus = res.StatusCode
++		if sendErr != nil {
++			result.Status = "network_or_protocol_error"
++			return "", result
++		}
++		if res.StatusCode != gohttp.StatusOK {
++			result.Status = "http_error"
++			return "", result
++		}
++		item, ok := res.Data.Results[strconv.FormatInt(app.ID, 10)]
++		if !ok || len(item.Offers) == 0 {
++			continue
++		}
++		version := string(item.Offers[0].Version.ExternalID)
++		if version == "" {
++			version, err = externalVersionIDFromBuyParams(item.Offers[0].BuyParams)
++		}
++		if err != nil || !positiveProbeID(version) {
++			result.Status = "invalid_response"
++			return "", result
++		}
++		result.Status, result.VersionID = "version_found", version
++		return version, result
++	}
++	return "", result
++}
++
++func (t *appstore) ProbeDownload(input DownloadProbeInput) (DownloadProbeOutput, error) {
++	if input.App.ID <= 0 || (input.ExternalVersionID != "" && !positiveProbeID(input.ExternalVersionID)) {
++		return DownloadProbeOutput{}, errors.New("probe requires a positive app ID and an optional positive external version ID")
++	}
++	ctx := input.Context
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	ctx, cancel := context.WithTimeout(ctx, 75*time.Second)
++	defer cancel()
++	macAddr, err := t.machine.MacAddress()
++	if err != nil {
++		return DownloadProbeOutput{}, errors.New("failed to resolve diagnostic device identity")
++	}
++	guid := strings.ReplaceAll(strings.ToUpper(macAddr), ":", "")
++	country, _ := countryCodeFromStoreFront(input.Account.StoreFront)
++	out := DownloadProbeOutput{AppID: input.App.ID, Country: country, Channels: []DownloadProbeChannel{}}
++	acc, app := input.Account, input.App
++	request := func(channel string, endpoint downloadProductEndpoint, version string, legacy bool) {
++		if ctx.Err() != nil {
++			out.Channels = append(out.Channels, DownloadProbeChannel{Channel: channel, Status: "cancelled_or_timeout"})
++			return
++		}
++		req := t.downloadProductRequest(endpoint, acc, app, guid, version)
++		if legacy {
++			delete(req.Payload.(*http.XMLPayload).Content, "serialNumber")
++		}
++		req.Context, req.NoRedirects = ctx, true
++		res, sendErr := t.sendProbeProduct(req)
++		out.Channels = append(out.Channels, probeResponse(channel, app, version, res, sendErr))
++	}
++	// Compare the ordinary pod route with the pre-2.3 CLI's p25 route and
++	// payload. Account, DSID, cookies, device GUID and storefront stay unchanged.
++	request("volume_unpinned", t.volumeStoreEndpoint(acc), "", false)
++	legacy := downloadProductEndpoint{baseURL: "https://p25-buy.itunes.apple.com" + PrivateAppStoreAPIPathDownload, versionKey: downloadVersionKeyVolumeStore}
++	request("legacy_volume_unpinned", legacy, "", true)
++	bagReq := t.bagRequest(guid)
++	bagReq.Context, bagReq.NoRedirects = ctx, true
++	bagRes, bagErr := t.bagClient.Send(bagReq)
++	bag := bagRes.Data.URLBag
++	bagOK := bagErr == nil && bagRes.StatusCode == gohttp.StatusOK
++	endpoint := func(channel, raw, path, version string) {
++		if !bagOK || raw == "" {
++			out.Channels = append(out.Channels, DownloadProbeChannel{Channel: channel, Status: "endpoint_unavailable"})
++			return
++		}
++		ep, epErr := newDownloadEndpoint(raw, path)
++		if epErr != nil {
++			out.Channels = append(out.Channels, DownloadProbeChannel{Channel: channel, Status: "invalid_endpoint"})
++			return
++		}
++		request(channel, ep, version, false)
++	}
++	// Deliberately inspect each read-only channel even after a license refusal.
++	// A probe is not a fallback purchase and cannot grant access itself.
++	endpoint("redownload_unpinned", bag.RedownloadEndpoint, redownloadProductPath, "")
++	// ApplePackage/Asspp uses the same dispatch operation with the older,
++	// minimal payload (no serialNumber). Inspect it without changing account.
++	minimal, minimalErr := newDownloadEndpoint("https://"+downloadDispatchDomain+redownloadProductPath, redownloadProductPath)
++	if minimalErr != nil {
++		out.Channels = append(out.Channels, DownloadProbeChannel{Channel: "minimal_redownload_unpinned", Status: "invalid_endpoint"})
++	} else {
++		request("minimal_redownload_unpinned", minimal, "", true)
++	}
++	version := input.ExternalVersionID
++	if version == "" {
++		for _, result := range out.Channels {
++			if result.IdentityMatches && result.VersionID != "" {
++				version = result.VersionID
++				break
++			}
++		}
++	}
++	if version == "" && ctx.Err() == nil {
++		var lookup DownloadProbeChannel
++		version, lookup = t.probeVersion(ctx, acc, app)
++		out.Channels = append(out.Channels, lookup)
++	}
++	if version == "" {
++		for _, channel := range []string{"volume_pinned", "redownload_pinned", "update_pinned", "ent_pinned"} {
++			out.Channels = append(out.Channels, DownloadProbeChannel{Channel: channel, Status: "version_unavailable"})
++		}
++		return out, nil
++	}
++	request("volume_pinned", t.volumeStoreEndpoint(acc), version, false)
++	endpoint("redownload_pinned", bag.RedownloadEndpoint, redownloadProductPath, version)
++	endpoint("update_pinned", bag.UpdateEndpoint, updateProductPath, version)
++	if !bagOK || bag.EntDownloadEndpoint == "" || t.kbsyncGenerator == nil {
++		out.Channels = append(out.Channels, DownloadProbeChannel{Channel: "ent_pinned", Status: "endpoint_unavailable"})
++	} else if ep, epErr := newDownloadEndpoint(bag.EntDownloadEndpoint, entDownloadPath); epErr != nil {
++		out.Channels = append(out.Channels, DownloadProbeChannel{Channel: "ent_pinned", Status: "invalid_endpoint"})
++	} else {
++		res, sendErr := t.sendEntDownload(ctx, ep, acc, app, guid, version)
++		// sendEntDownload returns a safe-to-classify response along with Apple
++		// refusals; preserve its numeric code, but never its error/metadata dump.
++		if res.StatusCode != 0 && res.Data.FailureType != "" {
++			sendErr = nil
++		}
++		out.Channels = append(out.Channels, probeResponse("ent_pinned", app, version, res, sendErr))
++	}
++	return out, nil
++}
+diff --git a/pkg/appstore/appstore_probe_download_test.go b/pkg/appstore/appstore_probe_download_test.go
+new file mode 100644
+index 0000000..336748b
+--- /dev/null
++++ b/pkg/appstore/appstore_probe_download_test.go
+@@ -0,0 +1,184 @@
++package appstore
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"strings"
++	"testing"
++
++	"github.com/majd/ipatool/v2/pkg/http"
++	"github.com/majd/ipatool/v2/pkg/util/machine"
++	"go.uber.org/mock/gomock"
++)
++
++func TestProbeResponsePrivacyAndIdentity(t *testing.T) {
++	app := App{ID: 42, BundleID: "com.example.app"}
++	res := http.Result[downloadResult]{StatusCode: 200, Data: downloadResult{Items: []downloadItemResult{{URL: "https://private.example/asset?token=secret", Sinfs: []Sinf{{Data: []byte("secret license")}}, Metadata: map[string]interface{}{
++		"itemId": int64(42), "softwareVersionBundleId": app.BundleID, "softwareVersionExternalIdentifier": "123", "appleId": "private@example.com",
++	}}}}}
++	got := probeResponse("volume_pinned", app, "123", res, nil)
++	if got.Status != "package_and_license_offered" || !got.IdentityMatches || !got.PackageOffered || !got.LicenseMaterial {
++		t.Fatalf("unexpected result: %+v", got)
++	}
++	data, _ := json.Marshal(got)
++	for _, private := range []string{"secret", "private", "example.com", "Sinfs", "URL"} {
++		if strings.Contains(string(data), private) {
++			t.Fatal("private data leaked")
++		}
++	}
++	if got := probeResponse("volume_pinned", app, "124", res, nil); got.Status != "identity_mismatch" || got.PackageOffered {
++		t.Fatal("accepted another version")
++	}
++	res.Data.Items[0].Sinfs = []Sinf{{}}
++	if got := probeResponse("volume_pinned", app, "123", res, nil); got.LicenseMaterial || got.Status != "metadata_only" {
++		t.Fatal("empty SINF is not license material")
++	}
++	res.Data.Items[0].Metadata["itemId"] = 43
++	if got := probeResponse("redownload_unpinned", app, "", res, nil); got.Status != "identity_mismatch" || got.LicenseMaterial {
++		t.Fatal("accepted another app")
++	}
++}
++
++func TestProbeResponseRefusalsAndErrors(t *testing.T) {
++	for code, expected := range map[string]string{"9610": "license_required", "2059": "unavailable", "2042": "authentication_required", "-128": "store_mismatch", "2040": "apple_refused", "email=private@example.com": "apple_refused"} {
++		res := http.Result[downloadResult]{StatusCode: 200, Data: downloadResult{FailureType: code, CustomerMessage: "token=secret"}}
++		got := probeResponse("volume_unpinned", App{ID: 42}, "", res, nil)
++		if got.Status != expected || got.PackageOffered || got.LicenseMaterial {
++			t.Fatalf("wrong refusal for %s", code)
++		}
++		data, _ := json.Marshal(got)
++		if strings.Contains(string(data), "secret") || strings.Contains(string(data), "example.com") {
++			t.Fatal("private refusal leaked")
++		}
++	}
++	got := probeResponse("volume_unpinned", App{ID: 42}, "", http.Result[downloadResult]{}, &http.UnexpectedResponseError{StatusCode: 403, Snippet: "private token"})
++	if got.HTTPStatus != 403 || got.Status != "network_or_protocol_error" {
++		t.Fatal("lost HTTP status")
++	}
++	if got := probeResponse("volume_unpinned", App{ID: 42}, "", http.Result[downloadResult]{}, context.DeadlineExceeded); got.Status != "cancelled_or_timeout" {
++		t.Fatal("lost cancellation")
++	}
++}
++
++func TestProbeReadOnlyChannelsAfterLicenseRefusal(t *testing.T) {
++	ctrl := gomock.NewController(t)
++	download := http.NewMockClient[downloadResult](ctrl)
++	bag := http.NewMockClient[bagResult](ctrl)
++	mach := machine.NewMockMachine(ctrl)
++	store := &appstore{downloadClient: download, bagClient: bag, machine: mach}
++	app := App{ID: 42, BundleID: "com.example.app"}
++	acc := Account{Pod: "42", StoreFront: "143469-16,29", DirectoryServicesID: "private", PasswordToken: "secret"}
++	mach.EXPECT().MacAddress().Return("00:11:22:33:44:55", nil)
++	bag.EXPECT().Send(gomock.Any()).Return(http.Result[bagResult]{StatusCode: 200, Data: bagResult{URLBag: urlBag{RedownloadEndpoint: testRedownloadEndpoint, UpdateEndpoint: testUpdateEndpoint}}}, nil)
++	calls := 0
++	download.EXPECT().Send(gomock.Any()).DoAndReturn(func(req http.Request) (http.Result[downloadResult], error) {
++		calls++
++		if req.Context == nil || !req.NoRedirects {
++			t.Fatal("unbounded/redirecting probe")
++		}
++		payload := req.Payload.(*http.XMLPayload).Content
++		if payload["salableAdamId"] != app.ID || req.Headers["iCloud-DSID"] != acc.DirectoryServicesID {
++			t.Fatal("changed account or app")
++		}
++		for _, field := range []string{"price", "pricingParameters", "buyWithoutAuthorization"} {
++			if _, ok := payload[field]; ok {
++				t.Fatal("purchase payload in probe")
++			}
++		}
++		if strings.Contains(req.URL, "buyProduct") {
++			t.Fatal("purchase endpoint in probe")
++		}
++		if calls == 2 {
++			if !strings.HasPrefix(req.URL, "https://p25-buy.itunes.apple.com/") {
++				t.Fatal("not legacy route")
++			}
++			if _, ok := payload["serialNumber"]; ok {
++				t.Fatal("not legacy payload")
++			}
++		}
++		if calls == 3 {
++			return http.Result[downloadResult]{StatusCode: 200, Data: downloadResult{Items: []downloadItemResult{{URL: "private", Sinfs: []Sinf{{Data: []byte("private license")}}, Metadata: map[string]interface{}{"itemId": app.ID, "softwareVersionBundleId": app.BundleID, "softwareVersionExternalIdentifier": "123"}}}}}, nil
++		}
++		if calls == 4 {
++			if _, ok := payload["serialNumber"]; ok {
++				t.Fatal("not minimal dispatch payload")
++			}
++		}
++		return http.Result[downloadResult]{StatusCode: 200, Data: downloadResult{FailureType: FailureTypeLicenseNotFound}}, nil
++	}).Times(7)
++	out, err := store.ProbeDownload(DownloadProbeInput{Account: acc, App: app, ExternalVersionID: "123"})
++	if err != nil || out.Country != "RU" || len(out.Channels) != 8 {
++		t.Fatalf("unexpected probe: %+v %v", out, err)
++	}
++	if out.Channels[2].Status != "package_and_license_offered" {
++		t.Fatal("stopped at initial license refusal")
++	}
++}
++
++func TestProbeRejectsInvalidInputBeforeRequests(t *testing.T) {
++	for _, input := range []DownloadProbeInput{{}, {App: App{ID: 42}, ExternalVersionID: "email=private"}} {
++		if _, err := (&appstore{}).ProbeDownload(input); err == nil {
++			t.Fatal("accepted invalid input")
++		}
++	}
++	ctrl := gomock.NewController(t)
++	mach := machine.NewMockMachine(ctrl)
++	mach.EXPECT().MacAddress().Return("", errors.New("private mac address"))
++	_, err := (&appstore{machine: mach}).ProbeDownload(DownloadProbeInput{App: App{ID: 42}})
++	if err == nil || strings.Contains(err.Error(), "private") {
++		t.Fatal("leaked machine error")
++	}
++}
++
++func TestProbeFollowsOnlySameOperationAppleRedirect(t *testing.T) {
++	ctrl := gomock.NewController(t)
++	download := http.NewMockClient[downloadResult](ctrl)
++	store := &appstore{downloadClient: download}
++	req := store.downloadProductRequest(store.volumeStoreEndpoint(Account{}), Account{}, App{ID: 42}, "001122334455", "")
++	req.Context, req.NoRedirects = context.Background(), true
++	download.EXPECT().Send(gomock.Any()).Return(http.Result[downloadResult]{StatusCode: 302, Headers: map[string]string{"Location": "https://p42-buy.itunes.apple.com" + PrivateAppStoreAPIPathDownload}}, nil)
++	download.EXPECT().Send(gomock.Any()).DoAndReturn(func(next http.Request) (http.Result[downloadResult], error) {
++		if !next.NoRedirects || next.Method != http.MethodPOST || next.URL != "https://p42-buy.itunes.apple.com"+PrivateAppStoreAPIPathDownload+"?guid=001122334455" {
++			t.Fatal("lost POST, GUID or redirect restriction")
++		}
++		return http.Result[downloadResult]{StatusCode: 200, Data: downloadResult{FailureType: FailureTypeLicenseNotFound}}, nil
++	})
++	res, err := store.sendProbeProduct(req)
++	if err != nil || res.Data.FailureType != FailureTypeLicenseNotFound {
++		t.Fatal("did not follow approved Store pod redirect")
++	}
++}
++
++func TestProbeRejectsPrivatePurchaseAndRegionRedirects(t *testing.T) {
++	for _, location := range []string{
++		"https://private.example/asset?token=secret",
++		"http://p42-buy.itunes.apple.com" + PrivateAppStoreAPIPathDownload,
++		"https://buy.itunes.apple.com" + PrivateAppStoreAPIPathPurchase,
++		"https://buy.itunes.apple.com" + PrivateAppStoreAPIPathDownload + "?country=US",
++		"https://secret@buy.itunes.apple.com" + PrivateAppStoreAPIPathDownload,
++		"https://buy.itunes.apple.com:443" + PrivateAppStoreAPIPathDownload,
++	} {
++		ctrl := gomock.NewController(t)
++		download := http.NewMockClient[downloadResult](ctrl)
++		store := &appstore{downloadClient: download}
++		req := store.downloadProductRequest(store.volumeStoreEndpoint(Account{}), Account{}, App{ID: 42}, "001122334455", "")
++		download.EXPECT().Send(gomock.Any()).Return(http.Result[downloadResult]{StatusCode: 302, Headers: map[string]string{"Location": location}}, nil)
++		res, err := store.sendProbeProduct(req)
++		if !errors.Is(err, errProbeRedirect) || probeResponse("legacy_volume_unpinned", App{ID: 42}, "", res, err).Status != "invalid_redirect" {
++			t.Fatal("accepted unsafe redirect")
++		}
++	}
++}
++
++func TestProbeRedirectsAreBounded(t *testing.T) {
++	ctrl := gomock.NewController(t)
++	download := http.NewMockClient[downloadResult](ctrl)
++	store := &appstore{downloadClient: download}
++	req := store.downloadProductRequest(store.volumeStoreEndpoint(Account{}), Account{}, App{ID: 42}, "001122334455", "")
++	download.EXPECT().Send(gomock.Any()).Return(http.Result[downloadResult]{StatusCode: 302, Headers: map[string]string{"Location": "https://p42-buy.itunes.apple.com" + PrivateAppStoreAPIPathDownload}}, nil).Times(4)
++	_, err := store.sendProbeProduct(req)
++	if !errors.Is(err, errProbeRedirectLimit) {
++		t.Fatal("unbounded diagnostic redirect")
++	}
++}
+diff --git a/cmd/probe_download.go b/cmd/probe_download.go
+new file mode 100644
+index 0000000..e481872
+--- /dev/null
++++ b/cmd/probe_download.go
+@@ -0,0 +1,48 @@
++package cmd
++
++import (
++	"errors"
++
++	"github.com/majd/ipatool/v2/pkg/appstore"
++	"github.com/spf13/cobra"
++)
++
++type downloadProber interface {
++	ProbeDownload(appstore.DownloadProbeInput) (appstore.DownloadProbeOutput, error)
++}
++
++func probeDownloadCmd() *cobra.Command {
++	return probeDownloadCmdWithAppStore(func() appstore.AppStore { return dependencies.AppStore })
++}
++
++func probeDownloadCmdWithAppStore(factory func() appstore.AppStore) *cobra.Command {
++	var appID int64
++	var versionID string
++	cmd := &cobra.Command{
++		Use:   "probe-download",
++		Short: "Inspect download channels without purchase, asset download or private response data",
++		RunE: func(cmd *cobra.Command, args []string) error {
++			if appID <= 0 {
++				return errors.New("a positive app ID is required")
++			}
++			store := factory()
++			prober, ok := store.(downloadProber)
++			if !ok {
++				return errors.New("download probe is not supported by this build")
++			}
++			info, err := store.AccountInfo()
++			if err != nil {
++				return errors.New("cannot open saved account for download probe")
++			}
++			out, err := prober.ProbeDownload(appstore.DownloadProbeInput{Context: cmd.Context(), Account: info.Account, App: appstore.App{ID: appID}, ExternalVersionID: versionID})
++			if err != nil {
++				return err
++			}
++			dependencies.Logger.Log().Interface("probe", out).Bool("success", true).Send()
++			return nil
++		},
++	}
++	cmd.Flags().Int64VarP(&appID, "app-id", "i", 0, "App Store ID to inspect")
++	cmd.Flags().StringVar(&versionID, "external-version-id", "", "Known version ID to inspect without a public catalog card")
++	return cmd
++}
+diff --git a/cmd/probe_download_test.go b/cmd/probe_download_test.go
+new file mode 100644
+index 0000000..f86c6ef
+--- /dev/null
++++ b/cmd/probe_download_test.go
+@@ -0,0 +1,46 @@
++package cmd
++
++import (
++	"context"
++	"testing"
++
++	"github.com/majd/ipatool/v2/pkg/appstore"
++	"github.com/majd/ipatool/v2/pkg/log"
++)
++
++type fakeDownloadProber struct {
++	*fakePurchaseAppStore
++	input appstore.DownloadProbeInput
++}
++
++func (f *fakeDownloadProber) ProbeDownload(input appstore.DownloadProbeInput) (appstore.DownloadProbeOutput, error) {
++	f.input = input
++	return appstore.DownloadProbeOutput{AppID: input.App.ID}, nil
++}
++
++func TestProbeCommandDoesNotDownloadOrPurchase(t *testing.T) {
++	previous := dependencies
++	defer func() { dependencies = previous }()
++	dependencies.Logger = log.NewLogger(log.Args{})
++	store := &fakeDownloadProber{fakePurchaseAppStore: &fakePurchaseAppStore{}}
++	cmd := probeDownloadCmdWithAppStore(func() appstore.AppStore { return store })
++	cmd.SetContext(context.Background())
++	cmd.SetArgs([]string{"--app-id", "1117817509", "--external-version-id", "123"})
++	if err := cmd.Execute(); err != nil {
++		t.Fatal(err)
++	}
++	if store.input.App.ID != 1117817509 || store.input.ExternalVersionID != "123" || store.purchaseInput.App.ID != 0 || store.lookupCalls != 0 {
++		t.Fatal("wrong probe/purchase input")
++	}
++	if cmd.Flag("purchase") != nil {
++		t.Fatal("probe exposes purchase")
++	}
++}
++
++func TestProbeCommandRequiresIDBeforeAccount(t *testing.T) {
++	cmd := probeDownloadCmdWithAppStore(func() appstore.AppStore { t.Fatal("must not access account"); return nil })
++	cmd.SetArgs([]string{})
++	if err := cmd.Execute(); err == nil {
++		t.Fatal("accepted missing ID")
++	}
++}

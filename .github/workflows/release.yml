@@ -206,6 +206,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up pinned Go toolchain for AppRestore ipatool
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version: "1.25.0"
+          cache: false
+
       - name: Install locked runtime and pinned GUI build tools
         run: |
           python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements/build.lock
@@ -222,9 +228,11 @@ jobs:
       - name: Build, self-test and zip the GUI app
         shell: pwsh
         run: |
+          bash packaging/build-ipatool.sh windows-amd64
+          if ($LASTEXITCODE -ne 0) { throw "patched ipatool build failed" }
           pyinstaller packaging/apprestore-gui.spec --noconfirm --clean
           if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed" }
-          python packaging/package_gui.py --out gui-dist --expect-version "${{ needs.validate-tag.outputs.version }}"
+          python packaging/package_gui.py --out gui-dist --expect-version "${{ needs.validate-tag.outputs.version }}" --ipatool-archive dist/ipatool/ipatool-2.6.0-windows-amd64.tar.gz
           if ($LASTEXITCODE -ne 0) { throw "GUI packaging failed" }
 
       - name: Upload GUI asset
@@ -258,6 +266,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up pinned Go toolchain for AppRestore ipatool
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version: "1.25.0"
+          cache: false
+
       - name: Install locked runtime and pinned GUI build tools
         run: |
           python -m pip install --require-hashes --only-binary=:all: --no-deps -r requirements/build.lock
@@ -274,8 +288,15 @@ jobs:
       - name: Build, self-test and zip the GUI app
         run: |
           set -euo pipefail
+          case "$(uname -m)" in
+            arm64) ipatool_asset="macos-arm64" ;;
+            x86_64) ipatool_asset="macos-amd64" ;;
+            *) echo "unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          bash packaging/build-ipatool.sh "$ipatool_asset"
           pyinstaller packaging/apprestore-gui.spec --noconfirm --clean
-          python packaging/package_gui.py --out gui-dist --expect-version "${{ needs.validate-tag.outputs.version }}"
+          python packaging/package_gui.py --out gui-dist --expect-version "${{ needs.validate-tag.outputs.version }}" \
+            --ipatool-archive "dist/ipatool/ipatool-2.6.0-${ipatool_asset}.tar.gz"
 
       - name: Upload GUI asset
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -240,7 +240,7 @@ class FindState:
 
     # -- rows ---------------------------------------------------------------------------
 
-    def _action(self, sid: str) -> dict[str, object]:
+    def _action(self, sid: str, *, shelf: bool = False) -> dict[str, object]:
         none = {"action": "", "actionNote": "", "actionLink": ""}
         if sid in self.rejected:
             return {**none, "actionNote": APPLE_REJECTED_NOTE}
@@ -249,7 +249,11 @@ class FindState:
         if self.component_missing:
             return {**none, "actionNote": COMPONENT_NOTE, "actionLink": HOWTO_LINK}
         if not self.offers_done and sid not in self.offers:
-            return none  # price not known yet: nothing for a moment
+            # «Часто ищут» is already vetted: the button is shown at once.
+            # A later lookup replaces it when the price is known and not free.
+            if shelf:
+                return {**none, "action": INSTALL}
+            return none
         price = (self.offers.get(sid) or {}).get("price")
         if may_offer(sid, self.statuses.get(sid), price):
             return {**none, "action": INSTALL}  # region_probe flag: consent (K) → gate
@@ -260,12 +264,12 @@ class FindState:
         return {**none, "actionNote": PAID_NOTE}
 
     def _row(self, sid: str, name: str, developer: str, *, group: str, tag: str = "",
-             line3: str = "", icon_url: str = "") -> dict[str, object]:
+             line3: str = "", icon_url: str = "", shelf: bool = False) -> dict[str, object]:
         dev = developer or str((self.offers.get(sid) or {}).get("developer") or "")
         return {
             "kind": "app", "group": group, "storeId": sid, "name": name, "developer": dev,
             "tag": tag, "line3": line3, "iconUrl": icon_url, "enabled": not self.offline,
-            **self._action(sid),
+            **self._action(sid, shelf=shelf),
         }
 
     def _line3(self, hit: Hit) -> str:
@@ -282,7 +286,7 @@ class FindState:
     def rows(self) -> list[dict[str, object]]:
         if not self.query.strip():
             # 02-picker §6b line 232: the vetted «Часто ищут» list, rows like results
-            rows = [self._row(r["storeId"], r["name"], r["developer"], group=GROUP_FREQUENT)
+            rows = [self._row(r["storeId"], r["name"], r["developer"], group=GROUP_FREQUENT, shelf=True)
                     for r in self.frequent]
             if not rows:
                 return []

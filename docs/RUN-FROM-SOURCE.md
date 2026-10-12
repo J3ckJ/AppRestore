@@ -64,7 +64,7 @@ python -m pip install -r requirements\gui-build.txt   # PySide6 6.9.3 и pywinpt
 `packaging/patches/` (каждый закреплён SHA-256 в `packaging/build-ipatool.sh`;
 0003 — версия v2, `76fdf028…`). Подробности — `packaging/BUILD-ipatool.md`.
 
-Опубликованная сборка `ipatool-2.6.0-redirect`, которую скачивает
+Старая совместимая сборка `ipatool-2.6.0-redirect`, которую ещё умеет скачивать
 `packaging/fetch_ipatool.py`, собрана **до** патчей: в её `ipatool.exe` нет
 маркеров 0001, 0002 и 0003 (проверено). Для 4b она не годится.
 
@@ -80,17 +80,18 @@ macOS (нужны git и Xcode Command Line Tools — для cgo нужен clan
 bash packaging/bootstrap-ipatool.sh            # архитектура этого Mac
 ```
 
-Windows (PowerShell, нужен git):
+Windows (Git Bash и установленный Go 1.25.0):
 
-```powershell
-powershell -ExecutionPolicy Bypass -File packaging\bootstrap-ipatool.ps1
+```bash
+bash packaging/build-ipatool.sh windows-amd64
 ```
 
 Честно о проверке: скрипт `.sh` прогнан на Linux (linux-amd64): его
 `bin/ipatool` совпал байт в байт с результатом `build-ipatool.sh linux-amd64`
 (SHA-256 `e58be6376923af0c170a13e15d4b117f9db2d4c60f3894a0b42b03b38c454436`).
-Ветку для macOS и запуск `.ps1` на настоящем Windows ещё никто не проверял.
-Сборка воспроизводимая: `packaging/build-ipatool.sh windows-amd64` дважды дал
+Ветку для macOS ещё не проверяли. Прежний `.ps1` удалён; актуальная Windows-сборка
+через Git Bash проверена 12.10.2026, включает 0004 (повторная загрузка без карточки).
+До добавления 0004 сборка `packaging/build-ipatool.sh windows-amd64` дважды дала
 один и тот же архив, SHA-256 `9c5bb265727abf014cb1e64f29ab1f17afd86025edfdaf21adca522c5596c7a2`
 (`ipatool.exe` внутри — `b5932fae9a030f3fec5c2de670f8716bdbf09f05c986c398bf512fdf81ff0f2f`).
 Под macOS кросс-сборка с Linux невозможна: ipatool для macOS собирается с cgo

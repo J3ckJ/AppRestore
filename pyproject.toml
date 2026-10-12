@@ -30,4 +30,11 @@ gui = [
 ]
 
 [tool.setuptools.package-data]
-apprestore_gui = ["resources/**/*", "ui4b/data/*.json"]
+apprestore_gui = ["resources/**/*", "ui4b/data/*.json", "qml/**/*.qml", "qml4b/**/*"]
+
+[tool.pytest.ini_options]
+# pymobiledevice3 currently brings in xonsh, whose third-party pytest plugin
+# tries to create an interactive Windows console during collection.  AppRestore
+# does not use that plugin; disabling it keeps `python -m pytest` reliable in
+# GUI terminals and CI while leaving the project's own plugins available.
+addopts = "-p no:xonsh"

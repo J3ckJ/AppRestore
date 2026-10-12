@@ -44,10 +44,34 @@ from apprestore_gui.ui4b.licenses import (
 )
 from apprestore_gui.ui4b.licenses import candidates as license_candidates
 from apprestore_gui.ui4b.home import STATE_APPLE_REJECTED, STATE_DONE, STATE_STORE_MISMATCH, HomeInput, PhoneApp, home_view, link_action
+from apprestore_gui.ui4b.journal import journal_view
 from apprestore_gui.ui4b.region import apply_statuses, load_classifier
 from apprestore_gui.ui4b.region import classify as classify_region_ids
 from apprestore_gui.ui4b import component
 from apprestore_gui.ui4b.onboarding import Onboarding
+
+
+def _rows(value: object) -> list[dict[str, object]]:
+    """A Qt list property, or nothing when the session does not have one."""
+
+    if callable(value) or not value:
+        return []
+    try:
+        items = list(value)  # type: ignore[arg-type]
+    except TypeError:
+        return []
+    return [dict(row) for row in items if isinstance(row, dict)]
+
+
+def _active_device_name(rows: list[dict[str, object]]) -> str:
+    """The selected phone's name, once there is more than one phone to choose."""
+
+    if len(rows) < 2:
+        return ""
+    for row in rows:
+        if row.get("active"):
+            return str(row.get("name") or "").strip()
+    return ""
 from apprestore_core.license_gate import is_store_mismatch
 from apprestore_core.license_guard import DEFAULT_TOTAL_LIMIT
 from apprestore_gui.ui4b.queue import LIMIT_ERROR
@@ -57,7 +81,10 @@ from apprestore_gui.ui4b.search import SEARCH_HINT, search_store
 from apprestore_gui.ui4b.selection import CHECK_ON, OFFLINE_FOOTER, Selection
 from apprestore_core.delisted_attempt import on_account as attempt_account
 from apprestore_core.delisted_attempt import reset_session as reset_attempt_session
+from apprestore_core.catalog import lookup_itunes_offers
+from apprestore_core.delisted_attempt import is_attempt_status, may_offer, status_value
 from apprestore_core.delisted_attempt import mark_attempted, record_prices, record_region_probe
+from apprestore_gui.ui4b.find import offers_from
 from apprestore_gui.ui4b.find_qt import Find4b
 from apprestore_gui.ui4b.network import REPROBE_S, any_host_answers, is_offline
 from apprestore_gui.ui4b.names import builtin_names, purchase_names
@@ -142,6 +169,10 @@ class SourceBase(QObject):
     restoreSettled = Signal(str)
     installSettled = Signal(str, bool, str)
     copySettled = Signal(str, bool, str)
+    #: The saved ipatool session is encrypted with a separate local password.
+    keychainPrompt = Signal(str)
+    #: This phone's saved Apple ID has no open session: ask for that login.
+    loginPrompt = Signal(str)
 
     connected = False
     loading = False
@@ -283,12 +314,27 @@ class SourceBase(QObject):
     def submit_code(self, code: str) -> None:
         pass
 
+    def unlock(self, passphrase: str) -> None:
+        pass
+
     def cancel_login(self) -> None:
         pass
 
     def sign_out(self) -> None:
         """QuickSession.signOut → AppRestoreService.sign_out (revoke, session copy
         and purchases-cache.json deleted; license journal and icon cache stay)."""
+
+    def devices(self) -> list[dict[str, object]]:
+        return []
+
+    def accounts(self) -> list[dict[str, object]]:
+        return []
+
+    def select_device(self, udid: str) -> None:
+        """Switch the USB device. The bound Apple ID is opened with that phone."""
+
+    def use_account(self, email: str) -> None:
+        """Open a saved Apple ID session, or ask for its login."""
 
 
 class SessionSource(SourceBase):
@@ -315,6 +361,10 @@ class SessionSource(SourceBase):
         session.restoreSettled.connect(self.restoreSettled)
         session.installSettled.connect(self.installSettled)
         session.copySettled.connect(self.copySettled)
+        if hasattr(session, "keychainPrompt"):
+            session.keychainPrompt.connect(self.keychainPrompt)
+        if hasattr(session, "loginPrompt"):
+            session.loginPrompt.connect(self.loginPrompt)
         if hasattr(session, "filesChanged"):
             session.filesChanged.connect(self.changed)  # phoneApps (installed apps, pymobiledevice3)
         if hasattr(session, "filesNoteChanged"):
@@ -322,6 +372,8 @@ class SessionSource(SourceBase):
         if hasattr(session, "copySettled"):
             session.copySettled.connect(lambda *_a: self.load_library())  # a saved copy → re-scan
         self._phone_udid = ""
+        self._devices: list[dict[str, object]] = []
+        self._accounts: list[dict[str, object]] = []
         self._statuses: dict[str, object] = {}
         self._builtin_names: dict[str, str] | None = None
         #: app_names.display_names in the background (names_lookup); results → changed
@@ -352,6 +404,8 @@ class SessionSource(SourceBase):
         self.relogin = bool(getattr(s, "sessionRelogin", False)) and not is_store_mismatch(note)
         self.auth_status = str(getattr(s, "authStatus", "") or "")
         self.account_email = str(getattr(s, "accountEmail", "") or getattr(s, "boundEmail", "") or "")
+        self._devices = _rows(getattr(s, "devices", None))
+        self._accounts = _rows(getattr(s, "accounts", None))
         # «offline» from the session probe is not «no internet» by itself (no account,
         # an unfinished sign-in, an unknown ipatool answer…): ask public hosts too
         state = str(getattr(s, "sessionState", "") or "")
@@ -376,6 +430,22 @@ class SessionSource(SourceBase):
             self._space_udid = ""
             self._space = UNKNOWN_SPACE
         self.changed.emit()
+
+    def devices(self) -> list[dict[str, object]]:
+        return list(self._devices)
+
+    def accounts(self) -> list[dict[str, object]]:
+        return list(self._accounts)
+
+    def select_device(self, udid: str) -> None:
+        choose = getattr(self.session, "selectDevice", None)
+        if callable(choose):
+            choose(udid)
+
+    def use_account(self, email: str) -> None:
+        choose = getattr(self.session, "useAccount", None)
+        if callable(choose):
+            choose(email)
 
     def _load_missing(self, udid: str) -> None:
         try:
@@ -605,19 +675,13 @@ class SessionSource(SourceBase):
             return ""
 
     def store_offers(self, store_ids: list[str]) -> dict[str, dict[str, object]]:
-        from apprestore_core.license_gate import lookup_offer
-        from apprestore_gui.ui4b.find import offers_from
-
         country = self._account_country()
-        found: dict[str, dict[str, object] | None] = {}
-        for store_id in store_ids:
-            offer = None
-            if country and str(store_id).isdigit():
-                try:
-                    offer = lookup_offer(str(store_id), (country,))
-                except Exception:  # noqa: BLE001 - unknown price: «Не удалось проверить»
-                    offer = None
-            found[str(store_id)] = offer
+        found: dict[str, dict[str, object] | None] = {str(store_id): None for store_id in store_ids}
+        if country:
+            try:
+                found.update(lookup_itunes_offers([str(store_id) for store_id in store_ids], country))
+            except Exception:  # noqa: BLE001 - unknown price: «Не удалось проверить»
+                pass
         return offers_from(found)
 
     def store_statuses(self, store_ids: list[str]) -> dict[str, object]:
@@ -674,6 +738,9 @@ class SessionSource(SourceBase):
 
     def submit_code(self, code: str) -> None:
         self.session.submitCode(code)
+
+    def unlock(self, passphrase: str) -> None:
+        self.session.unlock(passphrase)
 
     def cancel_login(self) -> None:
         if hasattr(self.session, "cancelLogin"):
@@ -738,6 +805,10 @@ class Restore4b(QObject):
         self._revision = 0
         self._scan_started = False
         self._signin_open = False
+        self._keychain_mode = False
+        self._forced_email = ""
+        self._adding_account = False
+        self._journal_open = False
         self._consent: dict[str, object] = {}
         self._limit_note: tuple[object, object] = (None, ("", False))
         self._found: list[dict[str, str]] = []
@@ -754,6 +825,8 @@ class Restore4b(QObject):
         source.restoreSettled.connect(self.flow.on_restore_settled)
         source.installSettled.connect(self.flow.on_install_settled)
         source.copySettled.connect(self._on_copy_settled)
+        source.keychainPrompt.connect(self.openKeychain)
+        source.loginPrompt.connect(self.openLoginFor)
         self._spaceChecked.connect(self._start_after_space)
         self._storeFound.connect(self._on_found)
         self._on_source()
@@ -765,8 +838,14 @@ class Restore4b(QObject):
         self.flow.observe_account(src.signed_in, src.auth_phase, src.relogin, src.account_email)
         if src.signed_in and src.account_email:
             attempt_account(src.account_email)  # another Apple ID → new §1.14 session
-        if self._signin_open and src.signed_in and src.auth_phase == "in" and not src.relogin:
+        if self._signin_open and not self._adding_account and src.signed_in and src.auth_phase == "in" and not src.relogin:
             self._signin_open = False
+            self._keychain_mode = False
+            self._forced_email = ""
+        elif self._keychain_mode and src.auth_phase == "out":
+            # A passphrase can be accepted even when there is no saved Apple ID
+            # session yet.  Keep the sheet open, but move on to Apple ID login.
+            self._keychain_mode = False
         self._patches_missing = tuple(self.source.missing_patches()) or (
             ("?",) if self.flow.component_blocked else ()
         )
@@ -855,11 +934,28 @@ class Restore4b(QObject):
     @Property("QVariantMap", notify=changed)
     def home(self) -> dict[str, object]:
         view = dict(self._home)
+        label = _active_device_name(self.source.devices())
+        if label:
+            view["pill"] = label
         if self._step == 1:
             view["tiles"] = illustration_tiles()
         elif self._step == 4 and not self.scan.done:
             view["tiles"] = scanning_tiles(list(view.get("tiles") or []), self.scan.fraction)
         return view
+
+    @Property("QVariantList", notify=changed)
+    def devices(self) -> list[dict[str, object]]:
+        return self.source.devices()
+
+    @Slot(str)
+    def selectDevice(self, udid: str) -> None:
+        self.source.select_device(udid)
+
+    @Slot(str)
+    def useAccount(self, email: str) -> None:
+        if self.flow.running:
+            return
+        self.source.use_account(email)
 
     @Property(str, notify=changed)
     def screen(self) -> str:
@@ -1086,15 +1182,11 @@ class Restore4b(QObject):
             self.flow.dismiss_store_problem()  # «На главный»
         elif state == "signin":
             self.openSignIn()
-        elif state in ("many",):
+        elif state in ("many", "missing", "region", "needs_component"):
+            # Restoring is always an explicit two-step action.  In particular,
+            # do not auto-select every offloaded app on a small list or while an
+            # old ipatool limits the store-backed rows.
             self.openPicker()
-        elif state in ("missing", "region", "needs_component"):
-            self.selection.set_rail("all")
-            self.selection.set_query("")
-            for item in self.selection.items:
-                # the home button keeps its count: region apps only from «Что вернуть»
-                self.selection.set_selected(item.key, item.selectable and item.group != GROUP_REGION)
-            self.restoreSelected()
 
     @Slot()
     def restoreSelected(self) -> None:
@@ -1126,7 +1218,43 @@ class Restore4b(QObject):
             record_prices(prices)
         except Exception:  # noqa: BLE001 - unknown: the gate decides per app
             owned, prices = None, {}
+        else:
+            try:
+                chosen = self._with_region_status(chosen, owned, prices)
+            except Exception:  # noqa: BLE001 - no flag: the gate refuses an unknown price
+                pass
         self._spaceChecked.emit((space, chosen, owned, prices))
+
+    def _with_region_status(
+        self,
+        chosen: list[RestoreItem],
+        owned: object,
+        prices: dict[str, object],
+    ) -> list[RestoreItem]:
+        """One region_probe for the apps whose price is still unknown.
+
+        «Поставить» on «Часто ищут» no longer waits for all 33 lookups. The
+        click classifies just that id, and a delisted card still goes through
+        the license gate.
+        """
+
+        owned_ids = set() if owned is None else {str(sid) for sid in owned}  # type: ignore[union-attr]
+        pending = [
+            item for item in chosen
+            if item.action == ACTION_STORE and item.store_id and not item.store_status
+            and item.store_id not in owned_ids and prices.get(item.store_id) is None
+        ]
+        if not pending:
+            return chosen
+        statuses = self.source.store_statuses([item.store_id for item in pending])
+        updated: list[RestoreItem] = []
+        for item in chosen:
+            status = statuses.get(item.store_id) if item in pending else None
+            if status is not None and is_attempt_status(status) and may_offer(item.store_id, status, None):
+                updated.append(replace(item, store_status=status_value(status)))
+            else:
+                updated.append(item)
+        return updated
 
     def _start_after_space(self, payload: object) -> None:
         self._checking_space = False
@@ -1151,12 +1279,9 @@ class Restore4b(QObject):
             self._refresh()
             return
         plan = plan_licenses(chosen, owned, prices)
-        if plan.k == 0:
-            self._begin(plan, CONTINUE, fresh)
-            return
-        self._consent_plan = plan
-        self._consent_space = fresh
-        self._show_consent()
+        # The license sheet is not shown. A free license still goes through
+        # the gate (price, limits, journal). Paid apps stay out of the run.
+        self._begin(plan, CONTINUE, fresh)
 
     def _show_consent(self) -> None:
         # Read the journal every time the sheet is shown (another process may
@@ -1242,9 +1367,39 @@ class Restore4b(QObject):
 
     @Slot()
     def openSignIn(self) -> None:
+        self._adding_account = False
+        self._forced_email = ""
         self._signin_open = True
+        self._keychain_mode = self.source.auth_phase in ("locked", "need_passphrase")
         self.signInRequested.emit()
         self._refresh()
+
+    @Slot(str)
+    def openKeychain(self, _email: str = "") -> None:
+        """Show the local keychain password field when QuickSession asks for it."""
+
+        self._account_open = False
+        self._adding_account = False
+        self._signin_open = True
+        self._keychain_mode = True
+        self._refresh()
+
+    @Slot(str)
+    def openLoginFor(self, email: str) -> None:
+        """Sign-in for one saved Apple ID. The address is filled in; nothing starts."""
+
+        self._forced_email = str(email or "").strip()
+        self._adding_account = True
+        self._account_open = False
+        self._signout_confirm = False
+        self._signin_open = True
+        self._keychain_mode = False
+        self._refresh()
+
+    @Slot()
+    def addAccount(self) -> None:
+        if not self.flow.running:
+            self.openLoginFor("")
 
     pickIpaRequested = Signal()
     #: «Как установить»: a local file (BUILD-ipatool.md / RUN-FROM-SOURCE.md) to open.
@@ -1281,6 +1436,24 @@ class Restore4b(QObject):
         elif action == "details":
             self._component_details = not self._component_details
             self._refresh()
+        elif action == "journal":
+            self.openJournal()
+
+    @Property("QVariantMap", notify=changed)
+    def journal(self) -> dict[str, object]:
+        noun = self.source.noun or "iPhone"
+        rows = self.flow.queue.rows(noun) if self._journal_open else []
+        return journal_view(open_=self._journal_open, queue_rows=rows)
+
+    @Slot()
+    def openJournal(self) -> None:
+        self._journal_open = True
+        self._refresh()
+
+    @Slot()
+    def closeJournal(self) -> None:
+        self._journal_open = False
+        self._refresh()
 
     # -- «Файлы IPA» (0.3.2's library, 4b sheet) --------------------------------------
 
@@ -1384,13 +1557,16 @@ class Restore4b(QObject):
     def cancelLogin(self) -> None:
         """«Отмена»/Esc in the sheet: stop a running sign-in, then close the sheet."""
 
-        if self.source.auth_phase in ("running", "need_code", "checking_code"):
+        if self.source.auth_phase in ("running", "need_code", "checking_code", "need_passphrase"):
             self.source.cancel_login()
         self.closeSignIn()
 
     @Slot()
     def closeSignIn(self) -> None:
+        self._adding_account = False
         self._signin_open = False
+        self._keychain_mode = False
+        self._forced_email = ""
         self._refresh()
 
     # -- «Найти» and «Настройки» (02-picker §6b) ------------------------------------
@@ -1502,6 +1678,7 @@ class Restore4b(QObject):
             confirm=self._signout_confirm,
             email=self.source.account_email,
             running=self.flow.running,
+            accounts=self.source.accounts(),
         )
 
     @Property("QVariantMap", notify=changed)
@@ -1509,20 +1686,32 @@ class Restore4b(QObject):
         """Sign-in sheet: phase "out" (email + password) or "need_code" (2FA).
 
         After a successful sign-in the sheet closes and the home screen shows
-        «Вернуть» again; nothing restarts by itself.
+        «Выбрать и вернуть» again; nothing restarts by itself.
         """
 
         return signin_view(
             open_=self._signin_open,
-            phase=self.source.auth_phase or "out",
-            status=self.source.auth_status,
-            email=self.source.account_email,
-            relogin=bool(self.source.relogin or self.flow.needs_signin or self.flow._relogin_for_store is not None),
+            phase="out" if self._adding_account else self.source.auth_phase or "out",
+            status="" if self._adding_account else self.source.auth_status,
+            email=self._forced_email if self._adding_account else self._forced_email or self.source.account_email,
+            relogin=not self._adding_account and bool(self.source.relogin or self.flow.needs_signin or self.flow._relogin_for_store is not None),
+            keychain=self._keychain_mode,
         )
 
     @Slot(str, str)
     def login(self, email: str, password: str) -> None:
+        self._keychain_mode = False
+        self._adding_account = False
         self.source.login(email, password)
+
+    @Slot(str)
+    def unlock(self, passphrase: str) -> None:
+        """Forward the separate local keychain password; never store it in QML."""
+
+        if not passphrase:
+            return
+        self._keychain_mode = True
+        self.source.unlock(passphrase)
 
     @Slot(str, result=str)
     def codeDigits(self, text: str) -> str:
@@ -1543,7 +1732,9 @@ class Restore4b(QObject):
 WRONG_PASSWORD_PREFIX = "Apple не приняла пароль"
 
 
-def signin_view(*, open_: bool, phase: str, status: str, email: str, relogin: bool) -> dict[str, object]:
+def signin_view(
+    *, open_: bool, phase: str, status: str, email: str, relogin: bool, keychain: bool = False
+) -> dict[str, object]:
     """Texts of the sign-in sheet (Ника, часть 4 §2). Pure: tested without Qt."""
 
     from apprestore_gui.auth_pty import CODE_HINT, WRONG_CODE_TEXT
@@ -1554,7 +1745,13 @@ def signin_view(*, open_: bool, phase: str, status: str, email: str, relogin: bo
     code = phase == "need_code" or checking
     wrong_code = status == WRONG_CODE_TEXT  # auth-code-wrong → the password form
     error = status if (status.startswith(WRONG_PASSWORD_PREFIX) or wrong_code) else ""
-    if code:
+    if keychain:
+        title = "Открыть связку ключей"
+        sub = (
+            "Введите локальный пароль связки. Это <b>не пароль Apple ID</b>: "
+            "им зашифрована сохранённая сессия ipatool на этом компьютере."
+        )
+    elif code:
         title = "Код подтверждения"
         sub = "Apple отправила код на ваши устройства: iPhone, iPad или Mac. Введите 6 цифр."
     elif relogin:
@@ -1568,6 +1765,7 @@ def signin_view(*, open_: bool, phase: str, status: str, email: str, relogin: bo
         "phase": phase,
         "busy": phase == "running" or checking,
         "code": code,
+        "keychain": bool(keychain),
         "status": "" if (error or code) else status,
         "error": error,
         "email": email,
@@ -1579,21 +1777,46 @@ def signin_view(*, open_: bool, phase: str, status: str, email: str, relogin: bo
         # the same quiet hint under the field and under the auth-code-wrong error
         "hint": CODE_HINT if (code or wrong_code) else "",
         "codePlaceholder": "Код из 6 цифр",  # Windows: one plain field instead of cells
-        "fine": "Пароль уходит только в Apple. Программа его не хранит; вход остаётся на этом компьютере, в связке ключей.",
-        "go": ("Проверяем…" if checking else "Подтвердить") if code else "Войти",
+        "fine": (
+            "Пароль связки передаётся ipatool через закрытый stdin-канал и хранится только в памяти до закрытия AppRestore."
+            if keychain else
+            "Пароль уходит только в Apple. Программа его не хранит; вход остаётся на этом компьютере, в связке ключей."
+        ),
+        "go": (
+            "Открываем…" if phase == "running" else "Открыть"
+        ) if keychain else (("Проверяем…" if checking else "Подтвердить") if code else "Войти"),
     }
 
 
-def account_view(*, open_: bool, confirm: bool, email: str, running: bool) -> dict[str, object]:
+def account_view(
+    *, open_: bool, confirm: bool, email: str, running: bool,
+    accounts: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     """«Apple ID» sheet and the «Выйти из Apple ID?» confirmation (04-auth §2a).
-    The address is shown in full (ElideMiddle in QML when it does not fit)."""
+    The address is shown in full (ElideMiddle in QML when it does not fit).
+    Other saved Apple IDs are listed here; the home screen does not offer a switch."""
 
+    rows = list(accounts or [])
+    active = next((row for row in rows if row.get("active")), None)
+    others = [
+        {
+            "email": str(row.get("email") or ""),
+            "devices": str(row.get("devices") or ""),
+            "saved": bool(row.get("saved")),
+        }
+        for row in rows
+        if row.get("email") and not row.get("active")
+    ]
     return {
         "open": bool(open_),
         "title": "Apple ID",
         "close": "Закрыть",
         "label": "Вошли как",
         "email": email,
+        "devices": str((active or {}).get("devices") or ""),
+        "others": others,
+        "addAccount": "Добавить Apple ID",
+        "switchEnabled": not running,
         "fine": "Пароль уходит только в Apple. Программа его не хранит; вход остаётся на этом компьютере, в связке ключей.",
         "signOut": "Выйти",
         "signOutEnabled": not running,
