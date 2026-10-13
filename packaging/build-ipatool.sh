@@ -3,8 +3,8 @@
 # Apple authentication redirects (HTTP 301, 302, 307 and 308).
 #
 # Official v2.6.0 treats only 302 as a redirect, so a Store pod that answers
-# 301 makes login fail before the password is checked. There is no newer
-# GitHub release, so AppRestore ships this build and checks its archive hash.
+# 301 makes login fail before the password is checked. This audited build stays
+# pinned while newer upstream releases are evaluated separately.
 #
 # On top of that commit AppRestore applies its own patches from
 # packaging/patches/ (each pinned by SHA-256 below):
@@ -22,6 +22,8 @@
 #   bounded, validated Apple redirects in diagnostics and real operations.
 #   0007-ipatool-purchase-evidence.patch - distinguish confirmed acquisition,
 #   ownership, refusal and uncertain responses; emit safe per-attempt evidence.
+#   0008-ipatool-unpinned-update.patch - let Apple select a licensed iOS update
+#   when the public catalog no longer contains an external version ID.
 #
 # The archive is reproducible: packaging/pack_ipatool.py writes it with a fixed
 # mtime (SOURCE_DATE_EPOCH, else the commit time of $commit), uid/gid 0 and a
@@ -102,6 +104,7 @@ patches=(
   "0005-ipatool-readonly-download-probe.patch:84cb1dd65ed7ea48a8020462b1aaa5c3cc67781ac9ca9a47b7e3367af3cfb2aa"
   "0006-ipatool-product-post-redirects.patch:60e3892b9f7d9251b8bba83a27d79af796af1a0de009d1dc84d2c25ca9007981"
   "0007-ipatool-purchase-evidence.patch:f7fb822c4897e31a9d8b57827e9fc56fd8521a99dddbf5174c59db2656c97afe"
+  "0008-ipatool-unpinned-update.patch:a1274240a24aa0c4f8e376775168f6db5710086bc7eaaf0a06580fb05ba69a22"
 )
 for entry in "${patches[@]}"; do
   patch_name="${entry%%:*}"
@@ -169,7 +172,8 @@ for marker in \
   "catalog-independent redownload does not match the requested app" \
   "Inspect download channels without purchase, asset download or private response data" \
   "invalid Apple product redirect" \
-  "purchase response unconfirmed"
+  "purchase response unconfirmed" \
+  "catalog-independent update has no license material"
 do
   if ! grep -a -F -q -e "$marker" "$stage/bin/$name"; then
     echo "built ipatool is missing an expected fix: $marker" >&2

@@ -1,0 +1,367 @@
+From 35e9bc450c59ff0728dbaca7a8931391b7c95e19 Mon Sep 17 00:00:00 2001
+From: Eugene Lyub <lyubevgenij@gmail.com>
+Date: Tue, 13 Oct 2026 05:58:34 +0000
+Subject: [PATCH] Recover licensed iOS updates without public catalog versions
+
+---
+ pkg/appstore/appstore_download_product.go     |  44 ++++-
+ pkg/appstore/appstore_probe_download.go       |   7 +
+ pkg/appstore/appstore_probe_download_test.go  |   4 +-
+ pkg/appstore/appstore_unpinned_update_test.go | 170 ++++++++++++++++++
+ pkg/appstore/appstore_update_product_test.go  |  12 +-
+ 5 files changed, 221 insertions(+), 16 deletions(-)
+ create mode 100644 pkg/appstore/appstore_unpinned_update_test.go
+
+diff --git a/pkg/appstore/appstore_download_product.go b/pkg/appstore/appstore_download_product.go
+index cea87bd..03ae677 100644
+--- a/pkg/appstore/appstore_download_product.go
++++ b/pkg/appstore/appstore_download_product.go
+@@ -113,10 +113,11 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+ 	}
+ 
+ 	redownloadRes, err := t.sendStoreDownloadProduct(ctx, t.downloadProductRequest(redownload, acc, app, guid, externalVersionID))
+-	if bag.UpdateEndpoint != "" && externalVersionID != "" &&
++	if bag.UpdateEndpoint != "" && (externalVersionID != "" || catalogIndependent) &&
+ 		(platform == "" || platform == PlatformIPhone || platform == PlatformIPad || platform == PlatformMacOS || platform == PlatformAppleTV) &&
+-		(isEmptyRedownloadError(err) || (err == nil && isUnavailableDownloadProductResponse(redownloadRes))) {
+-		updateRes, updateErr := t.sendUpdateProduct(bag.UpdateEndpoint, acc, app, guid, externalVersionID)
++		(isEmptyRedownloadError(err) || (err == nil && (isUnavailableDownloadProductResponse(redownloadRes) ||
++			(catalogIndependent && isEmptyDownloadProductResponse(redownloadRes))))) {
++		updateRes, updateErr := t.sendUpdateProduct(ctx, bag.UpdateEndpoint, acc, app, guid, externalVersionID)
+ 
+ 		if updateErr == nil && platform == "" {
+ 			platform = PlatformIPhone
+@@ -163,23 +164,50 @@ func isEmptyRedownloadError(err error) bool {
+ 		unexpected.StatusCode == gohttp.StatusInternalServerError && unexpected.Snippet == ""
+ }
+ 
+-func (t *appstore) sendUpdateProduct(endpoint string, acc Account, app App, guid, externalVersionID string) (http.Result[downloadResult], error) {
++func (t *appstore) sendUpdateProduct(ctx context.Context, endpoint string, acc Account, app App, guid, externalVersionID string) (http.Result[downloadResult], error) {
+ 	update, err := newDownloadEndpoint(endpoint, updateProductPath)
+ 	if err != nil {
+ 		return http.Result[downloadResult]{}, err
+ 	}
+ 
+-	// The bag's updateProduct can serve pinned iOS, macOS, and tvOS versions when redownload
+-	// returns an empty HTTP 500 or a message-only availability error. Keep
+-	// the same session and version selection.
+-	res, err := sendStoreProduct(t.downloadClient, t.downloadProductRequest(update, acc, app, guid, externalVersionID))
++	// Apple can also select a licensed iOS build when no catalog version is
++	// available. Keep the same account and validate the selected identity;
++	// Download checks the package platform before applying Apple's SINF.
++	req := t.downloadProductRequest(update, acc, app, guid, externalVersionID)
++	if externalVersionID == "" {
++		req.Headers["X-Apple-Store-Front"] = acc.StoreFront
++		req.Headers["X-Token"] = acc.PasswordToken
++	}
++	res, err := t.sendStoreDownloadProduct(ctx, req)
+ 	if err != nil {
+ 		return res, fmt.Errorf("failed to send update request: %w", err)
+ 	}
+ 
++	if externalVersionID == "" {
++		return res, validateUnpinnedUpdateResponse(res, app)
++	}
+ 	return res, validateVersionedDownloadResponse(res, app, externalVersionID, "update")
+ }
+ 
++func validateUnpinnedUpdateResponse(res http.Result[downloadResult], app App) error {
++	if err := validateCatalogIndependentDownloadResponse(res, app); err != nil {
++		return err
++	}
++	if res.Data.FailureType != "" || res.Data.CustomerMessage != "" || len(res.Data.Items) == 0 {
++		return nil // Preserve Apple's account/license/availability refusal.
++	}
++	item := res.Data.Items[0]
++	if !positiveProbeID(fmt.Sprint(item.Metadata["softwareVersionExternalIdentifier"])) || item.URL == "" {
++		return errors.New("catalog-independent update has no valid version or package URL")
++	}
++	for _, sinf := range item.Sinfs {
++		if len(sinf.Data) > 0 {
++			return nil
++		}
++	}
++	return errors.New("catalog-independent update has no license material")
++}
++
+ func validateVersionedDownloadResponse(res http.Result[downloadResult], app App, externalVersionID, source string) error {
+ 	if res.Data.FailureType != "" {
+ 		return nil
+diff --git a/pkg/appstore/appstore_probe_download.go b/pkg/appstore/appstore_probe_download.go
+index 4d67560..c97823d 100644
+--- a/pkg/appstore/appstore_probe_download.go
++++ b/pkg/appstore/appstore_probe_download.go
+@@ -207,6 +207,10 @@ func (t *appstore) ProbeDownload(input DownloadProbeInput) (DownloadProbeOutput,
+ 			return
+ 		}
+ 		req := t.downloadProductRequest(endpoint, acc, app, guid, version)
++		if version == "" && strings.Contains(endpoint.baseURL, updateProductPath) {
++			req.Headers["X-Apple-Store-Front"] = acc.StoreFront
++			req.Headers["X-Token"] = acc.PasswordToken
++		}
+ 		if legacy {
+ 			delete(req.Payload.(*http.XMLPayload).Content, "serialNumber")
+ 		}
+@@ -247,6 +251,9 @@ func (t *appstore) ProbeDownload(input DownloadProbeInput) (DownloadProbeOutput,
+ 	} else {
+ 		request("minimal_redownload_unpinned", minimal, "", true)
+ 	}
++	// A catalog card may be gone while updateProduct can still select a
++	// licensed build. Its returned version also unlocks the pinned probes.
++	endpoint("update_unpinned", bag.UpdateEndpoint, updateProductPath, "")
+ 	version := input.ExternalVersionID
+ 	if version == "" {
+ 		for _, result := range out.Channels {
+diff --git a/pkg/appstore/appstore_probe_download_test.go b/pkg/appstore/appstore_probe_download_test.go
+index 336748b..725c354 100644
+--- a/pkg/appstore/appstore_probe_download_test.go
++++ b/pkg/appstore/appstore_probe_download_test.go
+@@ -106,9 +106,9 @@ func TestProbeReadOnlyChannelsAfterLicenseRefusal(t *testing.T) {
+ 			}
+ 		}
+ 		return http.Result[downloadResult]{StatusCode: 200, Data: downloadResult{FailureType: FailureTypeLicenseNotFound}}, nil
+-	}).Times(7)
++	}).Times(8)
+ 	out, err := store.ProbeDownload(DownloadProbeInput{Account: acc, App: app, ExternalVersionID: "123"})
+-	if err != nil || out.Country != "RU" || len(out.Channels) != 8 {
++	if err != nil || out.Country != "RU" || len(out.Channels) != 9 {
+ 		t.Fatalf("unexpected probe: %+v %v", out, err)
+ 	}
+ 	if out.Channels[2].Status != "package_and_license_offered" {
+diff --git a/pkg/appstore/appstore_unpinned_update_test.go b/pkg/appstore/appstore_unpinned_update_test.go
+new file mode 100644
+index 0000000..034d5d9
+--- /dev/null
++++ b/pkg/appstore/appstore_unpinned_update_test.go
+@@ -0,0 +1,170 @@
++package appstore
++
++import (
++	"context"
++	"errors"
++	"strings"
++	"testing"
++
++	"github.com/majd/ipatool/v2/pkg/http"
++	"github.com/majd/ipatool/v2/pkg/util/machine"
++	"go.uber.org/mock/gomock"
++)
++
++func unpinnedUpdateFixture() http.Result[downloadResult] {
++	return http.Result[downloadResult]{StatusCode: 200, Data: downloadResult{Items: []downloadItemResult{{
++		URL: "https://example.com/app.ipa", Sinfs: []Sinf{{Data: []byte("license")}},
++		Metadata: map[string]interface{}{"itemId": int64(42), "softwareVersionBundleId": "com.example.app", "softwareVersionExternalIdentifier": "123"},
++	}}}}
++}
++
++func TestUpdateWithoutCatalogOffer(t *testing.T) {
++	for _, kind := range []string{"empty_500", "unavailable", "empty_200", "license_refused", "authentication_refused"} {
++		t.Run(kind, func(t *testing.T) {
++			ctrl := gomock.NewController(t)
++			download := http.NewMockClient[downloadResult](ctrl)
++			bag := http.NewMockClient[bagResult](ctrl)
++			catalog := http.NewMockClient[platformVersionLookupResult](ctrl)
++			store := &appstore{downloadClient: download, bagClient: bag, platformClient: catalog}
++			acc := Account{StoreFront: "143469-16,29", DirectoryServicesID: "account", PasswordToken: "private"}
++			app := App{ID: 42, BundleID: "com.example.app"}
++			res := http.Result[downloadResult]{StatusCode: 200}
++			var redownloadErr error
++			switch kind {
++			case "empty_500":
++				redownloadErr = &http.UnexpectedResponseError{StatusCode: 500}
++			case "unavailable":
++				res.Data.FailureType = FailureTypeTemporarilyUnavailable
++			case "license_refused":
++				res.Data.FailureType = FailureTypeLicenseNotFound
++			case "authentication_refused":
++				res.Data.FailureType = FailureTypeSignInRequired
++			}
++			expected := unpinnedUpdateFixture()
++			ctx, cancel := context.WithCancel(context.Background())
++			defer cancel()
++			gomock.InOrder(
++				download.EXPECT().Send(gomock.Any()).Return(http.Result[downloadResult]{StatusCode: 200}, nil),
++				bag.EXPECT().Send(gomock.Any()).Return(http.Result[bagResult]{StatusCode: 200, Data: bagResult{URLBag: urlBag{RedownloadEndpoint: testRedownloadEndpoint, UpdateEndpoint: testUpdateEndpoint}}}, nil),
++				catalog.EXPECT().Send(gomock.Any()).Return(http.Result[platformVersionLookupResult]{StatusCode: 200}, nil).Times(3),
++				download.EXPECT().Send(gomock.Any()).Return(res, redownloadErr),
++			)
++			if !strings.HasSuffix(kind, "refused") {
++				download.EXPECT().Send(gomock.Any()).DoAndReturn(func(req http.Request) (http.Result[downloadResult], error) {
++					if req.URL != testUpdateEndpoint+"?guid="+"001122334455" || req.Method != http.MethodPOST || !req.NoRedirects {
++						t.Fatal("wrong update operation")
++					}
++					p := req.Payload.(*http.XMLPayload).Content
++					for _, key := range []string{"appExtVrsId", "externalVersionId", "price", "pricingParameters"} {
++						if _, ok := p[key]; ok {
++							t.Fatal("unexpected version or purchase parameter")
++						}
++					}
++					if req.Headers["X-Apple-Store-Front"] != acc.StoreFront || req.Headers["X-Token"] != acc.PasswordToken || p["salableAdamId"] != app.ID {
++						t.Fatal("changed account, storefront or app")
++					}
++					cancel()
++					if req.Context.Err() != context.Canceled {
++						t.Fatal("lost cancellation context")
++					}
++					return expected, nil
++				})
++			}
++			actual, platform, err := store.sendDownloadProduct(ctx, acc, app, "001122334455", "", PlatformIPhone)
++			if err != nil || platform != PlatformIPhone {
++				t.Fatalf("unexpected result: %v %v", platform, err)
++			}
++			if strings.HasSuffix(kind, "refused") {
++				if actual.Data.FailureType != res.Data.FailureType {
++					t.Fatal("lost Apple refusal")
++				}
++			} else if len(actual.Data.Items) != 1 || actual.Data.Items[0].URL != expected.Data.Items[0].URL {
++				t.Fatal("did not recover the selected package")
++			}
++		})
++	}
++}
++
++func TestUnpinnedUpdateRequiresMatchingLicensedVersion(t *testing.T) {
++	app := App{ID: 42, BundleID: "com.example.app"}
++	if err := validateUnpinnedUpdateResponse(unpinnedUpdateFixture(), app); err != nil {
++		t.Fatal(err)
++	}
++	for name, mutate := range map[string]func(*http.Result[downloadResult]){
++		"wrong_app": func(r *http.Result[downloadResult]) { r.Data.Items[0].Metadata["itemId"] = 43 },
++		"wrong_bundle": func(r *http.Result[downloadResult]) {
++			r.Data.Items[0].Metadata["softwareVersionBundleId"] = "another.app"
++		},
++		"missing_version": func(r *http.Result[downloadResult]) {
++			delete(r.Data.Items[0].Metadata, "softwareVersionExternalIdentifier")
++		},
++		"zero_version": func(r *http.Result[downloadResult]) {
++			r.Data.Items[0].Metadata["softwareVersionExternalIdentifier"] = "0"
++		},
++		"no_package":     func(r *http.Result[downloadResult]) { r.Data.Items[0].URL = "" },
++		"empty_license":  func(r *http.Result[downloadResult]) { r.Data.Items[0].Sinfs = []Sinf{{}} },
++		"multiple_items": func(r *http.Result[downloadResult]) { r.Data.Items = append(r.Data.Items, r.Data.Items[0]) },
++	} {
++		t.Run(name, func(t *testing.T) {
++			r := unpinnedUpdateFixture()
++			mutate(&r)
++			if validateUnpinnedUpdateResponse(r, app) == nil {
++				t.Fatal("accepted invalid offer")
++			}
++		})
++	}
++	for _, failure := range []string{FailureTypeLicenseNotFound, FailureTypeSignInRequired, FailureTypeTemporarilyUnavailable} {
++		if err := validateUnpinnedUpdateResponse(http.Result[downloadResult]{StatusCode: 200, Data: downloadResult{FailureType: failure}}, app); err != nil {
++			t.Fatal("lost refusal handling")
++		}
++	}
++}
++
++func TestProbeDiscoversVersionThroughUpdateWithoutCatalog(t *testing.T) {
++	ctrl := gomock.NewController(t)
++	download := http.NewMockClient[downloadResult](ctrl)
++	bag := http.NewMockClient[bagResult](ctrl)
++	mach := machine.NewMockMachine(ctrl)
++	store := &appstore{downloadClient: download, bagClient: bag, machine: mach}
++	acc := Account{StoreFront: "143469-16,29", DirectoryServicesID: "account", PasswordToken: "private"}
++	mach.EXPECT().MacAddress().Return("00:11:22:33:44:55", nil)
++	bag.EXPECT().Send(gomock.Any()).Return(http.Result[bagResult]{StatusCode: 200, Data: bagResult{URLBag: urlBag{RedownloadEndpoint: testRedownloadEndpoint, UpdateEndpoint: testUpdateEndpoint}}}, nil)
++	download.EXPECT().Send(gomock.Any()).DoAndReturn(func(req http.Request) (http.Result[downloadResult], error) {
++		payload := req.Payload.(*http.XMLPayload).Content
++		if strings.HasPrefix(req.URL, testUpdateEndpoint) {
++			if payload["appExtVrsId"] == nil && (req.Headers["X-Token"] != acc.PasswordToken || req.Headers["X-Apple-Store-Front"] != acc.StoreFront) {
++				t.Fatal("missing account headers")
++			}
++			return unpinnedUpdateFixture(), nil
++		}
++		if version, ok := payload["appExtVrsId"]; ok && version != "123" {
++			t.Fatal("did not pin discovered version")
++		}
++		return http.Result[downloadResult]{StatusCode: 200}, nil
++	}).Times(8)
++	out, err := store.ProbeDownload(DownloadProbeInput{Account: acc, App: App{ID: 42, BundleID: "com.example.app"}})
++	if err != nil {
++		t.Fatal(err)
++	}
++	found := false
++	for _, c := range out.Channels {
++		if c.Channel == "version_lookup" {
++			t.Fatal("unnecessarily queried missing public catalog")
++		}
++		if c.Channel == "update_unpinned" && c.VersionID == "123" && c.Status == "package_and_license_offered" {
++			found = true
++		}
++	}
++	if !found {
++		t.Fatal("did not discover a licensed version")
++	}
++}
++
++func TestUnpinnedUpdateHonorsCancellation(t *testing.T) {
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	_, err := (&appstore{}).sendUpdateProduct(ctx, testUpdateEndpoint, Account{}, App{ID: 42}, "001122334455", "")
++	if !errors.Is(err, context.Canceled) {
++		t.Fatal("update ignored cancellation")
++	}
++}
+diff --git a/pkg/appstore/appstore_update_product_test.go b/pkg/appstore/appstore_update_product_test.go
+index 4ea890b..7068a1a 100644
+--- a/pkg/appstore/appstore_update_product_test.go
++++ b/pkg/appstore/appstore_update_product_test.go
+@@ -345,7 +345,7 @@ var _ = Describe("AppStore (Update Product)", func() {
+ 			expected.Data = downloadResult{FailureType: failure, CustomerMessage: "App Store error"}
+ 			mockDownloadClient.EXPECT().Send(gomock.Any()).Return(expected, nil)
+ 
+-			actual, err := store.sendUpdateProduct(testUpdateEndpoint, account, app, testGUID, testVersionID)
++			actual, err := store.sendUpdateProduct(context.Background(), testUpdateEndpoint, account, app, testGUID, testVersionID)
+ 			Expect(err).ToNot(HaveOccurred())
+ 			Expect(actual).To(Equal(expected))
+ 		},
+@@ -358,7 +358,7 @@ var _ = Describe("AppStore (Update Product)", func() {
+ 		expected.StatusCode = gohttp.StatusInternalServerError
+ 		mockDownloadClient.EXPECT().Send(gomock.Any()).Return(expected, nil)
+ 
+-		_, err := store.sendUpdateProduct(testUpdateEndpoint, account, app, testGUID, testVersionID)
++		_, err := store.sendUpdateProduct(context.Background(), testUpdateEndpoint, account, app, testGUID, testVersionID)
+ 		Expect(err).To(MatchError("received unexpected update status code: 500"))
+ 	})
+ 
+@@ -366,7 +366,7 @@ var _ = Describe("AppStore (Update Product)", func() {
+ 		expected.Data.CustomerMessage = "Unable to process your request"
+ 		mockDownloadClient.EXPECT().Send(gomock.Any()).Return(expected, nil)
+ 
+-		_, err := store.sendUpdateProduct(testUpdateEndpoint, account, app, testGUID, testVersionID)
++		_, err := store.sendUpdateProduct(context.Background(), testUpdateEndpoint, account, app, testGUID, testVersionID)
+ 		Expect(err).To(MatchError("received update error: Unable to process your request"))
+ 	})
+ 
+@@ -375,7 +375,7 @@ var _ = Describe("AppStore (Update Product)", func() {
+ 			expected.Data.Items = make([]downloadItemResult, count)
+ 			mockDownloadClient.EXPECT().Send(gomock.Any()).Return(expected, nil)
+ 
+-			_, err := store.sendUpdateProduct(testUpdateEndpoint, account, app, testGUID, testVersionID)
++			_, err := store.sendUpdateProduct(context.Background(), testUpdateEndpoint, account, app, testGUID, testVersionID)
+ 			Expect(err).To(MatchError("update response must contain exactly one item"))
+ 		},
+ 		Entry("empty", 0),
+@@ -387,7 +387,7 @@ var _ = Describe("AppStore (Update Product)", func() {
+ 			expected.Data.Items[0].Metadata[field] = value
+ 			mockDownloadClient.EXPECT().Send(gomock.Any()).Return(expected, nil)
+ 
+-			_, err := store.sendUpdateProduct(testUpdateEndpoint, account, app, testGUID, testVersionID)
++			_, err := store.sendUpdateProduct(context.Background(), testUpdateEndpoint, account, app, testGUID, testVersionID)
+ 			Expect(err).To(MatchError(ContainSubstring("update response does not match")))
+ 		},
+ 		Entry("wrong app", "itemId", uint64(42)),
+@@ -405,7 +405,7 @@ var _ = Describe("AppStore (Update Product)", func() {
+ 		expected.Data.Items[0].Metadata["softwareVersionExternalIdentifier"] = testVersionID
+ 		mockDownloadClient.EXPECT().Send(gomock.Any()).Return(expected, nil)
+ 
+-		actual, err := store.sendUpdateProduct(testUpdateEndpoint, account, app, testGUID, testVersionID)
++		actual, err := store.sendUpdateProduct(context.Background(), testUpdateEndpoint, account, app, testGUID, testVersionID)
+ 		Expect(err).ToNot(HaveOccurred())
+ 		Expect(actual).To(Equal(expected))
+ 	})
+-- 
+2.52.0
+

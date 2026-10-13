@@ -114,6 +114,7 @@ def test_patch_pins_match_files_and_order() -> None:
         "0005-ipatool-readonly-download-probe.patch",
         "0006-ipatool-product-post-redirects.patch",
         "0007-ipatool-purchase-evidence.patch",
+        "0008-ipatool-unpinned-update.patch",
     ]
     patches = ROOT / "packaging" / "patches"
     for name, pinned in entries:
@@ -127,6 +128,7 @@ def test_patch_pins_match_files_and_order() -> None:
         "Inspect download channels without purchase, asset download or private response data",
         "invalid Apple product redirect",
         "purchase response unconfirmed",
+        "catalog-independent update has no license material",
     ):
         assert f'"{marker}"' in script
 
