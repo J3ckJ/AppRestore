@@ -103,6 +103,8 @@ def explain_user_error(message: str) -> str:
         )
     if any(hint in low for hint in _DEVICE):
         return "iPhone не ответил. Разблокируйте его и подключите кабелем ещё раз."
+    if "purchase response unconfirmed" in low:
+        return MESSAGES_RU[ErrorCode.PURCHASE_UNCONFIRMED]
     if "purchasing paid apps is not supported" in low:
         return "Платное приложение без оплаты не ставится."
     if is_store_mismatch(low):

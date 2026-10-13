@@ -7,10 +7,10 @@
 #      the official go1.25.0 archive from go.dev into build/ipatool-bootstrap/
 #      and checks its SHA-256 against the values pinned below (from
 #      https://go.dev/dl/?mode=json&include=all). The system Go is never touched.
-#   2. runs packaging/build-ipatool.sh (pinned commit cde7d00, patches 0001-0003
+#   2. runs packaging/build-ipatool.sh (pinned commit cde7d00, patches 0001-0007
 #      checked by SHA-256 and applied with git apply, marker check, archive);
 #   3. installs the binary as bin/ipatool (resolve_tool() looks there first),
-#      prints its SHA-256 and confirms the markers of patches 0001, 0002, 0003.
+#      prints its SHA-256 and confirms the markers of patches 0001-0007.
 #
 # Idempotent: a second run with the same inputs keeps the existing binary.
 # Go module/build caches live in build/ipatool-bootstrap/ (git-ignored).
@@ -42,6 +42,9 @@ patch_markers=(
   "0002:--all cannot be combined with --page or --max-results"
   "0003:keychain-passphrase-stdin"
   "0004:catalog-independent redownload does not match the requested app"
+  "0005:Inspect download channels without purchase, asset download or private response data"
+  "0006:invalid Apple product redirect"
+  "0007:purchase response unconfirmed"
 )
 
 force=0

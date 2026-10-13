@@ -106,6 +106,7 @@ class ErrorCode(str, enum.Enum):
     STORE_MISMATCH = "store_mismatch"
     LICENSE_REQUIRED = "license_required"
     LICENSE_ALREADY_EXISTS = "license_already_exists"
+    PURCHASE_UNCONFIRMED = "purchase_unconfirmed"
     TEMPORARILY_UNAVAILABLE = "temporarily_unavailable"
     SUBSCRIPTION_REQUIRED = "subscription_required"
     NO_LONGER_AVAILABLE = "no_longer_available"
@@ -146,6 +147,7 @@ MESSAGES_RU: Mapping[ErrorCode, str] = {
     ErrorCode.STORE_MISMATCH: "Магазин в текущем входе не совпадает со страной вашего Apple ID.",
     ErrorCode.LICENSE_REQUIRED: "На этом Apple ID нет лицензии. Бесплатное — кнопкой «Получить», платное без оплаты не ставится.",
     ErrorCode.LICENSE_ALREADY_EXISTS: "Лицензия на это приложение уже есть.",
+    ErrorCode.PURCHASE_UNCONFIRMED: "Apple не подтвердила результат запроса лицензии. Проверьте покупки аккаунта перед повторной попыткой.",
     ErrorCode.TEMPORARILY_UNAVAILABLE: "Временно недоступно в этом магазине.",
     ErrorCode.SUBSCRIPTION_REQUIRED: "Нужна подписка Apple Arcade. Без неё скачать нельзя.",
     ErrorCode.NO_LONGER_AVAILABLE: "Apple не отдаёт пакет по обычному каналу. Если запасной путь не поможет — приложения нет для этого аккаунта.",
@@ -208,6 +210,7 @@ _RULES: Sequence[tuple[ErrorCode, "re.Pattern[str]"]] = tuple(
         (ErrorCode.AUTH_SERVER_UNUSABLE, r"no usable authentication response|authentication redirect"),
         (ErrorCode.LICENSE_REQUIRED, r"license is required|\b9610\b"),
         (ErrorCode.LICENSE_ALREADY_EXISTS, r"license already exists|\b5002\b"),
+        (ErrorCode.PURCHASE_UNCONFIRMED, r"purchase response unconfirmed"),
         (ErrorCode.TEMPORARILY_UNAVAILABLE, r"temporarily unavailable|\b2059\b"),
         (ErrorCode.SUBSCRIPTION_REQUIRED, r"subscription required"),
         (ErrorCode.NO_LONGER_AVAILABLE, r"no longer available"),

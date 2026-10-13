@@ -112,6 +112,8 @@ def test_patch_pins_match_files_and_order() -> None:
         "0003-ipatool-keychain-passphrase-env-stdin.patch",
         "0004-ipatool-delisted-redownload.patch",
         "0005-ipatool-readonly-download-probe.patch",
+        "0006-ipatool-product-post-redirects.patch",
+        "0007-ipatool-purchase-evidence.patch",
     ]
     patches = ROOT / "packaging" / "patches"
     for name, pinned in entries:
@@ -123,6 +125,8 @@ def test_patch_pins_match_files_and_order() -> None:
         "keychain-passphrase-stdin",
         "catalog-independent redownload does not match the requested app",
         "Inspect download channels without purchase, asset download or private response data",
+        "invalid Apple product redirect",
+        "purchase response unconfirmed",
     ):
         assert f'"{marker}"' in script
 

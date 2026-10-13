@@ -1,0 +1,320 @@
+diff --git a/cmd/purchase.go b/cmd/purchase.go
+index cc7d552..eacf184 100644
+--- a/cmd/purchase.go
++++ b/cmd/purchase.go
+@@ -77,6 +77,9 @@ func purchaseCmdWithAppStore(appStore func() appstore.AppStore) *cobra.Command {
+ 					Account:  acc,
+ 					App:      app,
+ 					Platform: platform,
++					Observe: func(attempt appstore.PurchaseAttempt) {
++						dependencies.Logger.Log().Int64("appId", app.ID).Interface("purchaseAttempt", attempt).Send()
++					},
+ 				})
+ 				if err != nil && !errors.Is(err, appstore.ErrLicenseAlreadyExists) {
+ 					return err
+diff --git a/pkg/appstore/appstore_product_redirect_test.go b/pkg/appstore/appstore_product_redirect_test.go
+index 5a3a9b4..4775f26 100644
+--- a/pkg/appstore/appstore_product_redirect_test.go
++++ b/pkg/appstore/appstore_product_redirect_test.go
+@@ -61,7 +61,7 @@ func TestProductionPurchaseRedirectPreservesPriceAndStorefront(t *testing.T) {
+ 			req.Headers["X-Apple-Store-Front"] != acc.StoreFront || req.Headers["X-Token"] != acc.PasswordToken {
+ 			t.Fatal("purchase redirect changed the requested transaction")
+ 		}
+-		return http.Result[purchaseResult]{StatusCode: 200, Data: purchaseResult{JingleDocType: "purchaseSuccess", Status: 0}}, nil
++		return http.Result[purchaseResult]{StatusCode: 200, Data: purchaseResult{JingleDocType: "purchaseSuccess", Status: purchaseStatusForTest(0)}}, nil
+ 	})
+ 	if err := store.purchaseWithParams(acc, App{ID: 42}, "001122334455", PricingParameterAppStore); err != nil {
+ 		t.Fatal(err)
+diff --git a/pkg/appstore/appstore_purchase.go b/pkg/appstore/appstore_purchase.go
+index a1c81a2..056dede 100644
+--- a/pkg/appstore/appstore_purchase.go
++++ b/pkg/appstore/appstore_purchase.go
+@@ -14,12 +14,14 @@ var (
+ 	ErrLicenseAlreadyExists   = errors.New("license already exists")
+ 	ErrSubscriptionRequired   = errors.New("subscription required")
+ 	ErrTemporarilyUnavailable = errors.New("item is temporarily unavailable")
++	ErrPurchaseUnconfirmed    = errors.New("purchase response unconfirmed")
+ )
+ 
+ type PurchaseInput struct {
+ 	Account  Account
+ 	App      App
+ 	Platform Platform
++	Observe  func(PurchaseAttempt)
+ }
+ 
+ func (t *appstore) Purchase(input PurchaseInput) error {
+@@ -34,10 +36,10 @@ func (t *appstore) Purchase(input PurchaseInput) error {
+ 		return errors.New("purchasing paid apps is not supported")
+ 	}
+ 
+-	err = t.purchaseWithParams(input.Account, input.App, guid, PricingParameterAppStore)
++	err = t.purchaseWithParams(input.Account, input.App, guid, PricingParameterAppStore, input.Observe)
+ 	if err != nil {
+ 		if input.Platform != PlatformMacOS && err == ErrTemporarilyUnavailable {
+-			err = t.purchaseWithParams(input.Account, input.App, guid, PricingParameterAppleArcade)
++			err = t.purchaseWithParams(input.Account, input.App, guid, PricingParameterAppleArcade, input.Observe)
+ 			if err != nil {
+ 				return fmt.Errorf("failed to purchase item with param '%s': %w", PricingParameterAppleArcade, err)
+ 			}
+@@ -55,12 +57,19 @@ type purchaseResult struct {
+ 	FailureType     string `plist:"failureType,omitempty"`
+ 	CustomerMessage string `plist:"customerMessage,omitempty"`
+ 	JingleDocType   string `plist:"jingleDocType,omitempty"`
+-	Status          int    `plist:"status,omitempty"`
++	Status          *int   `plist:"status,omitempty"`
+ }
+ 
+-func (t *appstore) purchaseWithParams(acc Account, app App, guid string, pricingParameters string) error {
++func (t *appstore) purchaseWithParams(acc Account, app App, guid string, pricingParameters string, observers ...func(PurchaseAttempt)) (resultErr error) {
+ 	req := t.purchaseRequest(acc, app, acc.StoreFront, guid, pricingParameters)
+ 	res, err := sendStoreProduct(t.purchaseClient, req)
++	defer func() {
++		for _, observe := range observers {
++			if observe != nil {
++				observe(purchaseAttempt(pricingParameters, res, err, resultErr))
++			}
++		}
++	}()
+ 
+ 	if err != nil {
+ 		return fmt.Errorf("request failed: %w", err)
+@@ -93,12 +102,12 @@ func (t *appstore) purchaseWithParams(acc Account, app App, guid string, pricing
+ 		return NewErrorWithMetadata(errors.New("something went wrong"), res)
+ 	}
+ 
+-	if res.StatusCode == gohttp.StatusInternalServerError {
+-		return ErrLicenseAlreadyExists
++	if res.StatusCode != gohttp.StatusOK {
++		return ErrPurchaseUnconfirmed
+ 	}
+ 
+-	if res.Data.JingleDocType != "purchaseSuccess" || res.Data.Status != 0 {
+-		return NewErrorWithMetadata(errors.New("failed to purchase app"), res)
++	if res.Data.JingleDocType != "purchaseSuccess" || res.Data.Status == nil || *res.Data.Status != 0 {
++		return ErrPurchaseUnconfirmed
+ 	}
+ 
+ 	return nil
+diff --git a/pkg/appstore/appstore_purchase_attempt.go b/pkg/appstore/appstore_purchase_attempt.go
+new file mode 100644
+index 0000000..d661a3e
+--- /dev/null
++++ b/pkg/appstore/appstore_purchase_attempt.go
+@@ -0,0 +1,44 @@
++package appstore
++
++import (
++	"errors"
++
++	"github.com/majd/ipatool/v2/pkg/http"
++)
++
++// PurchaseAttempt deliberately excludes response bodies, URLs, account IDs,
++// tokens and customer messages. It observes an authorized purchase, never
++// initiates another request or changes the price/STDQ -> GAME policy.
++type PurchaseAttempt struct {
++	PricingParameters string `json:"pricingParameters"`
++	HTTPStatus        int    `json:"httpStatus,omitempty"`
++	FailureType       string `json:"failureType,omitempty"`
++	Outcome           string `json:"outcome"`
++}
++
++func purchaseAttempt(pricing string, res http.Result[purchaseResult], sendErr, resultErr error) PurchaseAttempt {
++	out := PurchaseAttempt{PricingParameters: pricing, HTTPStatus: res.StatusCode, Outcome: "uncertain"}
++	if sendErr != nil {
++		var unexpected *http.UnexpectedResponseError
++		if errors.As(sendErr, &unexpected) {
++			out.HTTPStatus = unexpected.StatusCode
++		}
++		return out
++	}
++	if res.Data.FailureType != "" {
++		out.FailureType = safeProbeFailure(res.Data.FailureType)
++	}
++	switch {
++	case resultErr == nil:
++		out.Outcome = "granted"
++	case errors.Is(resultErr, ErrLicenseAlreadyExists):
++		out.Outcome = "already_owned"
++	case errors.Is(resultErr, ErrPasswordTokenExpired):
++		out.Outcome = "authentication_required"
++	case errors.Is(resultErr, ErrSubscriptionRequired):
++		out.Outcome = "subscription_required"
++	case res.Data.FailureType != "":
++		out.Outcome = "refused"
++	}
++	return out
++}
+diff --git a/pkg/appstore/appstore_purchase_attempt_test.go b/pkg/appstore/appstore_purchase_attempt_test.go
+new file mode 100644
+index 0000000..7949435
+--- /dev/null
++++ b/pkg/appstore/appstore_purchase_attempt_test.go
+@@ -0,0 +1,101 @@
++package appstore
++
++import (
++	"encoding/json"
++	"errors"
++	"strings"
++	"testing"
++
++	"github.com/majd/ipatool/v2/pkg/http"
++	"github.com/majd/ipatool/v2/pkg/util/machine"
++	"go.uber.org/mock/gomock"
++	"howett.net/plist"
++)
++
++func purchaseStatusForTest(value int) *int { return &value }
++
++func TestPurchaseTraceDistinguishesNewGrantFromExistingLicense(t *testing.T) {
++	for _, existing := range []bool{false, true} {
++		ctrl := gomock.NewController(t)
++		client := http.NewMockClient[purchaseResult](ctrl)
++		mach := machine.NewMockMachine(ctrl)
++		store := &appstore{purchaseClient: client, machine: mach}
++		mach.EXPECT().MacAddress().Return("00:11:22:33:44:55", nil)
++		response := purchaseResult{JingleDocType: "purchaseSuccess", Status: purchaseStatusForTest(0)}
++		if existing {
++			response = purchaseResult{FailureType: FailureTypeLicenseAlreadyExists}
++		}
++		gomock.InOrder(
++			client.EXPECT().Send(gomock.Any()).Return(http.Result[purchaseResult]{StatusCode: 200, Data: purchaseResult{FailureType: FailureTypeTemporarilyUnavailable}}, nil),
++			client.EXPECT().Send(gomock.Any()).Return(http.Result[purchaseResult]{StatusCode: 200, Data: response}, nil),
++		)
++		var attempts []PurchaseAttempt
++		err := store.Purchase(PurchaseInput{Account: Account{StoreFront: "143469-16"}, App: App{ID: 42}, Platform: PlatformIPhone,
++			Observe: func(a PurchaseAttempt) { attempts = append(attempts, a) },
++		})
++		if existing && !errors.Is(err, ErrLicenseAlreadyExists) || !existing && err != nil {
++			t.Fatal(err)
++		}
++		want := "granted"
++		if existing {
++			want = "already_owned"
++		}
++		if len(attempts) != 2 || attempts[0].PricingParameters != "STDQ" || attempts[0].FailureType != "2059" ||
++			attempts[0].Outcome != "refused" || attempts[1].PricingParameters != "GAME" || attempts[1].Outcome != want {
++			t.Fatalf("wrong acquisition evidence: %+v", attempts)
++		}
++	}
++}
++
++func TestAmbiguousPurchaseIsNeverAnExistingLicenseOrNewGrant(t *testing.T) {
++	for _, response := range []http.Result[purchaseResult]{
++		{StatusCode: 500},
++		{StatusCode: 200},
++		{StatusCode: 200, Data: purchaseResult{JingleDocType: "purchaseSuccess"}},
++		{StatusCode: 503, Data: purchaseResult{JingleDocType: "purchaseSuccess"}},
++	} {
++		ctrl := gomock.NewController(t)
++		client := http.NewMockClient[purchaseResult](ctrl)
++		client.EXPECT().Send(gomock.Any()).Return(response, nil).Times(1)
++		store := &appstore{purchaseClient: client}
++		var attempt PurchaseAttempt
++		err := store.purchaseWithParams(Account{}, App{ID: 42}, "001122334455", "STDQ", func(a PurchaseAttempt) { attempt = a })
++		if !errors.Is(err, ErrPurchaseUnconfirmed) || attempt.Outcome != "uncertain" {
++			t.Fatalf("false success: %+v %v", attempt, err)
++		}
++	}
++}
++
++func TestPurchaseStatusMustBeExplicitlyPresentOnTheWire(t *testing.T) {
++	for _, present := range []bool{false, true} {
++		fields := map[string]interface{}{"jingleDocType": "purchaseSuccess"}
++		if present {
++			fields["status"] = 0
++		}
++		data, err := plist.Marshal(fields, plist.XMLFormat)
++		if err != nil {
++			t.Fatal(err)
++		}
++		var result purchaseResult
++		if _, err := plist.Unmarshal(data, &result); err != nil {
++			t.Fatal(err)
++		}
++		if (result.Status != nil) != present || (present && *result.Status != 0) {
++			t.Fatal("missing purchase status was confused with a zero status")
++		}
++	}
++}
++
++func TestPurchaseTraceDoesNotLeakUntrustedResponseData(t *testing.T) {
++	res := http.Result[purchaseResult]{StatusCode: 200, Headers: map[string]string{"token": "private"},
++		Data: purchaseResult{FailureType: "email=private@example.com", CustomerMessage: "secret"}}
++	data, err := json.Marshal(purchaseAttempt("STDQ", res, nil, errors.New("private")))
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, value := range []string{"private", "secret", "email", "token", "CustomerMessage"} {
++		if strings.Contains(string(data), value) {
++			t.Fatal("private purchase data in trace")
++		}
++	}
++}
+diff --git a/pkg/appstore/appstore_purchase_test.go b/pkg/appstore/appstore_purchase_test.go
+index e7195d5..4e8be0e 100644
+--- a/pkg/appstore/appstore_purchase_test.go
++++ b/pkg/appstore/appstore_purchase_test.go
+@@ -281,7 +281,7 @@ var _ = Describe("AppStore (Purchase)", func() {
+ 		})
+ 	})
+ 
+-	When("account already has a license for the app (HTTP 500 legacy)", func() {
++	When("purchase returns an ambiguous HTTP 500", func() {
+ 		BeforeEach(func() {
+ 			mockMachine.EXPECT().
+ 				MacAddress().
+@@ -295,13 +295,13 @@ var _ = Describe("AppStore (Purchase)", func() {
+ 				}, nil)
+ 		})
+ 
+-		It("returns license already exists error", func() {
++		It("does not claim an existing license", func() {
+ 			err := as.Purchase(PurchaseInput{
+ 				Account: Account{
+ 					StoreFront: "143441",
+ 				},
+ 			})
+-			Expect(err).To(MatchError(ErrLicenseAlreadyExists))
++			Expect(err).To(MatchError(ErrPurchaseUnconfirmed))
+ 		})
+ 	})
+ 
+@@ -380,7 +380,7 @@ var _ = Describe("AppStore (Purchase)", func() {
+ 					StatusCode: 200,
+ 					Data: purchaseResult{
+ 						JingleDocType: "purchaseSuccess",
+-						Status:        0,
++						Status:        purchaseStatusForTest(0),
+ 					},
+ 				}, nil)
+ 		})
+@@ -441,7 +441,7 @@ var _ = Describe("AppStore (Purchase)", func() {
+ 					StatusCode: 200,
+ 					Data: purchaseResult{
+ 						JingleDocType: "purchaseSuccess",
+-						Status:        0,
++						Status:        purchaseStatusForTest(0),
+ 					},
+ 				}, nil)
+ 
+@@ -480,7 +480,7 @@ var _ = Describe("AppStore (Purchase)", func() {
+ 					StatusCode: 200,
+ 					Data: purchaseResult{
+ 						JingleDocType: "purchaseSuccess",
+-						Status:        0,
++						Status:        purchaseStatusForTest(0),
+ 					},
+ 				}, nil)
+ 		})
+@@ -507,7 +507,7 @@ var _ = Describe("AppStore (Purchase)", func() {
+ 					StatusCode: 200,
+ 					Data: purchaseResult{
+ 						JingleDocType: "failure",
+-						Status:        -1,
++						Status:        purchaseStatusForTest(-1),
+ 					},
+ 				}, nil)
+ 		})

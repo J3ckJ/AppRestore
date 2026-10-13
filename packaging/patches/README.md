@@ -1,16 +1,34 @@
 # Локальные патчи ipatool для AppRestore
 
-База: majd/ipatool `cde7d00355e152714377b953ec57438626d3cb5a` (наш 2.6.0+redirect). Применять по порядку `git apply`. Каждый патч применяется и по отдельности, файлы у них не пересекаются: это проверено на чистом `cde7d00` (цепочка 0001→0002→0003 и 0003 отдельно, плюс сборка). Всё локально, upstream ничего не отправлялось.
+База: majd/ipatool `cde7d00355e152714377b953ec57438626d3cb5a` (наш 2.6.0+redirect).
+Применять строго по порядку 0001–0007: новые патчи зависят от предыдущих и
+изменяют некоторые общие файлы. Полную последовательность, SHA-256,
+Go-тесты и маркеры бинарника проверяет `packaging/build-ipatool.sh`.
 
 | Файл | Что делает | sha256 |
 |---|---|---|
 | `0001-ipatool-auth-info-country.patch` | `auth info --format json` отдаёт `storeFront` (сырой `X-Set-Apple-Store-Front`, например `"143441-1,34"`) и `countryCode` (ISO) | `05d87977a554102c9b036306ec2c125febaa62433d2a080d588527a8225b7fb8` |
 | `0002-ipatool-list-purchases-all.patch` | `list-purchases --all`: вся история одним вызовом, без флага поведение прежнее | `025d9919871dba636a80559614a3ca402c37cf2be6965fb7a3203f4088e54445` |
 | `0003-ipatool-keychain-passphrase-env-stdin.patch` | пароль связки из env `IPATOOL_KEYCHAIN_PASSPHRASE` или `--keychain-passphrase-stdin` (первая строка stdin). Приоритет: флаг → stdin (если задан `--keychain-passphrase-stdin`, env тогда не читается) → env. Без них поведение прежнее | `76fdf028e6e6a5c11b9be9f647ab8281e17c2e4bd6ee1a22fa57c7d1c38e115c` |
+| `0004-ipatool-delisted-redownload.patch` | Повторная загрузка собственного iOS-приложения без публичной карточки; проверка ID и платформы | `b97e7938e587c99650410f706e18992a9aad0289d58a2cff47619857d47feb8b` |
+| `0005-ipatool-readonly-download-probe.patch` | Сравнение каналов по метаданным без покупки, загрузки IPA и приватных полей | `84cb1dd65ed7ea48a8020462b1aaa5c3cc67781ac9ca9a47b7e3367af3cfb2aa` |
+| `0006-ipatool-product-post-redirects.patch` | Сохранение POST при редиректах продуктов; ограничение адресов, пути, параметров и числа переходов | `60e3892b9f7d9251b8bba83a27d79af796af1a0de009d1dc84d2c25ca9007981` |
+| `0007-ipatool-purchase-evidence.patch` | HTTP 500 не считается лицензией; безопасные результаты каждого STDQ/GAME запроса | `f7fb822c4897e31a9d8b57827e9fc56fd8521a99dddbf5174c59db2656c97afe` |
+
+Патчи 0006–0007 не добавляют повторных покупок и не меняют цену или storefront.
+Неопределённая покупка возвращает `purchase response unconfirmed`; AppRestore
+учитывает её как `purchase_uncertain`. В JSON выводятся только разрешённые
+поля `purchaseAttempt`, а не сырой ответ Apple. Результаты живой проверки:
+[33 карточки «Найти» и контрольные приложения](../../docs/DELISTED-EXPERIMENT-2026-10-13.md).
 
 Содержимое `0001` совпадает с `maks-share/ipatool-auth-info-country.patch`. Отличается только заголовок `[PATCH 1/2]`, поэтому sha256 у файлов разные. Брать файл отсюда.
 
-## Подключение в `packaging/build-ipatool.sh` (для Димы)
+## Исторический пример подключения патчей 0001–0003
+
+Ниже сохранён первоначальный пример. Для текущей сборки использовать полный
+список 0001–0007 из `packaging/build-ipatool.sh`, а для запуска из исходников —
+`bash packaging/bootstrap-ipatool.sh`. AppRestore передаёт пароль связки только
+через stdin/PTY; поддержка env в upstream-патче приложением не используется.
 После `git checkout --detach FETCH_HEAD` и проверки хэша коммита:
 ```bash
 patches=(

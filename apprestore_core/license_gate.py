@@ -188,6 +188,8 @@ def purchase_outcome(exc: BaseException) -> str:
     if isinstance(exc, (ValueError, LicenseDenied)):
         return "refused"
     text = str(exc).casefold()
+    if "purchase response unconfirmed" in text:
+        return "uncertain"
     if isinstance(exc, CommandError) and "command not found" in text:
         return "refused"
     if isinstance(exc, CommandError):

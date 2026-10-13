@@ -18,6 +18,10 @@
 #   possible without a public catalog card; verify the returned app identity.
 #   0005-ipatool-readonly-download-probe.patch - compare download channels
 #   without purchasing/downloading and without private response data.
+#   0006-ipatool-product-post-redirects.patch - preserve product POSTs across
+#   bounded, validated Apple redirects in diagnostics and real operations.
+#   0007-ipatool-purchase-evidence.patch - distinguish confirmed acquisition,
+#   ownership, refusal and uncertain responses; emit safe per-attempt evidence.
 #
 # The archive is reproducible: packaging/pack_ipatool.py writes it with a fixed
 # mtime (SOURCE_DATE_EPOCH, else the commit time of $commit), uid/gid 0 and a
@@ -96,6 +100,8 @@ patches=(
   "0003-ipatool-keychain-passphrase-env-stdin.patch:76fdf028e6e6a5c11b9be9f647ab8281e17c2e4bd6ee1a22fa57c7d1c38e115c"
   "0004-ipatool-delisted-redownload.patch:b97e7938e587c99650410f706e18992a9aad0289d58a2cff47619857d47feb8b"
   "0005-ipatool-readonly-download-probe.patch:84cb1dd65ed7ea48a8020462b1aaa5c3cc67781ac9ca9a47b7e3367af3cfb2aa"
+  "0006-ipatool-product-post-redirects.patch:60e3892b9f7d9251b8bba83a27d79af796af1a0de009d1dc84d2c25ca9007981"
+  "0007-ipatool-purchase-evidence.patch:f7fb822c4897e31a9d8b57827e9fc56fd8521a99dddbf5174c59db2656c97afe"
 )
 for entry in "${patches[@]}"; do
   patch_name="${entry%%:*}"
@@ -161,7 +167,9 @@ for marker in \
   "--all cannot be combined with --page or --max-results" \
   "keychain-passphrase-stdin" \
   "catalog-independent redownload does not match the requested app" \
-  "Inspect download channels without purchase, asset download or private response data"
+  "Inspect download channels without purchase, asset download or private response data" \
+  "invalid Apple product redirect" \
+  "purchase response unconfirmed"
 do
   if ! grep -a -F -q -e "$marker" "$stage/bin/$name"; then
     echo "built ipatool is missing an expected fix: $marker" >&2

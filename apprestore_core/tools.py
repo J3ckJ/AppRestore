@@ -1268,6 +1268,7 @@ class AppRestoreTools:
         if not store_id.isdigit() or int(store_id) <= 0:
             raise ValueError("store_id must be a positive integer")
         require_grant(grant, store_id)
+        self.last_purchase_diagnostic = {"appId": store_id, "attempts": []}
         args = self._ipatool_cmd("--format", "json", "purchase", "--app-id", store_id)
         result = self.runner.run(
             args,
@@ -1276,6 +1277,11 @@ class AppRestoreTools:
             # hung purchase cannot hold the journal lock (→ purchase_uncertain).
             timeout=PURCHASE_TIMEOUT_SECONDS,
             env=self._ipatool_env(),
+        )
+        from .purchase_diagnostics import purchase_diagnostics
+
+        self.last_purchase_diagnostic = purchase_diagnostics(
+            (result.stdout or "") + "\n" + (result.stderr or ""), store_id
         )
         payload: dict[str, Any] = {}
         for line in reversed((result.stdout or "").splitlines()):
