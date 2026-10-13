@@ -90,6 +90,8 @@ class AppRestoreService:
             list[IpaMetadata],
             list[tuple[Path, str]],
         ] | None = None
+        #: GUI: the IPA is verified and about to go onto the phone.
+        self.on_device_install: Callable[[], None] | None = None
 
     @staticmethod
     def _make_private(path: Path, *, directory: bool = False) -> None:
@@ -1188,6 +1190,9 @@ class AppRestoreService:
                 verified,
                 context="staged IPA changed before the installer opened it",
             )
+            notice = self.on_device_install
+            if notice is not None:
+                notice()
             try:
                 request_state = self.tools.install_ipa(
                     udid,

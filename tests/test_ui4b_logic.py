@@ -357,6 +357,12 @@ def test_queue_rows_and_stop() -> None:
     assert rows[0]["stage"] == 1 and rows[0]["percent"] == -1
     assert rows[0]["stages"] == ["Скачано", "Установка", "Готово"]
     assert rows[1]["state"] == WAIT and rows[1]["right"] == "В очереди"
+    stuck = RestoreQueue()
+    stuck.start([item("gis", GROUP_REMOVED, 10, name="2ГИС")])
+    stuck.progress(99, "Скачиваем 99%")
+    stuck.progress(-1, "Ставим на iPhone")
+    phone = stuck.rows()[0]
+    assert phone["stage"] == 1 and phone["detail"] == "Ставится на iPhone" and phone["percent"] == -1
     queue.stop()
     assert not queue.active and queue.finished
     queue.settle("a", True)

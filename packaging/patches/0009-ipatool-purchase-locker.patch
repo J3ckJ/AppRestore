@@ -1,0 +1,693 @@
+From 7c1a0b0e9d4f4a6b8c2e1d0f9a8b7c6d5e4f3a2b Mon Sep 17 00:00:00 2001
+From: Eugene Lyub <lyubevgenij@gmail.com>
+Date: Tue, 13 Oct 2026 12:00:00 +0000
+Subject: [PATCH] Merge this account purchase locker into list-purchases --all
+
+---
+diff --git a/pkg/appstore/appstore_owned_apps.go b/pkg/appstore/appstore_owned_apps.go
+index 4d99586..7cb33ab 100644
+--- a/pkg/appstore/appstore_owned_apps.go
++++ b/pkg/appstore/appstore_owned_apps.go
+@@ -76,6 +76,9 @@ func (t *appstore) OwnedApps(input OwnedAppsInput) (OwnedAppsOutput, error) {
+ 	}
+ 
+ 	apps, fetchErr := t.fetchOwnedApps(input.Account, guid, signer)
++	if fetchErr == nil && input.All {
++		apps = t.mergeRestoreLocker(input.Account, apps)
++	}
+ 	if input.Platform != "" {
+ 		apps = slices.DeleteFunc(apps, func(app App) bool {
+ 			return !slices.Contains(app.Platforms, input.Platform)
+diff --git a/pkg/appstore/appstore_restore_locker.go b/pkg/appstore/appstore_restore_locker.go
+new file mode 100644
+index 0000000..37096ce
+--- /dev/null
++++ b/pkg/appstore/appstore_restore_locker.go
+@@ -0,0 +1,582 @@
++package appstore
++
++import (
++	"bytes"
++	"encoding/json"
++	"fmt"
++	"os"
++	"slices"
++	"strconv"
++	"strings"
++
++	"github.com/majd/ipatool/v2/pkg/http"
++	"howett.net/plist"
++)
++
++const (
++	restoreLockerBatch = 40
++	restoreLockerURL   = "https://se.itunes.apple.com/WebObjects/MZStoreElements.woa/wa/purchases"
++)
++
++// mergeRestoreLocker adds this account's own iTunes purchase locker to the
++// DAAP purchase history. The locker is the same Apple ID and the same
++// storefront; it includes purchases Apple omits from the Configurator feed.
++// A locker failure leaves the DAAP list unchanged.
++func (t *appstore) mergeRestoreLocker(account Account, apps []App) []App {
++	if t.storefrontClient == nil {
++		return apps
++	}
++
++	storefrontID := StoreFrontID(account.StoreFront)
++	if storefrontID == "" || account.PasswordToken == "" || account.DirectoryServicesID == "" {
++		return apps
++	}
++
++	known := make(map[int64]struct{}, len(apps))
++	for _, app := range apps {
++		if app.ID > 0 {
++			known[app.ID] = struct{}{}
++		}
++	}
++
++	var extra []App
++	seen := map[int64]struct{}{}
++
++	notes := map[string]lockerAttempt{}
++
++	for _, hidden := range []bool{false, true} {
++		entries, note := t.fetchLockerEntries(account, storefrontID, hidden)
++		notes[lockerNoteKey(hidden)] = note
++		if len(entries) == 0 {
++			continue
++		}
++
++		var missing []lockerEntry
++
++		for _, entry := range entries {
++			if entry.ID <= 0 {
++				continue
++			}
++
++			if _, ok := known[entry.ID]; ok {
++				continue
++			}
++
++			if _, ok := seen[entry.ID]; ok {
++				continue
++			}
++
++			seen[entry.ID] = struct{}{}
++			missing = append(missing, entry)
++		}
++
++		details := map[int64]App{}
++		if len(missing) > 0 {
++			loaded, detailErr := t.fetchLockerDetails(account, storefrontID, missing, hidden)
++			if detailErr == nil {
++				details = loaded
++			}
++		}
++
++		for _, entry := range missing {
++			app, ok := details[entry.ID]
++			if !ok {
++				app = App{ID: entry.ID}
++			}
++
++			app.ID = entry.ID
++			if len(app.Platforms) == 0 {
++				app.Platforms = entry.Platforms
++			}
++
++			extra = append(extra, app)
++		}
++	}
++
++	if len(extra) == 0 {
++		writeLockerStatus(notes, 0)
++		return apps
++	}
++
++	slices.SortFunc(extra, func(left, right App) int {
++		return int(left.ID - right.ID)
++	})
++	extra = t.lookupLockerNames(account, extra)
++	writeLockerStatus(notes, len(extra))
++
++	return append(apps, extra...)
++}
++
++type lockerEntry struct {
++	ID        int64
++	Platforms []Platform
++}
++
++func (t *appstore) fetchLockerEntries(account Account, storefrontID string, hidden bool) ([]lockerEntry, lockerAttempt) {
++	body := "action=POST&mt=8&vt=lockerData&restoreMode=" + lockerRestoreMode(hidden)
++	merged := map[int64]lockerEntry{}
++	note := lockerAttempt{Kind: "empty"}
++
++	for _, query := range lockerQueries(account.StoreFront, storefrontID, hidden) {
++		data, attempt, err := t.postRestoreLocker(account, query, body)
++		if attempt.Status != 0 || attempt.Kind != "" {
++			note = attempt
++		}
++		if err != nil {
++			continue
++		}
++
++		entries, parseErr := parseLockerEntries(data)
++		if parseErr != nil {
++			note = lockerAttempt{Status: attempt.Status, Kind: "bad"}
++			continue
++		}
++
++		note = lockerAttempt{Status: attempt.Status, Apps: len(entries), Kind: "ok"}
++		for _, entry := range entries {
++			if entry.ID > 0 {
++				merged[entry.ID] = entry
++			}
++		}
++	}
++
++	entries := make([]lockerEntry, 0, len(merged))
++	for _, entry := range merged {
++		entries = append(entries, entry)
++	}
++	if len(entries) > 0 {
++		note.Apps = len(entries)
++		note.Kind = "ok"
++	}
++
++	slices.SortFunc(entries, func(left, right lockerEntry) int {
++		return int(left.ID - right.ID)
++	})
++
++	return entries, note
++}
++
++func (t *appstore) fetchLockerDetails(account Account, storefrontID string, entries []lockerEntry, hidden bool) (map[int64]App, error) {
++	found := map[int64]App{}
++	mode := lockerRestoreMode(hidden)
++
++	for start := 0; start < len(entries); start += restoreLockerBatch {
++		end := start + restoreLockerBatch
++		if end > len(entries) {
++			end = len(entries)
++		}
++
++		ids := make([]string, 0, end-start)
++		for _, entry := range entries[start:end] {
++			ids = append(ids, strconv.FormatInt(entry.ID, 10))
++		}
++
++		body := "action=POST&contentIds=" + strings.Join(ids, ",") +
++			"&pillId=0&mt=8&sortValue=0&vt=contentData&restoreMode=" + mode
++		data, _, err := t.postRestoreLocker(account, "s="+storefrontID, body)
++		if err != nil {
++			return nil, err
++		}
++
++		for id, app := range parseLockerDetails(data) {
++			found[id] = app
++		}
++	}
++
++	return found, nil
++}
++
++func (t *appstore) postRestoreLocker(account Account, query, body string) (any, lockerAttempt, error) {
++	res, err := t.storefrontClient.Send(http.Request{
++		NoRedirects: true,
++		URL:         restoreLockerURL + "?" + query,
++		Method:      http.MethodPOST,
++		Headers: map[string]string{
++			"User-Agent":          "iTunes/12.12.10 (Windows; Microsoft Windows 10.0 x64) AppleWebKit/7615.2000.2.1",
++			"Content-Type":        "application/x-www-form-urlencoded",
++			"Accept":              "application/json, */*",
++			"X-Token":             account.PasswordToken,
++			"X-Dsid":              account.DirectoryServicesID,
++			"iCloud-DSID":         account.DirectoryServicesID,
++			"X-Apple-Store-Front": account.StoreFront,
++		},
++		Payload:        &http.RawPayload{Content: []byte(body)},
++		ResponseFormat: http.ResponseFormatRaw,
++	})
++	if err != nil {
++		return nil, lockerAttempt{Kind: "error"}, err
++	}
++
++	if res.StatusCode != 200 {
++		return nil, lockerAttempt{Status: res.StatusCode, Kind: "http"}, fmt.Errorf("purchase locker status %d", res.StatusCode)
++	}
++
++	data, err := decodeLockerPayload(res.Data)
++	if err != nil {
++		return nil, lockerAttempt{Status: res.StatusCode, Kind: "bad"}, err
++	}
++
++	return data, lockerAttempt{Status: res.StatusCode, Kind: "ok"}, nil
++}
++
++func lockerRestoreMode(hidden bool) string {
++	if hidden {
++		return "true"
++	}
++
++	return "undefined"
++}
++
++func lockerQueries(storeFront, storefrontID string, hidden bool) []string {
++	queries := []string{"s=" + storefrontID}
++	country, err := CountryCodeFromStoreFront(storeFront)
++	if err != nil || country == "" {
++		return queries
++	}
++
++	mode := "UNHIDDEN"
++	if hidden {
++		mode = "HIDDEN"
++	}
++
++	return append(queries, "cc="+strings.ToLower(country)+"&filtered=false&mode="+mode+"&mt=8")
++}
++
++type lockerAttempt struct {
++	Status int    `json:"status,omitempty"`
++	Apps   int    `json:"apps,omitempty"`
++	Kind   string `json:"kind,omitempty"`
++}
++
++func lockerNoteKey(hidden bool) string {
++	if hidden {
++		return "hidden"
++	}
++
++	return "visible"
++}
++
++func writeLockerStatus(notes map[string]lockerAttempt, added int) {
++	payload := map[string]any{
++		"visible": notes["visible"],
++		"hidden":  notes["hidden"],
++		"added":   added,
++	}
++	encoded, err := json.Marshal(payload)
++	if err != nil {
++		return
++	}
++
++	_ = os.WriteFile(lockerStatusPath(), encoded, 0o600)
++}
++
++func lockerStatusPath() string {
++	return os.TempDir() + string(os.PathSeparator) + "apprestore-locker-status.json"
++}
++
++func decodeLockerPayload(body []byte) (any, error) {
++	trimmed := bytes.TrimSpace(body)
++	if len(trimmed) == 0 {
++		return nil, fmt.Errorf("purchase locker response is empty")
++	}
++
++	if trimmed[0] == '{' || trimmed[0] == '[' {
++		var data any
++		if err := json.Unmarshal(trimmed, &data); err != nil {
++			return nil, err
++		}
++
++		return data, nil
++	}
++
++	if bytes.HasPrefix(trimmed, []byte("<?xml")) || bytes.HasPrefix(trimmed, []byte("<plist")) || bytes.HasPrefix(trimmed, []byte("bplist")) {
++		var data any
++		if _, err := plist.Unmarshal(trimmed, &data); err != nil {
++			return nil, err
++		}
++
++		return data, nil
++	}
++
++	raw, ok := lockerServerData(trimmed)
++	if !ok {
++		return nil, fmt.Errorf("purchase locker response is not a purchase list")
++	}
++
++	var data any
++	if err := json.Unmarshal(raw, &data); err != nil {
++		return nil, err
++	}
++
++	return data, nil
++}
++
++func lockerServerData(body []byte) ([]byte, bool) {
++	marker := []byte("its.serverData")
++	index := bytes.Index(body, marker)
++	if index < 0 {
++		return nil, false
++	}
++
++	rest := body[index+len(marker):]
++	start := bytes.IndexAny(rest, "{[")
++	if start < 0 {
++		return nil, false
++	}
++
++	raw := sliceJSONValue(rest[start:])
++	if len(raw) == 0 {
++		return nil, false
++	}
++
++	return raw, true
++}
++
++func sliceJSONValue(raw []byte) []byte {
++	depth := 0
++	inString := false
++	escape := false
++
++	for index, char := range raw {
++		if inString {
++			if escape {
++				escape = false
++				continue
++			}
++			if char == '\\' {
++				escape = true
++				continue
++			}
++			if char == '"' {
++				inString = false
++			}
++			continue
++		}
++
++		switch char {
++		case '"':
++			inString = true
++		case '{', '[':
++			depth++
++		case '}', ']':
++			depth--
++			if depth == 0 {
++				return raw[:index+1]
++			}
++		}
++	}
++
++	return nil
++}
++
++func (t *appstore) lookupLockerNames(account Account, apps []App) []App {
++	country, err := CountryCodeFromStoreFront(account.StoreFront)
++	if err != nil || country == "" {
++		return apps
++	}
++
++	var pending []int
++	for index, app := range apps {
++		if app.Name == "" && app.BundleID == "" {
++			pending = append(pending, index)
++		}
++	}
++
++	for start := 0; start < len(pending); start += restoreLockerBatch {
++		end := start + restoreLockerBatch
++		if end > len(pending) {
++			end = len(pending)
++		}
++
++		ids := make([]string, 0, end-start)
++		for _, index := range pending[start:end] {
++			ids = append(ids, strconv.FormatInt(apps[index].ID, 10))
++		}
++
++		found := t.lookupPublicNames(account.StoreFront, strings.ToLower(country), ids)
++		for _, index := range pending[start:end] {
++			named, ok := found[apps[index].ID]
++			if !ok {
++				continue
++			}
++			if apps[index].Name == "" {
++				apps[index].Name = named.Name
++			}
++			if apps[index].BundleID == "" {
++				apps[index].BundleID = named.BundleID
++			}
++		}
++	}
++
++	return apps
++}
++
++func (t *appstore) lookupPublicNames(storeFront, country string, ids []string) map[int64]App {
++	res, err := t.storefrontClient.Send(http.Request{
++		NoRedirects: true,
++		URL:         "https://itunes.apple.com/lookup?id=" + strings.Join(ids, ",") + "&country=" + country,
++		Method:      http.MethodGET,
++		Headers: map[string]string{
++			"Accept":              "application/json",
++			"X-Apple-Store-Front": storeFront,
++		},
++		ResponseFormat: http.ResponseFormatRaw,
++	})
++	if err != nil || res.StatusCode != 200 {
++		return nil
++	}
++
++	data, err := decodeLockerPayload(res.Data)
++	if err != nil {
++		return nil
++	}
++
++	return parseLockerDetails(data)
++}
++
++func parseLockerEntries(data any) ([]lockerEntry, error) {
++	root, ok := data.(map[string]any)
++	if !ok {
++		return nil, fmt.Errorf("purchase locker response is not an object")
++	}
++
++	apps, ok := root["Apps"].(map[string]any)
++	if !ok {
++		return nil, fmt.Errorf("purchase locker has no app map")
++	}
++
++	entries := make([]lockerEntry, 0, len(apps))
++	for key, value := range apps {
++		id, err := strconv.ParseInt(key, 10, 64)
++		if err != nil || id <= 0 {
++			continue
++		}
++
++		entries = append(entries, lockerEntry{
++			ID:        id,
++			Platforms: lockerPlatforms(value),
++		})
++	}
++
++	slices.SortFunc(entries, func(left, right lockerEntry) int {
++		return int(left.ID - right.ID)
++	})
++
++	return entries, nil
++}
++
++func lockerPlatforms(value any) []Platform {
++	var families []int
++
++	switch typed := value.(type) {
++	case float64:
++		families = []int{int(typed)}
++	case []any:
++		for _, item := range typed {
++			number, ok := item.(float64)
++			if ok {
++				families = append(families, int(number))
++			}
++		}
++	default:
++		return nil
++	}
++
++	var platforms []Platform
++	seen := map[Platform]struct{}{}
++
++	for _, family := range families {
++		var familyPlatforms []Platform
++
++		switch family {
++		case 1:
++			familyPlatforms = []Platform{PlatformIPhone}
++		case 2:
++			familyPlatforms = []Platform{PlatformIPad}
++		case 3:
++			familyPlatforms = []Platform{PlatformIPhone, PlatformIPad}
++		default:
++			continue
++		}
++
++		for _, platform := range familyPlatforms {
++			if _, ok := seen[platform]; ok {
++				continue
++			}
++
++			seen[platform] = struct{}{}
++			platforms = append(platforms, platform)
++		}
++	}
++
++	return platforms
++}
++
++func parseLockerDetails(data any) map[int64]App {
++	found := map[int64]App{}
++
++	var walk func(any)
++	walk = func(node any) {
++		switch value := node.(type) {
++		case map[string]any:
++			if app, ok := lockerDetailApp(value); ok {
++				found[app.ID] = app
++			}
++
++			for _, child := range value {
++				walk(child)
++			}
++		case []any:
++			for _, child := range value {
++				walk(child)
++			}
++		}
++	}
++	walk(data)
++
++	return found
++}
++
++func lockerDetailApp(item map[string]any) (App, bool) {
++	id := lockerFirstInt(item, "id", "adamId", "adamID", "trackId", "contentId")
++	if id <= 0 {
++		return App{}, false
++	}
++
++	name := lockerFirstString(item, "name", "trackName", "title", "itemName")
++	bundle := lockerFirstString(item, "bundleId", "bundleID", "bundleIdentifier")
++	if name == "" && bundle == "" {
++		return App{}, false
++	}
++
++	return App{ID: id, Name: name, BundleID: bundle}, true
++}
++
++func lockerFirstInt(item map[string]any, keys ...string) int64 {
++	for _, key := range keys {
++		switch value := item[key].(type) {
++		case float64:
++			if value > 0 {
++				return int64(value)
++			}
++		case string:
++			id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
++			if err == nil && id > 0 {
++				return id
++			}
++		}
++	}
++
++	return 0
++}
++
++func lockerFirstString(item map[string]any, keys ...string) string {
++	for _, key := range keys {
++		value, ok := item[key].(string)
++		if ok && strings.TrimSpace(value) != "" {
++			return strings.TrimSpace(value)
++		}
++	}
++
++	return ""
++}
+diff --git a/pkg/appstore/appstore_restore_locker_test.go b/pkg/appstore/appstore_restore_locker_test.go
+new file mode 100644
+index 0000000..cc11eed
+--- /dev/null
++++ b/pkg/appstore/appstore_restore_locker_test.go
+@@ -0,0 +1,79 @@
++package appstore
++
++import (
++	"strings"
++
++	. "github.com/onsi/ginkgo/v2"
++	. "github.com/onsi/gomega"
++)
++
++var _ = Describe("AppStore (RestoreLocker)", func() {
++	It("reads visible and hidden locker ids with device families", func() {
++		entries, err := parseLockerEntries(map[string]any{
++			"Apps": map[string]any{
++				"492224193": []any{float64(1)},
++				"0":         []any{float64(1)},
++				"bad":       []any{float64(3)},
++				"555":       float64(3),
++			},
++		})
++		Expect(err).ToNot(HaveOccurred())
++		Expect(entries).To(Equal([]lockerEntry{
++			{ID: 555, Platforms: []Platform{PlatformIPhone, PlatformIPad}},
++			{ID: 492224193, Platforms: []Platform{PlatformIPhone}},
++		}))
++	})
++
++	It("rejects a locker response without an app map", func() {
++		_, err := parseLockerEntries(map[string]any{"status": "ok"})
++		Expect(err).To(HaveOccurred())
++	})
++
++	It("reads names and bundle ids from locker content", func() {
++		found := parseLockerDetails(map[string]any{
++			"pageData": map[string]any{
++				"contentData": []any{
++					map[string]any{
++						"adamId":   "492224193",
++						"name":     "СберБанк",
++						"bundleId": "ru.sberbank.mobile",
++					},
++					map[string]any{"id": "1"},
++				},
++			},
++		})
++		Expect(found).To(HaveKey(int64(492224193)))
++		Expect(found[492224193].Name).To(Equal("СберБанк"))
++		Expect(found[492224193].BundleID).To(Equal("ru.sberbank.mobile"))
++		Expect(found).ToNot(HaveKey(int64(1)))
++	})
++
++	It("reads a purchase list embedded in an iTunes page", func() {
++		data, err := decodeLockerPayload([]byte(`<html><script>its.serverData = {"Apps":{"492224193":[1]}};</script></html>`))
++		Expect(err).ToNot(HaveOccurred())
++		entries, err := parseLockerEntries(data)
++		Expect(err).ToNot(HaveOccurred())
++		Expect(entries).To(Equal([]lockerEntry{
++			{ID: 492224193, Platforms: []Platform{PlatformIPhone}},
++		}))
++	})
++
++	It("asks the account's own country for hidden purchases", func() {
++		queries := lockerQueries("143441-1,34", "143441", true)
++		Expect(queries).To(Equal([]string{
++			"s=143441",
++			"cc=us&filtered=false&mode=HIDDEN&mt=8",
++		}))
++		Expect(strings.Join(queries, " ")).ToNot(ContainSubstring("cc=ru"))
++	})
++
++	It("leaves the purchase list unchanged when no locker client is configured", func() {
++		store := &appstore{}
++		apps := []App{{ID: 1, Name: "Kept"}}
++		Expect(store.mergeRestoreLocker(Account{
++			StoreFront:          "143441-1,34",
++			PasswordToken:       "password-token",
++			DirectoryServicesID: "123456789",
++		}, apps)).To(Equal(apps))
++	})
++})

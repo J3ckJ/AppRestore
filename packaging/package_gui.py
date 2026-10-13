@@ -10,7 +10,7 @@ check version -> zip as AppRestore-GUI-Windows.zip / AppRestore-GUI-macOS.zip
 on the unpacked copy.
 
     python packaging/package_gui.py --out gui-dist --ipatool-archive ARCHIVE
-        [--expect-version 0.3.2]
+        [--expect-version 0.4.0]
 """
 
 from __future__ import annotations

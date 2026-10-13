@@ -11,7 +11,8 @@ only forwards the views to QML. Uses Макс's ``apprestore_core.ipatool_api``:
   ``iter_purchases`` page by page, merging as pages arrive. ``cancel()`` sets
   the cancel event (ipatool checks it before the next page). Only a complete
   refresh replaces the cache. ``FETCH_ALL`` asks for ``list-purchases --all``
-  (one page with everything); the loader never relies on the number of pages.
+  (one page with everything, including this account's own purchase locker);
+  the loader never relies on the number of pages.
 """
 
 from __future__ import annotations

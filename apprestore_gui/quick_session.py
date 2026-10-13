@@ -152,6 +152,7 @@ class QuickSession(QObject):
     def __init__(self) -> None:
         super().__init__()
         self.service = GuiService(demo_mode=False)
+        self.service.core.on_device_install = self._note_device_install
         self._lock = threading.Lock()
         self._tool_lock = threading.Lock()
         self._probe_started = False
@@ -1504,6 +1505,11 @@ class QuickSession(QObject):
             self.filesChanged.emit()
             self._emit_files_note()
             self.copySettled.emit(path if ok else "", ok, message)
+
+    def _note_device_install(self) -> None:
+        """Download has finished. The phone install has no percent of its own."""
+
+        self.installProgress.emit(-1, f"Ставим на {self._noun_now()}")
 
     def _on_tool_output(self, text: str) -> None:
         self._output_tail = (self._output_tail + text.casefold())[-180:]

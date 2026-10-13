@@ -221,6 +221,29 @@ class ServiceTests(unittest.TestCase):
         self.assertNotEqual(installed_path, self.good.resolve())
         self.assertEqual(installed_path.name, "verified.ipa")
 
+    def test_install_notifies_before_the_phone_request(self) -> None:
+        tools = FakeTools()
+        service = self.service(tools)
+        seen: list[int] = []
+        service.on_device_install = lambda: seen.append(len(tools.install_calls))
+        service.install(
+            "TEST-UDID",
+            self.good,
+            expected_bundle_id="com.example.alpha",
+        )
+        self.assertEqual(seen, [0])
+        self.assertEqual(len(tools.install_calls), 1)
+
+        refused: list[int] = []
+        service.on_device_install = lambda: refused.append(1)
+        with self.assertRaisesRegex(AppRestoreError, "refusing"):
+            service.install(
+                "TEST-UDID",
+                self.wrong,
+                expected_bundle_id="com.example.alpha",
+            )
+        self.assertEqual(refused, [])
+
     def test_acquire_license_goes_through_the_gate(self) -> None:
         tools = FakeTools(["LICENSE", self.good])
         target = self.service(tools).download_by_store_id("12345678", acquire_license=True)

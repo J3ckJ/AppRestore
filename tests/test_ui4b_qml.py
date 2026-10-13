@@ -951,6 +951,20 @@ def test_needs_component_details_list_only_what_capabilities_lack(caps, missing)
         assert (name in text) == (name in missing)
 
 
+def test_history_store_id_starts_the_usual_restore(qapp) -> None:
+    source = FakeSource("empty")
+    source.signed_in = True
+    source.purchase_rows = lambda: [{"trackId": "492224193", "name": "СберБанк"}]
+    controller = Restore4b(source, onboarded=True)
+    controller.openHistory()
+    controller.restoreByStoreId("не id")
+    assert controller.history["open"] is True
+    assert controller.history["idNote"]
+    controller.restoreByStoreId("https://apps.apple.com/app/id492224193")
+    assert controller.history["open"] is False
+    assert controller._checking_space is True
+
+
 def test_history_sheet_lists_purchases(qapp) -> None:
     source = FakeSource("empty")
     source.purchase_rows = lambda: [

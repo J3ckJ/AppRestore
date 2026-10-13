@@ -44,7 +44,7 @@ from apprestore_gui.ui4b.licenses import (
 )
 from apprestore_gui.ui4b.licenses import candidates as license_candidates
 from apprestore_gui.ui4b.home import STATE_APPLE_REJECTED, STATE_DONE, STATE_STORE_MISMATCH, HomeInput, PhoneApp, home_view, link_action
-from apprestore_gui.ui4b.history import history_view
+from apprestore_gui.ui4b.history import ID_BAD, history_view, name_for_store_id, parse_store_id
 from apprestore_gui.ui4b.journal import journal_view
 from apprestore_gui.ui4b.region import apply_statuses, load_classifier
 from apprestore_gui.ui4b.region import classify as classify_region_ids
@@ -797,6 +797,7 @@ class Restore4b(QObject):
         self._files_chosen: set[str] = set()
         self._history_open = False
         self._history_query = ""
+        self._history_id_note = ""
         self._history_account = ""
         self.flow = RestoreFlow(source, self._refresh)
         self.scan = ScanCounter()
@@ -1486,6 +1487,7 @@ class Restore4b(QObject):
             busy=busy,
             failed=failed,
             query=self._history_query,
+            id_note=self._history_id_note,
         )
         view["open"] = self._history_open
         view["query"] = self._history_query
@@ -1495,6 +1497,7 @@ class Restore4b(QObject):
     def openHistory(self) -> None:
         self._history_open = True
         self._history_query = ""
+        self._history_id_note = ""
         self._load_history(force=True)
         self._refresh()
 
@@ -1502,6 +1505,7 @@ class Restore4b(QObject):
     def closeHistory(self) -> None:
         self._history_open = False
         self._history_query = ""
+        self._history_id_note = ""
         self._refresh()
 
     @Slot(str)
@@ -1515,7 +1519,22 @@ class Restore4b(QObject):
             return
         self._history_open = False
         self._history_query = ""
+        self._history_id_note = ""
         self.installFound(store_id, name)
+
+    @Slot(str)
+    def restoreByStoreId(self, text: str) -> None:
+        """Try the usual restore for an App Store id that the history list omitted."""
+
+        if not self.source.signed_in:
+            return
+        store_id = parse_store_id(text)
+        if not store_id:
+            self._history_id_note = ID_BAD
+            self._refresh()
+            return
+        name = name_for_store_id(self.source.purchase_rows(), store_id) or store_id
+        self.restoreFromHistory(store_id, name)
 
     @Property("QVariantMap", notify=changed)
     def journal(self) -> dict[str, object]:

@@ -83,10 +83,104 @@ Item {
             }
         }
 
+        Item {
+            id: byId
+            visible: !!root.h.signedIn
+            x: Theme.listPadX
+            y: sbox.y + sbox.height + (visible ? 10 : 0)
+            width: parent.width - 2 * Theme.listPadX
+            height: visible ? 44 : 0
+
+            Rectangle {
+                id: idGo
+                objectName: "historyStoreIdGo"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                readonly property bool ready: idInput.text.trim().length > 0
+                width: idGoText.implicitWidth + 2 * Theme.rowButtonPadX
+                height: 44
+                radius: Theme.radiusSearch
+                color: !ready ? Theme.soft : idGoMouse.pressed ? Theme.accentPressed : idGoMouse.containsMouse ? Theme.accentHover : Theme.accent
+                Accessible.role: Accessible.Button
+                Accessible.name: root.h.idAction || ""
+                T {
+                    id: idGoText
+                    anchors.centerIn: parent
+                    token: "seg"
+                    color: idGo.ready ? Theme.inkOnAccent : Theme.ink3Text
+                    text: root.h.idAction || ""
+                }
+                MouseArea {
+                    id: idGoMouse
+                    anchors.fill: parent
+                    hoverEnabled: idGo.ready
+                    cursorShape: idGo.ready ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: {
+                        if (idGo.ready)
+                            ui.restoreByStoreId(idInput.text)
+                    }
+                }
+            }
+
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: idGo.left
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                height: 44
+                radius: Theme.radiusSearch
+                readonly property bool typed: idInput.text.length > 0
+                color: typed ? Theme.card : Theme.soft
+                border.width: typed ? 2 : 0
+                border.color: Theme.ink
+                TextInput {
+                    id: idInput
+                    objectName: "historyStoreId"
+                    x: 14
+                    width: parent.width - 28
+                    anchors.verticalCenter: parent.verticalCenter
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.style("search").size
+                    color: Theme.ink
+                    selectByMouse: true
+                    clip: true
+                    inputMethodHints: Qt.ImhNoPredictiveText
+                    onAccepted: {
+                        if (text.trim() !== "")
+                            ui.restoreByStoreId(text)
+                    }
+                    Accessible.name: root.h.idPlaceholder || ""
+                }
+                T {
+                    x: 14
+                    width: parent.width - 28
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: idInput.text.length === 0
+                    token: "search"
+                    color: Theme.ink3Text
+                    elide: Text.ElideRight
+                    text: root.h.idPlaceholder || ""
+                }
+            }
+        }
+
+        T {
+            id: idNote
+            objectName: "historyStoreIdNote"
+            x: byId.x
+            y: byId.y + byId.height + (visible ? 6 : 0)
+            width: byId.width
+            visible: byId.visible && (root.h.idNote || "") !== ""
+            wrapMode: Text.WordWrap
+            token: "status"
+            color: Theme.ink2
+            text: root.h.idNote || ""
+        }
+
         T {
             id: lead
             x: sbox.x
-            y: sbox.y + sbox.height + 12
+            y: (idNote.visible ? idNote.y + idNote.implicitHeight : byId.y + byId.height) + 12
             width: sbox.width
             visible: (root.h.lead || "") !== ""
             wrapMode: Text.WordWrap
@@ -151,6 +245,7 @@ Item {
                         onClicked: ui.restoreFromHistory(r.storeId, r.name)
                     }
                 }
+                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line }
             }
             footer: Column {
                 width: list.width
