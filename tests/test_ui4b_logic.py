@@ -466,6 +466,7 @@ class RecordingBackend:
 
 
 def _store_items(count: int = 3):
+    pytest.importorskip("PySide6")
     from apprestore_gui.ui4b.fake_data import removed_items
 
     return removed_items()[:count]
@@ -555,6 +556,7 @@ def test_expired_session_during_run_drops_it_and_first_signin_does_not_start() -
 
 
 def test_restore_settled_with_session_error_drops_offloaded_batch() -> None:
+    pytest.importorskip("PySide6")
     from apprestore_gui.ui4b.fake_data import offloaded_items
     from apprestore_gui.ui4b.flow import RestoreFlow
     from apprestore_gui.ui4b.space import DeviceSpace
@@ -961,6 +963,7 @@ def test_no_vpn_in_user_texts() -> None:
 
 
 def test_wrong_2fa_code_goes_back_to_password_form() -> None:
+    pytest.importorskip("PySide6")
     from apprestore_gui.auth_pty import WRONG_CODE_TEXT, _explain_login_failure, is_wrong_code
 
     assert _explain_login_failure(1, "ERR invalid verification code") == WRONG_CODE_TEXT
@@ -1120,6 +1123,7 @@ def test_quick_ui_runs_on_real_sources_fakes_only_behind_flags() -> None:
     import ast
     import inspect
 
+    pytest.importorskip("PySide6")
     from apprestore_gui import app
     from apprestore_gui.ui4b import window
 

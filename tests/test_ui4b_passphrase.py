@@ -36,6 +36,7 @@ def _check(argv: list[str], env: dict[str, str]) -> None:
 
 @pytest.mark.parametrize("which", ["login", "unlock"])
 def test_4b_signin_never_puts_secrets_into_argv_or_env(monkeypatch, which) -> None:
+    pytest.importorskip("PySide6")
     from apprestore_gui import auth_pty
 
     for name in SECRET_ENV_NAMES:
@@ -65,6 +66,7 @@ def test_4b_signin_never_puts_secrets_into_argv_or_env(monkeypatch, which) -> No
 
 
 def test_4b_ipatool_api_client_has_no_passphrase_and_uses_gui_runner(monkeypatch) -> None:
+    pytest.importorskip("PySide6")
     from apprestore_gui import quick_session
 
     src = inspect.getsource(quick_session.QuickSession._ipatool_client)
