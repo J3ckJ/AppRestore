@@ -19,8 +19,7 @@ Go-тесты и маркеры бинарника проверяет `packaging
 Патчи 0006–0008 не добавляют повторных покупок и не меняют цену или storefront.
 Неопределённая покупка возвращает `purchase response unconfirmed`; AppRestore
 учитывает её как `purchase_uncertain`. В JSON выводятся только разрешённые
-поля `purchaseAttempt`, а не сырой ответ Apple. Результаты живой проверки:
-[33 карточки «Найти» и контрольные приложения](../../docs/DELISTED-EXPERIMENT-2026-10-13.md).
+поля `purchaseAttempt`, а не сырой ответ Apple.
 
 Содержимое `0001` совпадает с `maks-share/ipatool-auth-info-country.patch`. Отличается только заголовок `[PATCH 1/2]`, поэтому sha256 у файлов разные. Брать файл отсюда.
 

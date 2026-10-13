@@ -1016,6 +1016,7 @@ def test_links_only_lead_to_existing_things() -> None:
     assert link_action("Журнал") == "journal"
     assert link_action("Поставить из файла на компьютере…") == "ipa"
     assert link_action("Найти другое приложение") == "find"
+    assert link_action("Восстановить из истории") == "history"
     assert link_action("Настройки") == "settings"
     assert link_action("Как установить") == "howto" and link_action("Подробнее") == "details"
     v = home.home_view(home.HomeInput(connected=False, signed_in=True, items=removed4()))

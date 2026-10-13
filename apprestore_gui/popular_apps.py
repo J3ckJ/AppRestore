@@ -24,17 +24,20 @@ removed it in the same June 2026 wave, a few weeks before the VK apps.
 
 from __future__ import annotations
 
-from typing import NotRequired, TypedDict
+from typing import TypedDict
 
 
-class PopularApp(TypedDict):
+class _PopularAppRequired(TypedDict):
     storeId: str
     name: str
     detail: str
     mark: str
     color: str
     ink: str
-    site: NotRequired[str]
+
+
+class PopularApp(_PopularAppRequired, total=False):
+    site: str
 
 
 # Public sites used only when Apple no longer serves the store listing's artwork.

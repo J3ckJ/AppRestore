@@ -24,7 +24,7 @@ Window {
     readonly property string noun: (home.pill || "iPhone").split(" ")[0]
     property bool deviceMenu: false
     readonly property bool sheetUp: ui.pickerOpen || !!ui.signIn.open || !!ui.consent.open
-        || !!ui.account.open || !!ui.find.open || !!ui.settings.open || !!ui.files.open || !!ui.journal.open
+        || !!ui.account.open || !!ui.find.open || !!ui.history.open || !!ui.settings.open || !!ui.files.open || !!ui.journal.open
     onSheetUpChanged: if (sheetUp) deviceMenu = false
 
     // Ресайз (спека §2.1): телефон справа, низ всегда режется окном.
@@ -231,6 +231,14 @@ Window {
         active: !!ui.files.open
         focus: active
         sourceComponent: FilesSheet {}
+    }
+
+    // -- «Восстановить из истории» ------------------------------------------------
+    Loader {
+        anchors.fill: parent
+        active: !!ui.history.open
+        focus: active && !ui.signIn.open
+        sourceComponent: HistorySheet {}
     }
 
     // -- «Найти» (02-picker §6b) ------------------------------------------------------

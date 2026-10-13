@@ -757,7 +757,7 @@ def test_unpatched_ipatool_no_consent_owned_go_marked_listed(qapp, tmp_path) -> 
     home = controller.home
     assert home["state"] == "needs_component" and home["number"] == 4 and home["cta"] == "Выбрать и вернуть"
     assert home["fine"] == QUIET_LINE and HOWTO_LINK in home["fine"]
-    assert home["links"] == ["Найти другое приложение", DETAILS_LINK]
+    assert home["links"] == ["Восстановить из истории", DETAILS_LINK]
     assert "удалены из App Store" in home["lead"] and "уже на вашем Apple ID" in home["lead"]
     assert "ipatool" not in home["fine"] + home["lead"]  # technical words only behind «Подробнее»
     controller.link(DETAILS_LINK)
@@ -949,3 +949,22 @@ def test_needs_component_details_list_only_what_capabilities_lack(caps, missing)
     text = component.details_text(missing)
     for name in ("0001", "0002", "0003"):
         assert (name in text) == (name in missing)
+
+
+def test_history_sheet_lists_purchases(qapp) -> None:
+    source = FakeSource("empty")
+    source.purchase_rows = lambda: [
+        {"trackId": "10", "name": "Почта", "date": "2024-05-01", "bundleId": "ru.mail"},
+    ]
+    controller = Restore4b(source, onboarded=True)
+    controller.openHistory()
+    engine, _icons, warnings = open_window(qapp, controller)
+    window = engine.rootObjects()[0]
+    sheet = window.findChild(QQuickItem, "historySheet")
+    assert sheet is not None
+    window.close()
+    del window
+    del engine
+    qapp.processEvents()
+    assert warnings == []
+

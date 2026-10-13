@@ -44,6 +44,7 @@ from apprestore_gui.ui4b.licenses import (
 )
 from apprestore_gui.ui4b.licenses import candidates as license_candidates
 from apprestore_gui.ui4b.home import STATE_APPLE_REJECTED, STATE_DONE, STATE_STORE_MISMATCH, HomeInput, PhoneApp, home_view, link_action
+from apprestore_gui.ui4b.history import history_view
 from apprestore_gui.ui4b.journal import journal_view
 from apprestore_gui.ui4b.region import apply_statuses, load_classifier
 from apprestore_gui.ui4b.region import classify as classify_region_ids
@@ -794,6 +795,9 @@ class Restore4b(QObject):
         self._files_open = False
         self._files_mode = "list"
         self._files_chosen: set[str] = set()
+        self._history_open = False
+        self._history_query = ""
+        self._history_account = ""
         self.flow = RestoreFlow(source, self._refresh)
         self.scan = ScanCounter()
         self.onboarding = Onboarding(started=onboarded, apple_id_skipped=onboarded, finished=onboarded)
@@ -833,8 +837,30 @@ class Restore4b(QObject):
 
     # -- updates ---------------------------------------------------------------
 
+    def _load_history(self, *, force: bool = False) -> None:
+        """Refresh list-purchases while the history sheet is open.
+
+        Opening the sheet always reloads. Signing in with the sheet already
+        open reloads once for that Apple ID. Later purchase pages do not.
+        """
+
+        if not self._history_open:
+            return
+        if not self.source.signed_in:
+            self._history_account = ""
+            return
+        email = str(self.source.account_email or "").strip().lower()
+        if not force and email == self._history_account:
+            return
+        self._history_account = email
+        session = getattr(self.source, "session", None)
+        load = getattr(session, "loadPurchases", None)
+        if callable(load):
+            load()
+
     def _on_source(self) -> None:
         src = self.source
+        self._load_history()
         self.flow.observe_account(src.signed_in, src.auth_phase, src.relogin, src.account_email)
         if src.signed_in and src.account_email:
             attempt_account(src.account_email)  # another Apple ID → new §1.14 session
@@ -1424,6 +1450,8 @@ class Restore4b(QObject):
             self.openPicker()
         elif action == "find":
             self.finder.openWith("")
+        elif action == "history":
+            self.openHistory()
         elif action == "settings":
             self.openSettings()
         elif action == "howto":
@@ -1438,6 +1466,56 @@ class Restore4b(QObject):
             self._refresh()
         elif action == "journal":
             self.openJournal()
+
+    @Property("QVariantMap", notify=changed)
+    def history(self) -> dict[str, object]:
+        if not self._history_open:
+            return {
+                "open": False, "rows": [], "title": "", "close": "", "placeholder": "",
+                "lead": "", "spinner": "", "empty": "", "emptyLink": "", "query": "",
+            }
+        session = getattr(self.source, "session", None)
+        busy = bool(getattr(session, "purchasesBusy", False)) if session is not None else False
+        note = str(getattr(session, "purchasesNote", "") or "") if session is not None else ""
+        failed = (
+            bool(note) and not busy and not note.startswith("Останов") and "обновлён" not in note
+        )
+        view = history_view(
+            self.source.purchase_rows(),
+            signed_in=bool(self.source.signed_in),
+            busy=busy,
+            failed=failed,
+            query=self._history_query,
+        )
+        view["open"] = self._history_open
+        view["query"] = self._history_query
+        return view
+
+    @Slot()
+    def openHistory(self) -> None:
+        self._history_open = True
+        self._history_query = ""
+        self._load_history(force=True)
+        self._refresh()
+
+    @Slot()
+    def closeHistory(self) -> None:
+        self._history_open = False
+        self._history_query = ""
+        self._refresh()
+
+    @Slot(str)
+    def setHistoryQuery(self, query: str) -> None:
+        self._history_query = query
+        self._refresh()
+
+    @Slot(str, str)
+    def restoreFromHistory(self, store_id: str, name: str) -> None:
+        if self.flow.running or not str(store_id or "").strip():
+            return
+        self._history_open = False
+        self._history_query = ""
+        self.installFound(store_id, name)
 
     @Property("QVariantMap", notify=changed)
     def journal(self) -> dict[str, object]:

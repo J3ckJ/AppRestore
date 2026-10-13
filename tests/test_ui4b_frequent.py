@@ -176,3 +176,4 @@ def test_window_queues_find_icons_ahead_of_the_home_list() -> None:
     assert "controller.finder.changed.connect(queue_icons)" in src
     assert "ICON_SITES.get(store_id, \"\")" in src
     assert "consider_async(find, front=True)" in src
+    assert "consider_async(history, front=True)" in src

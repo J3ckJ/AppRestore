@@ -67,6 +67,18 @@ def build(settings: QSettings) -> tuple[QQmlApplicationEngine | None, list[Any]]
                     find.append((store_id, "", ICON_SITES.get(store_id, ""), str(row.get("iconUrl") or "")))
         if find:
             icon_book.consider_async(find, front=True)
+        history: list[tuple[str, ...]] = []
+        if controller._history_open:
+            for row in controller.history.get("rows", []):
+                store_id = str(row.get("storeId") or "")
+                if row.get("kind") == "app" and store_id.isdigit():
+                    history.append((
+                        store_id,
+                        str(row.get("bundleId") or ""),
+                        ICON_SITES.get(store_id, ""),
+                    ))
+        if history:
+            icon_book.consider_async(history, front=True)
         icon_book.consider_async(home)
 
     def open_doc(path: str) -> None:
