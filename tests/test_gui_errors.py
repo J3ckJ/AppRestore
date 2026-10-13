@@ -5,7 +5,11 @@ from __future__ import annotations
 import unittest
 
 from apprestore_gui.errors import explain_store_operation_error, explain_update_error, explain_user_error
-from apprestore_gui.main_window import friendly_restore_error
+
+try:
+    from apprestore_gui.main_window import friendly_restore_error
+except ModuleNotFoundError:
+    friendly_restore_error = None
 
 _ESSAY = (
     "Typical causes: a network failure reaching Apple (a TLS handshake "
@@ -55,6 +59,8 @@ class ExplainUserErrorTests(unittest.TestCase):
         self.assertNotIn("123456", text)
 
     def test_closed_session_points_at_apple_id(self) -> None:
+        if friendly_restore_error is None:
+            self.skipTest("PySide6 is not installed")
         text = friendly_restore_error(
             "ipatool is not authenticated; run `apprestore auth`"
         )

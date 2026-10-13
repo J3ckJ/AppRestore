@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("PySide6")
+
 from apprestore_core.models import Device, InstalledApp, IpaMetadata, OffloadedApp
 from apprestore_gui.quick_session import library_card, offloaded_card, phone_card
 
