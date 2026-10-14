@@ -343,7 +343,7 @@ def test_apple_rejected_vs_store_mismatch_mapping() -> None:
         assert not is_apple_rejected(text), text
 
 
-def test_apple_rejected_screen_mark_in_memory_no_region_group_no_retry(qapp, tmp_path, monkeypatch) -> None:
+def test_apple_rejected_screen_mark_in_memory_no_region_group_no_retry(qapp, qtbot, tmp_path, monkeypatch) -> None:
     from apprestore_gui.errors import STORE_REFUSED_TEXT
 
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -355,9 +355,9 @@ def test_apple_rejected_screen_mark_in_memory_no_region_group_no_retry(qapp, tmp
     c.clearAll()
     c.toggle(alfa.key)
     c.restoreSelected()
-    for _ in range(5):
-        qapp.processEvents()
-    assert c.flow.running
+    # Space checking runs in a worker thread; event-loop iterations alone do
+    # not guarantee that its queued result has arrived on a busy machine.
+    qtbot.waitUntil(lambda: c.flow.running, timeout=2000)
     src.installSettled.emit(alfa.store_id, False, STORE_REFUSED_TEXT)
     home = c.home
     assert home["state"] == STATE_APPLE_REJECTED
