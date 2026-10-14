@@ -93,6 +93,43 @@ class AppRestoreService:
         #: GUI: the IPA is verified and about to go onto the phone.
         self.on_device_install: Callable[[], None] | None = None
 
+    def _ipa_account_key(self) -> str | None:
+        """Resolve the live identity, never a remembered GUI/CLI account."""
+        try:
+            info = self.tools.ipatool_auth_info()
+        except Exception:
+            return None
+        if not isinstance(info, dict):
+            return None
+        email = info.get("email") or info.get("appleId") or info.get("appleID")
+        if not isinstance(email, str) or "@" not in email:
+            return None
+        return hashlib.sha256(email.strip().lower().encode("utf-8")).hexdigest()
+
+    def _account_ipa_directory(self, key: str) -> Path:
+        return self.library / "accounts" / key
+
+    def _ipa_matches_account(self, path: Path, key: str | None = None) -> bool:
+        if key is None:
+            key = self._ipa_account_key()
+        if key is None:
+            return False
+        # Legacy and externally discovered IPAs have no proven owner.
+        directory = self._account_ipa_directory(key)
+        if directory.is_symlink() or directory.parent.is_symlink():
+            return False
+        return not path.is_symlink() and path.resolve().parent == directory.resolve()
+
+    def _account_local_ipas(self) -> list[IpaMetadata]:
+        entries, _ = self.scan_local()
+        key = self._ipa_account_key()
+        if key is None:
+            return []
+        return [
+            entry for entry in entries
+            if self._ipa_matches_account(entry.path, key)
+        ]
+
     @staticmethod
     def _make_private(path: Path, *, directory: bool = False) -> None:
         try:
@@ -176,7 +213,7 @@ class AppRestoreService:
         return self._local_scan_cache
 
     def offloaded(self, udid: str) -> list[OffloadedApp]:
-        local, _ = self.scan_local()
+        local = self._account_local_ipas()
         catalog = load_imazing_catalog(imazing_catalog_candidates())
         payload = self.tools.list_apps(udid)
         return parse_offloaded_apps(payload, local, catalog)
@@ -184,7 +221,7 @@ class AppRestoreService:
     def installed(self, udid: str) -> list[InstalledApp]:
         """Fully installed user apps, with a store id when the device has one."""
 
-        local, _ = self.scan_local()
+        local = self._account_local_ipas()
         catalog = load_imazing_catalog(imazing_catalog_candidates())
         payload = self.tools.list_apps(udid)
         return parse_installed_apps(payload, local, catalog)
@@ -196,7 +233,7 @@ class AppRestoreService:
         Sources: iMazing Apps.plist history, local IPA library, and known-apps.json.
         Currently installed apps (including offloaded placeholders) are excluded.
         """
-        local, _ = self.scan_local()
+        local = self._account_local_ipas()
         records = load_imazing_app_records(imazing_catalog_candidates())
         payload = self.tools.list_apps(udid)
         present = installed_bundle_ids(payload)
@@ -297,7 +334,7 @@ class AppRestoreService:
             raise AppRestoreError(str(exc)) from exc
 
     def find_local(self, bundle_id: str) -> Path | None:
-        entries, _ = self.scan_local()
+        entries = self._account_local_ipas()
         return find_exact_ipa(bundle_id, entries)
 
     def authenticate(self, email: str) -> None:
@@ -618,12 +655,23 @@ class AppRestoreService:
         downloaded: VerifiedIpa,
         *,
         expected_bundle_id: str,
+        account_key: str,
     ) -> tuple[Path, VerifiedIpa]:
         """Atomically move and then verify the exact bytes stored in the library."""
 
+        if self._ipa_account_key() != account_key:
+            raise AppRestoreError(
+                "Apple ID changed during download; retry with the intended account"
+            )
+        directory = self._account_ipa_directory(account_key)
+        if directory.is_symlink() or directory.parent.is_symlink():
+            raise AppRestoreError("refusing a symlink in the account IPA library")
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self._make_private(directory.parent, directory=True)
+        self._make_private(directory, directory=True)
         expected = validate_bundle_id(expected_bundle_id)
         version = self._safe_version(downloaded.metadata.version)
-        target = self.library / (
+        target = directory / (
             f"{expected}-{version}-{downloaded.sha256[:12]}.ipa"
         )
         if target.is_symlink():
@@ -641,7 +689,7 @@ class AppRestoreService:
             if existing is not None and existing.sha256 == downloaded.sha256:
                 self._cache_verified_ipa(existing)
                 return target, existing
-            target = self.library / (
+            target = directory / (
                 f"{expected}-{version}-{downloaded.sha256[:12]}-"
                 f"{uuid.uuid4().hex[:8]}.ipa"
             )
@@ -1023,6 +1071,9 @@ class AppRestoreService:
                     "store_id must be an 8-12 digit positive integer"
                 )
             store_id = parsed_store_id
+        account_key = self._ipa_account_key()
+        if account_key is None:
+            raise AppRestoreError("Sign in to Apple ID before downloading an IPA")
         with tempfile.TemporaryDirectory(
             prefix=".apprestore-download-",
             dir=self.library,
@@ -1038,6 +1089,7 @@ class AppRestoreService:
                 temporary,
                 downloaded,
                 expected_bundle_id=expected,
+                account_key=account_key,
             )
             self._remember_app_best_effort(
                 store_id=verified_store_id,
@@ -1069,6 +1121,9 @@ class AppRestoreService:
         if not self.tools.ipatool_authenticated():
             raise AppRestoreError("ipatool is not authenticated; run `apprestore auth`")
 
+        account_key = self._ipa_account_key()
+        if account_key is None:
+            raise AppRestoreError("Sign in to Apple ID before downloading an IPA")
         with tempfile.TemporaryDirectory(
             prefix=".apprestore-download-",
             dir=self.library,
@@ -1127,6 +1182,7 @@ class AppRestoreService:
                 temporary,
                 downloaded,
                 expected_bundle_id=expected,
+                account_key=account_key,
             )
             self._remember_app_best_effort(
                 store_id=resolved,
@@ -1178,6 +1234,27 @@ class AppRestoreService:
         expected_bundle_id: str | None = None,
     ) -> IpaMetadata:
         source = Path(ipa).expanduser()
+        # An explicitly supplied external IPA remains usable offline. Cached
+        # library files, including legacy shared files, require a known owner.
+        cached = False
+        for candidate, root in (
+            (Path(os.path.abspath(source)), Path(os.path.abspath(self.library))),
+            (source.resolve(), self.library.resolve()),
+        ):
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                continue
+            cached = True
+            break
+        account_key = self._ipa_account_key() if cached else None
+        if cached and (
+            account_key is None or not self._ipa_matches_account(source, account_key)
+        ):
+            raise AppRestoreError(
+                "Cached IPA belongs to another Apple ID or has no verified owner; "
+                "download it again with the current account"
+            )
         with self._staged_ipa(
             source,
             expected_bundle_id=expected_bundle_id,
@@ -1193,6 +1270,8 @@ class AppRestoreService:
             notice = self.on_device_install
             if notice is not None:
                 notice()
+            if cached and self._ipa_account_key() != account_key:
+                raise AppRestoreError("Apple ID changed before installation; retry")
             try:
                 request_state = self.tools.install_ipa(
                     udid,
@@ -1266,7 +1345,7 @@ class AppRestoreService:
 
         Returns a short human-readable result status.
         """
-        if app.local_ipa:
+        if app.local_ipa and self._ipa_matches_account(app.local_ipa):
             print(f"  using local IPA: {app.local_ipa}")
             metadata = self.install(
                 udid,
@@ -1359,7 +1438,7 @@ class AppRestoreService:
         Unlike offloaded restore, there is no placeholder to ask iOS to
         redownload — only local IPA or App Store download via ipatool.
         """
-        if app.local_ipa and app.bundle_id:
+        if app.local_ipa and app.bundle_id and self._ipa_matches_account(app.local_ipa):
             print(f"  using local IPA: {app.local_ipa}")
             metadata = self.install(
                 udid,
