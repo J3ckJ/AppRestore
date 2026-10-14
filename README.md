@@ -74,7 +74,8 @@ App Store кнопки «Загрузить» уже нет: приложени�
 
 ## Что нужно
 
-- компьютер с **Windows 10/11 (64 бит)** или **macOS**;
+- компьютер с **Windows 10/11 (64 бит)** или **macOS**; экспериментальный
+  запуск на Linux описан в [отдельном разделе](#linux-экспериментально);
 - iPhone и кабель **USB**. Экран телефона разблокирован, на вопрос «Доверять
   этому компьютеру?» ответьте **Доверять**;
 - интернет;
@@ -204,6 +205,20 @@ apprestore
 Установщик сначала собирает новую версию отдельно и только потом заменяет
 старую.
 
+### Linux (экспериментально)
+
+Из каталога исходников:
+
+```bash
+bash install-linux.sh --gui
+apprestore-gui
+```
+
+Без `--gui` устанавливается только CLI. Требования: `bash install-linux.sh --help`.
+CLI, окно GUI и самодиагностика сборки проверены на KDE neon 24.04 x86_64/Wayland.
+Готовых Linux-релизов и автообновления пока нет; реальный вход и установка
+через GUI ещё не проверялись.
+
 ### Как пользоваться терминальной версией
 
 1. Подключите iPhone по USB, разблокируйте его и нажмите **Доверять**.
@@ -300,7 +315,7 @@ ipatool на Windows, чтобы зашифровать сохранённый �
   в Apple;
 - сборки для Windows не подписаны, поэтому SmartScreen показывает
   предупреждение;
-- Linux не поддерживается;
+- Linux: экспериментальный запуск — см. [инструкцию](#linux-экспериментально);
 - вернуть приложение, которое убрали из магазина, получится, только если Apple
   ещё отдаёт его вашему Apple ID;
 - это beta: смотрите последний выпуск и [список изменений](./CHANGELOG.md).
@@ -336,6 +351,8 @@ AppRestore распространяется по лицензии [GNU GPL v3](.
 **AppRestore** brings offloaded or deleted apps back to an iPhone over USB from
 Windows or macOS, using your own Apple ID and the verified **ipatool 2.6.0**.
 It does not bypass DRM.
+
+Experimental Linux setup: [source installation](#linux-экспериментально).
 
 Download from
 [the latest release](https://github.com/J3ckJ/AppRestore/releases/latest):

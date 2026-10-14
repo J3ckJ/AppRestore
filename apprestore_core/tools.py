@@ -203,7 +203,7 @@ class AppRestoreTools:
         return [self._tool("ipatool"), *parts]
 
     def _pymobiledevice3_cmd(self, *parts: str) -> list[str]:
-        if platform.system() in ("Windows", "Darwin"):
+        if is_frozen() or platform.system() in ("Windows", "Darwin"):
             try:
                 module_available = (
                     importlib.util.find_spec("pymobiledevice3") is not None

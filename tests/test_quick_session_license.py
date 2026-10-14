@@ -35,6 +35,9 @@ class StoreTools:
         self.downloads = 0
         self.purchases: list[str] = []
 
+    def ipatool_auth_info(self) -> dict[str, object]:
+        return {"email": "test@example.com", "success": True}
+
     def ipatool_authenticated(self) -> bool:
         return True
 
