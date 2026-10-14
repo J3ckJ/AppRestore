@@ -23,6 +23,9 @@ class FakeTools:
         self.purchase_calls: list[dict[str, object]] = []
         self.install_calls: list[tuple[str, Path]] = []
 
+    def ipatool_auth_info(self) -> dict[str, object]:
+        return {"email": "test@example.com", "success": True}
+
     def ipatool_authenticated(self) -> bool:
         return True
 
@@ -342,7 +345,7 @@ class ServiceTests(unittest.TestCase):
                 ns=(committed.st_atime_ns, committed.st_mtime_ns),
             )
 
-        expected_target = self.library / (
+        expected_target = service._account_ipa_directory(service._ipa_account_key()) / (
             f"com.example.alpha-1.0-{service._sha256(downloaded)[:12]}.ipa"
         )
 
