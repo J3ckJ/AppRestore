@@ -1,21 +1,35 @@
 # Локальные патчи ipatool для AppRestore
 
-База: majd/ipatool `cde7d00355e152714377b953ec57438626d3cb5a` (наш 2.6.0+redirect).
-Применять строго по порядку 0001–0009: новые патчи зависят от предыдущих и
-изменяют некоторые общие файлы. Полную последовательность, SHA-256,
+База: majd/ipatool **v2.8.1** `3e84853e2e5d60540a5022b64895d496910144eb`.
+С 6 ноября 2026 Apple принимает вход в App Store только по новому протоколу
+(локальная Anisette, provisioning, Store AMD-подписи). ipatool 2.6.0 получал
+пустой HTTP 204, поэтому патчи перенесены на 2.8.1.
+
+Применять строго по порядку 0001–0008. Полную последовательность, SHA-256,
 Go-тесты и маркеры бинарника проверяет `packaging/build-ipatool.sh`.
+Исходники серии лежат как отдельные коммиты поверх v2.8.1; патчи — это
+`git diff --full-index` каждого коммита.
 
 | Файл | Что делает | sha256 |
 |---|---|---|
-| `0001-ipatool-auth-info-country.patch` | `auth info --format json` отдаёт `storeFront` (сырой `X-Set-Apple-Store-Front`, например `"143441-1,34"`) и `countryCode` (ISO) | `05d87977a554102c9b036306ec2c125febaa62433d2a080d588527a8225b7fb8` |
-| `0002-ipatool-list-purchases-all.patch` | `list-purchases --all`: вся история одним вызовом, без флага поведение прежнее | `025d9919871dba636a80559614a3ca402c37cf2be6965fb7a3203f4088e54445` |
-| `0003-ipatool-keychain-passphrase-env-stdin.patch` | пароль связки из env `IPATOOL_KEYCHAIN_PASSPHRASE` или `--keychain-passphrase-stdin` (первая строка stdin). Приоритет: флаг → stdin (если задан `--keychain-passphrase-stdin`, env тогда не читается) → env. Без них поведение прежнее | `76fdf028e6e6a5c11b9be9f647ab8281e17c2e4bd6ee1a22fa57c7d1c38e115c` |
-| `0004-ipatool-delisted-redownload.patch` | Повторная загрузка собственного iOS-приложения без публичной карточки; проверка ID и платформы | `b97e7938e587c99650410f706e18992a9aad0289d58a2cff47619857d47feb8b` |
-| `0005-ipatool-readonly-download-probe.patch` | Сравнение каналов по метаданным без покупки, загрузки IPA и приватных полей | `84cb1dd65ed7ea48a8020462b1aaa5c3cc67781ac9ca9a47b7e3367af3cfb2aa` |
-| `0006-ipatool-product-post-redirects.patch` | Сохранение POST при редиректах продуктов; ограничение адресов, пути, параметров и числа переходов | `60e3892b9f7d9251b8bba83a27d79af796af1a0de009d1dc84d2c25ca9007981` |
-| `0007-ipatool-purchase-evidence.patch` | HTTP 500 не считается лицензией; безопасные результаты каждого STDQ/GAME запроса | `f7fb822c4897e31a9d8b57827e9fc56fd8521a99dddbf5174c59db2656c97afe` |
-| `0008-ipatool-unpinned-update.patch` | Загрузка лицензированного iOS-пакета через updateProduct без версии в каталоге; проверка ID, версии и SINF | `a1274240a24aa0c4f8e376775168f6db5710086bc7eaaf0a06580fb05ba69a22` |
-| `0009-ipatool-purchase-locker.patch` | `list-purchases --all` дополняет историю собственным locker этого Apple ID (видимые и скрытые покупки) на storefront аккаунта; сбой locker не ломает список DAAP | `e173d0729fc81a169cf519213e02b38087befe72fec621b7908da94c2bb124c4` |
+| `0001-ipatool-auth-info-country.patch` | `auth info --format json` отдаёт `storeFront` и `countryCode` (ISO). В 2.8 список витрин загружается из сети, поэтому для `auth info` и диагностики добавлена офлайн-таблица из 2.6.0 | `8ed499c69be593789cc3fd05de4a220f8779be102ec5bc0a3e3b653346cfda6d` |
+| `0002-ipatool-list-purchases-all.patch` | `list-purchases --all`: вся история одним вызовом, без флага поведение прежнее | `035e6760ffdec8aedfe957bc3a3ea82dc2c0a6bfc7054afc1c6fa4eefb6e8e32` |
+| `0003-ipatool-keychain-passphrase-env-stdin.patch` | пароль связки из env `IPATOOL_KEYCHAIN_PASSPHRASE` или `--keychain-passphrase-stdin`; AppRestore использует только stdin | `d1eb59ff504e1986735e46e9a1b4c81901b22ee746a1eb545a952e68a1aac701` |
+| `0004-ipatool-readonly-download-probe.patch` | `probe-download`: сравнение каналов по метаданным без покупки, загрузки IPA и приватных полей (бывший 0005) | `cbe7fe7e62d417f8e729498adaf81196a5996eba0bee0259e329cf9647200837` |
+| `0005-ipatool-purchase-locker.patch` | `list-purchases --all` дополняет историю собственным locker этого Apple ID на его storefront (бывший 0009) | `f4d63cd207469c19cc06d2a0d48b67ace0df665ae3a9a3c73c0036200b9637d5` |
+| `0006-ipatool-product-post-redirects.patch` | POST продукта сохраняется при редиректах Apple (ограничены хост, путь, параметры, число переходов); Store AMD-подпись 2.8 пересчитывается для каждого адреса; `probe-download` идёт тем же подписанным путём | `1d9c10872990e9fff6802de101726ddbad13f26fedd2054ba202dae8f6691251` |
+| `0007-ipatool-purchase-evidence.patch` | HTTP 500 не считается лицензией; безопасные результаты каждого STDQ/GAME запроса (`purchaseAttempt`) | `e4b25df28cc2e8c7e01aae855d556c8d49e8437ffb0590e56ed515d64088632e` |
+| `0008-ipatool-unavailable-redownload-update-probe.patch` | пустой ответ volumeStore 2059 тоже ведёт в read-only канал redownload; `probe-download` смотрит канал `update_unpinned` (остаток бывших 0004/0008) | `fcfb39ecab336f7a865c0b7beea1b859ded469e333acba9a31c0f5a96684850d` |
+
+Убраны при переходе на 2.8.1 (покрыто upstream):
+
+- бывший `0004-ipatool-delisted-redownload` — 2.8.0/2.8.1 сами повторно
+  скачивают снятые с App Store приложения (unpinned redownload + ent/download,
+  проверка ID и bundle id, issues majd/ipatool#654, #656, #662);
+- бывший `0008-ipatool-unpinned-update` как запасной путь скачивания —
+  upstream сознательно ограничивает восстановление снятых приложений каналами
+  redownload и ent/download (тесты «does not … try updateProduct»). Осталась
+  только диагностика этого канала в `probe-download`.
 
 Патчи 0006–0008 не добавляют повторных покупок и не меняют цену или storefront.
 Неопределённая покупка возвращает `purchase response unconfirmed`; AppRestore
@@ -23,32 +37,6 @@ Go-тесты и маркеры бинарника проверяет `packaging
 поля `purchaseAttempt`, а не сырой ответ Apple.
 
 Содержимое `0001` совпадает с `maks-share/ipatool-auth-info-country.patch`. Отличается только заголовок `[PATCH 1/2]`, поэтому sha256 у файлов разные. Брать файл отсюда.
-
-## Исторический пример подключения патчей 0001–0003
-
-Ниже сохранён первоначальный пример. Для текущей сборки использовать полный
-список 0001–0009 из `packaging/build-ipatool.sh`, а для запуска из исходников —
-`bash packaging/bootstrap-ipatool.sh`. AppRestore передаёт пароль связки только
-через stdin/PTY; поддержка env в upstream-патче приложением не используется.
-После `git checkout --detach FETCH_HEAD` и проверки хэша коммита:
-```bash
-patches=(
-  "0001-ipatool-auth-info-country.patch 05d87977a554102c9b036306ec2c125febaa62433d2a080d588527a8225b7fb8"
-  "0002-ipatool-list-purchases-all.patch 025d9919871dba636a80559614a3ca402c37cf2be6965fb7a3203f4088e54445"
-  "0003-ipatool-keychain-passphrase-env-stdin.patch 76fdf028e6e6a5c11b9be9f647ab8281e17c2e4bd6ee1a22fa57c7d1c38e115c"
-)
-for entry in "${patches[@]}"; do
-  read -r file sum <<<"$entry"
-  echo "$sum  $root/packaging/patches/$file" | shasum -a 256 -c -
-  git -C "$work/src" apply --whitespace=nowarn "$root/packaging/patches/$file"
-done
-```
-Маркеры в готовом бинарнике добавить в существующий цикл `for marker in`:
-- `0002`: `"--all cannot be combined with --page or --max-results"` (в непатченном бинарнике строки нет, проверено `grep`).
-- `0003`: `"keychain-passphrase-stdin"` (в непатченном бинарнике 0 совпадений; `IPATOOL_KEYCHAIN_PASSPHRASE` тоже подходит).
-- `0001`: надёжной уникальной строки нет: `countryCode` и `storeFront` встречаются и в непатченном бинарнике. Защищают проверка sha256 плюс `git apply` (оба валят сборку при несовпадении). Если нужен маркер именно в бинарнике, можно добавить в патч уникальную строку, скажите.
-
-После патчей архивы получатся другие, поэтому нужно обновить SHA-256 в `fetch_ipatool.py` и установщиках. Имя тега или версии (`ipatool-2.6.0-redirect`) стоит сменить, чтобы не путать со старыми архивами. Это решает Евгений.
 
 ## Синтаксис `--all`
 ```
