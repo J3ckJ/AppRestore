@@ -6,12 +6,12 @@ umask 077
 PATH='/usr/bin:/bin:/usr/sbin:/sbin'
 export PATH
 
-APPRESTORE_VERSION="0.4.0"
+APPRESTORE_VERSION="0.4.1"
 PYTHON_VERSION="3.12.13"
 PYTHON_BUILD="20260804"
 PYTHON_MACOS_X64_SHA256="23c1069b954060a875cce80a2d98afe9ca20b8e5244cf8df6c9475497d78bc4c"
 PYTHON_MACOS_ARM64_SHA256="b00971ee829e39965e2bda5585666dfdcc74bd1bd97f4b75071b3b05cecf52fd"
-IPATOOL_VERSION="2.6.0"
+IPATOOL_VERSION="2.8.1"
 IPATOOL_MACOS_AMD64_SHA256="576bde4baf04365fcdea46eb7f3e5bb6ea143d0d9e53d6e2711136cc608aac84"
 IPATOOL_MACOS_ARM64_SHA256="faf98ef8067f1ef4783123d00561b4ece10dc7419631eb9555d88a1da2f61f3f"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -340,7 +340,7 @@ install_pinned_ipatool() {
   esac
 
   archive_name="ipatool-$IPATOOL_VERSION-macos-$asset_arch.tar.gz"
-  archive_url="https://github.com/J3ckJ/AppRestore/releases/download/ipatool-2.6.0-redirect/$archive_name"
+  archive_url="https://github.com/J3ckJ/AppRestore/releases/download/ipatool-2.8.1-apprestore/$archive_name"
   IPATOOL_ARCHIVE="$(mktemp "$APP_SUPPORT_DIR/.ipatool-download.XXXXXXXX")"
 
   note "Скачивание проверенного ipatool $IPATOOL_VERSION ($machine)…"

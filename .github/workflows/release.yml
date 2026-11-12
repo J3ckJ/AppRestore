@@ -209,7 +209,7 @@ jobs:
       - name: Set up pinned Go toolchain for AppRestore ipatool
         uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
-          go-version: "1.25.0"
+          go-version: "1.26.5"
           cache: false
 
       - name: Install locked runtime and pinned GUI build tools
@@ -232,7 +232,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "patched ipatool build failed" }
           pyinstaller packaging/apprestore-gui.spec --noconfirm --clean
           if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed" }
-          python packaging/package_gui.py --out gui-dist --expect-version "${{ needs.validate-tag.outputs.version }}" --ipatool-archive dist/ipatool/ipatool-2.6.0-windows-amd64.tar.gz
+          python packaging/package_gui.py --out gui-dist --expect-version "${{ needs.validate-tag.outputs.version }}" --ipatool-archive dist/ipatool/ipatool-2.8.1-windows-amd64.tar.gz
           if ($LASTEXITCODE -ne 0) { throw "GUI packaging failed" }
 
       - name: Upload GUI asset
@@ -244,11 +244,28 @@ jobs:
           retention-days: 7
 
   gui-macos:
-    name: GUI app / macOS
+    name: GUI app / macOS ${{ matrix.label }}
     needs:
       - validate-tag
       - macos-tests
-    runs-on: macos-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Apple Silicon build (the default macOS asset).
+          - runner: macos-latest
+            label: Apple Silicon
+            arch: arm64
+            asset: AppRestore-GUI-macOS.zip
+            artifact: apprestore-gui-macos
+          # Intel build: runtime.lock pins a cryptography line with a
+          # universal2 wheel for x86_64 macOS, so this stays binary-only.
+          - runner: macos-15-intel
+            label: Intel
+            arch: x86_64
+            asset: AppRestore-GUI-macOS-Intel.zip
+            artifact: apprestore-gui-macos-intel
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
 
     env:
@@ -269,7 +286,7 @@ jobs:
       - name: Set up pinned Go toolchain for AppRestore ipatool
         uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
-          go-version: "1.25.0"
+          go-version: "1.26.5"
           cache: false
 
       - name: Install locked runtime and pinned GUI build tools
@@ -288,6 +305,10 @@ jobs:
       - name: Build, self-test and zip the GUI app
         run: |
           set -euo pipefail
+          if [[ "$(uname -m)" != "${{ matrix.arch }}" ]]; then
+            echo "runner is $(uname -m), expected ${{ matrix.arch }}" >&2
+            exit 1
+          fi
           case "$(uname -m)" in
             arm64) ipatool_asset="macos-arm64" ;;
             x86_64) ipatool_asset="macos-amd64" ;;
@@ -296,13 +317,14 @@ jobs:
           bash packaging/build-ipatool.sh "$ipatool_asset"
           pyinstaller packaging/apprestore-gui.spec --noconfirm --clean
           python packaging/package_gui.py --out gui-dist --expect-version "${{ needs.validate-tag.outputs.version }}" \
-            --ipatool-archive "dist/ipatool/ipatool-2.6.0-${ipatool_asset}.tar.gz"
+            --ipatool-archive "dist/ipatool/ipatool-2.8.1-${ipatool_asset}.tar.gz"
+          test -f "gui-dist/${{ matrix.asset }}"
 
       - name: Upload GUI asset
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: apprestore-gui-macos-${{ needs.validate-tag.outputs.version }}
-          path: gui-dist/AppRestore-GUI-macOS.zip
+          name: ${{ matrix.artifact }}-${{ needs.validate-tag.outputs.version }}
+          path: gui-dist/${{ matrix.asset }}
           if-no-files-found: error
           retention-days: 7
 
@@ -404,6 +426,12 @@ jobs:
           name: apprestore-gui-macos-${{ needs.validate-tag.outputs.version }}
           path: ${{ runner.temp }}/apprestore-release
 
+      - name: Download macOS Intel GUI app
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: apprestore-gui-macos-intel-${{ needs.validate-tag.outputs.version }}
+          path: ${{ runner.temp }}/apprestore-release
+
       - name: Check out tagged source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -421,14 +449,15 @@ jobs:
           archive="AppRestore-${VERSION}-source.zip"
           gui_windows="AppRestore-GUI-Windows.zip"
           gui_macos="AppRestore-GUI-macOS.zip"
-          for asset in "$archive" install.ps1 install.sh SHA256SUMS.txt "$gui_windows" "$gui_macos"; do
+          gui_macos_intel="AppRestore-GUI-macOS-Intel.zip"
+          for asset in "$archive" install.ps1 install.sh SHA256SUMS.txt "$gui_windows" "$gui_macos" "$gui_macos_intel"; do
             test -f "${ASSET_DIR}/${asset}"
           done
-          [[ "$(find "$ASSET_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 6 ]]
+          [[ "$(find "$ASSET_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 7 ]]
           # One SHA256SUMS.txt for both variants (terminal and app with a window).
           (
             cd "$ASSET_DIR"
-            sha256sum "$gui_windows" "$gui_macos" >> SHA256SUMS.txt
+            sha256sum "$gui_windows" "$gui_macos" "$gui_macos_intel" >> SHA256SUMS.txt
             sha256sum -c SHA256SUMS.txt
           )
           notes_file="${RUNNER_TEMP}/release-notes.md"
@@ -446,6 +475,7 @@ jobs:
           export NOTES_FILE="$notes_file"
           export GUI_WINDOWS="$gui_windows"
           export GUI_MACOS="$gui_macos"
+          export GUI_MACOS_INTEL="$gui_macos_intel"
           export PREV_TAG="$prev"
           python3 - <<'PY'
           import os
@@ -467,7 +497,8 @@ jobs:
               "",
               (
                   "Сборки: программа с окном — "
-                  f"`{os.environ['GUI_WINDOWS']}` и `{os.environ['GUI_MACOS']}`, "
+                  f"`{os.environ['GUI_WINDOWS']}`, `{os.environ['GUI_MACOS']}` (Apple Silicon) "
+                  f"и `{os.environ['GUI_MACOS_INTEL']}` (Intel), "
                   "терминал — `install.ps1` (Windows) или `install.sh` (macOS). "
                   "Суммы SHA-256 в `SHA256SUMS.txt`."
               ),
@@ -526,6 +557,7 @@ jobs:
             "${ASSET_DIR}/SHA256SUMS.txt" \
             "${ASSET_DIR}/${gui_windows}" \
             "${ASSET_DIR}/${gui_macos}" \
+            "${ASSET_DIR}/${gui_macos_intel}" \
             --repo "$GITHUB_REPOSITORY"
           gh release edit "$tag" \
             --repo "$GITHUB_REPOSITORY" \

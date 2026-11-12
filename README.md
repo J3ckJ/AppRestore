@@ -15,7 +15,7 @@
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3"></a>
 </p>
 
-> **Статус:** beta · Версия 0.4.0. Windows и macOS · проект не связан с Apple Inc.
+> **Статус:** beta · Версия 0.4.1. Windows и macOS · проект не связан с Apple Inc.
 
 ## Что это
 
@@ -52,6 +52,7 @@ App Store кнопки «Загрузить» уже нет: приложени�
 |---|---|
 | Windows 10/11 (64 бит) | [AppRestore-GUI-Windows.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-Windows.zip) |
 | macOS на Apple Silicon (M1 и новее) | [AppRestore-GUI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip) |
+| macOS на Intel | [AppRestore-GUI-macOS-Intel.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS-Intel.zip) |
 
 На Mac с процессором Intel графическая версия не запустится. Используйте
 терминальную версию.
@@ -152,7 +153,7 @@ App Store кнопки «Загрузить» уже нет: приложени�
 
 Установщик скачивает архив с исходным кодом нужной версии, сверяет его
 контрольную сумму SHA-256 и ставит AppRestore только для вашего пользователя,
-без прав администратора. Вместе с ним ставится проверенный **ipatool 2.6.0**.
+без прав администратора. Вместе с ним ставится проверенный **ipatool 2.8.1**.
 
 ### Windows (одна строка в PowerShell)
 
@@ -296,8 +297,8 @@ ipatool на Windows, чтобы зашифровать сохранённый �
 
 - только законный путь: ваш Apple ID и ваши файлы IPA;
 - защита приложений (DRM) не обходится, пиратские IPA не поддерживаются;
-- графическая версия для macOS работает только на Apple Silicon и не подписана
-  в Apple;
+- графическая версия для macOS собирается отдельно для Apple Silicon и Intel
+  и не подписана в Apple;
 - сборки для Windows не подписаны, поэтому SmartScreen показывает
   предупреждение;
 - Linux не поддерживается;
@@ -311,7 +312,7 @@ AppRestore распространяется по лицензии [GNU GPL v3](.
 
 Главные компоненты:
 
-- **ipatool 2.6.0** (MIT): вход в Apple ID и загрузка IPA;
+- **ipatool 2.8.1** (MIT): вход в Apple ID и загрузка IPA;
 - **pymobiledevice3**: связь с iPhone по USB;
 - **PySide6 (Qt)**: окно графической версии;
 - **Unicorn 2.1.4**: служебный компонент, который ipatool скачивает сам при
@@ -334,7 +335,7 @@ AppRestore распространяется по лицензии [GNU GPL v3](.
 ## English summary
 
 **AppRestore** brings offloaded or deleted apps back to an iPhone over USB from
-Windows or macOS, using your own Apple ID and the verified **ipatool 2.6.0**.
+Windows or macOS, using your own Apple ID and the verified **ipatool 2.8.1**.
 It does not bypass DRM.
 
 Download from
@@ -342,7 +343,8 @@ Download from
 
 - **Desktop app (no command line):**
   [Windows](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-Windows.zip),
-  [macOS, Apple Silicon](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip).
+  [macOS, Apple Silicon](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip),
+  [macOS, Intel](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS-Intel.zip).
   Both builds are unsigned (and not notarized by Apple), so first compare the
   archive's SHA-256 (`Get-FileHash` on Windows, `shasum -a 256` on macOS) with
   [SHA256SUMS.txt](https://github.com/J3ckJ/AppRestore/releases/latest/download/SHA256SUMS.txt).

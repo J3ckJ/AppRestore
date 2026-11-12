@@ -115,12 +115,17 @@ def _ipatool() -> dict[str, str]:
     binary = Path(path).read_bytes()
     if marker not in binary:
         raise RuntimeError("bundled ipatool lacks AppRestore patch 0001 (account country)")
-    if b"catalog-independent redownload does not match the requested app" not in binary:
-        raise RuntimeError("bundled ipatool lacks AppRestore patch 0004 (delisted redownload)")
+    # ipatool 2.8 sign-in (Store AMD provisioning) and its delisted redownload
+    # (unpinned entitlement downloads) are upstream; the marker proves the 2.8
+    # Store authentication is what ships, not the 2.6 one Apple now rejects.
+    if b"store AMD state is not provisioned" not in binary:
+        raise RuntimeError("bundled ipatool predates the 2.8 App Store sign-in")
+    if b"invalid Apple product redirect" not in binary:
+        raise RuntimeError("bundled ipatool lacks AppRestore patch 0006 (product redirects)")
     return {
         "path": path,
         "detail": detail,
-        "capabilities": "account-country,list-purchases-all,keychain-passphrase-stdin,delisted-redownload",
+        "capabilities": "account-country,list-purchases-all,keychain-passphrase-stdin,store-auth-2.8,delisted-redownload",
     }
 
 

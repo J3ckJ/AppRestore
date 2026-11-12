@@ -168,7 +168,18 @@ def test_empty_store_login_is_not_described_as_a_redirect() -> None:
     text = _explain_login_failure(1, message)
     assert "204" in text
     assert "301" not in text
-    assert "icloud.com" in text
+    assert "VPN" not in text
+
+
+def test_signin_component_download_failure_is_explained() -> None:
+    message = 'error="prepare Apple authentication: download apple assets: dial tcp: i/o timeout"'
+    text = _explain_login_failure(1, message)
+    assert "интернет" in text
+
+
+def test_rate_limited_login_is_explained() -> None:
+    text = _explain_login_failure(1, 'error="apple rate limited authentication; try again later"')
+    assert "ограничила" in text
 
 
 def test_apple_redirect_login_is_explained_in_russian() -> None:

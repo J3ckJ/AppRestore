@@ -52,9 +52,13 @@ def ipatool_sap_runtime_dir(unicorn_version: str) -> Path:
     return user_cache_root() / "ipatool" / "unicorn" / unicorn_version
 
 
+#: ipatool 2.8.1 internal/sap/assets assetCacheDirectory (macOS 27 Store frameworks).
+IPATOOL_SAP_ASSET_CACHE = "apple-assets-macos-27-26A434-arm64-v5"
+
+
 def ipatool_sap_assets_dir() -> Path:
     """Кэш ассетов Apple, которые SAP-подписчик тянет со swcdn.apple.com."""
-    return user_cache_root() / "ipatool" / "sap" / "apple-assets-v2"
+    return user_cache_root() / "ipatool" / "sap" / IPATOOL_SAP_ASSET_CACHE
 
 
 def windows_system_proxy() -> tuple[str, str] | None:

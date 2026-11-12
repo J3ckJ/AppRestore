@@ -1,27 +1,5 @@
-From 399cfdb31a39e26dcb420f6102e10b35e536be6c Mon Sep 17 00:00:00 2001
-From: AppRestore <apprestore@localhost>
-Date: Sat, 10 Oct 2026 18:18:17 +0300
-Subject: [PATCH] feat(keychain): read the keychain passphrase from the
- environment or stdin
-
---keychain-passphrase puts the passphrase on the command line, where
-other local users can read it with ps. The passphrase can now also come
-from IPATOOL_KEYCHAIN_PASSPHRASE or, with --keychain-passphrase-stdin,
-from the first line of stdin (read once, only when the keyring needs
-it, without consuming later input). Priority: flag, then stdin when
---keychain-passphrase-stdin is set (the environment is then ignored),
-then the environment. Without any of them the behaviour is unchanged.
----
- cmd/common.go                   |  28 ++-----
- cmd/keychain_passphrase.go      | 133 ++++++++++++++++++++++++++++++
- cmd/keychain_passphrase_test.go | 141 ++++++++++++++++++++++++++++++++
- cmd/root.go                     |   3 +-
- 4 files changed, 284 insertions(+), 21 deletions(-)
- create mode 100644 cmd/keychain_passphrase.go
- create mode 100644 cmd/keychain_passphrase_test.go
-
 diff --git a/cmd/common.go b/cmd/common.go
-index b419e7a..add8415 100644
+index b419e7ad73a2694fce190e97fcd267d3f24095d4..add8415bc6a30074b89b9ede43d063e98c8fb66a 100644
 --- a/cmd/common.go
 +++ b/cmd/common.go
 @@ -1,12 +1,9 @@
@@ -78,7 +56,7 @@ index b419e7a..add8415 100644
  	return keychain.New(keychain.Args{
 diff --git a/cmd/keychain_passphrase.go b/cmd/keychain_passphrase.go
 new file mode 100644
-index 0000000..174e4d9
+index 0000000000000000000000000000000000000000..174e4d9d52ccce8f1b0a7f8846ec05246588e5d7
 --- /dev/null
 +++ b/cmd/keychain_passphrase.go
 @@ -0,0 +1,133 @@
@@ -217,7 +195,7 @@ index 0000000..174e4d9
 +}
 diff --git a/cmd/keychain_passphrase_test.go b/cmd/keychain_passphrase_test.go
 new file mode 100644
-index 0000000..cfc68fa
+index 0000000000000000000000000000000000000000..cfc68fa40578df6ec0314672189de9fb12f8f1c0
 --- /dev/null
 +++ b/cmd/keychain_passphrase_test.go
 @@ -0,0 +1,141 @@
@@ -363,7 +341,7 @@ index 0000000..cfc68fa
 +	})
 +})
 diff --git a/cmd/root.go b/cmd/root.go
-index b2aa044..20e1794 100644
+index b2aa044ea18459938dc1b02e69c97b3c911309a6..20e1794a54781660bf20b0303e6bfd1549818258 100644
 --- a/cmd/root.go
 +++ b/cmd/root.go
 @@ -43,7 +43,8 @@ func rootCmd() *cobra.Command {
@@ -376,6 +354,3 @@ index b2aa044..20e1794 100644
  
  	cmd.AddCommand(authCmd())
  	cmd.AddCommand(downloadCmd())
--- 
-2.47.3
-

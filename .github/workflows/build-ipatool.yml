@@ -15,10 +15,10 @@ jobs:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Set up Go 1.25.0
+      - name: Set up Go 1.26.5
         uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
-          go-version: "1.25.0"
+          go-version: "1.26.5"
           cache: false
 
       - name: Build the archive
@@ -28,8 +28,8 @@ jobs:
       - name: Upload archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ipatool-2.6.0-windows-amd64
-          path: dist/ipatool/ipatool-2.6.0-windows-amd64.tar.gz
+          name: ipatool-2.8.1-windows-amd64
+          path: dist/ipatool/ipatool-2.8.1-windows-amd64.tar.gz
           if-no-files-found: error
 
   macos:
@@ -40,10 +40,10 @@ jobs:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Set up Go 1.25.0
+      - name: Set up Go 1.26.5
         uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
-          go-version: "1.25.0"
+          go-version: "1.26.5"
           cache: false
 
       - name: Build arm64 and amd64 archives
@@ -55,8 +55,8 @@ jobs:
       - name: Upload archives
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ipatool-2.6.0-macos
+          name: ipatool-2.8.1-macos
           path: |
-            dist/ipatool/ipatool-2.6.0-macos-arm64.tar.gz
-            dist/ipatool/ipatool-2.6.0-macos-amd64.tar.gz
+            dist/ipatool/ipatool-2.8.1-macos-arm64.tar.gz
+            dist/ipatool/ipatool-2.8.1-macos-amd64.tar.gz
           if-no-files-found: error

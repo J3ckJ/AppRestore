@@ -1,38 +1,44 @@
 #!/usr/bin/env bash
-# Build one ipatool archive from the pinned upstream commit that follows
-# Apple authentication redirects (HTTP 301, 302, 307 and 308).
+# Build one ipatool archive from upstream majd/ipatool v2.8.1.
 #
-# Official v2.6.0 treats only 302 as a redirect, so a Store pod that answers
-# 301 makes login fail before the password is checked. This audited build stays
-# pinned while newer upstream releases are evaluated separately.
+# Apple changed App Store sign-in around 6 Nov 2026: the old flow used by
+# ipatool <= 2.7 now gets an empty HTTP 204 from buy.itunes.apple.com.
+# v2.8.0/2.8.1 restored authentication (local Anisette generation, Store
+# provisioning and AMD proofs) and fixed delisted redownloads upstream.
 #
-# On top of that commit AppRestore applies its own patches from
-# packaging/patches/ (each pinned by SHA-256 below):
+# On top of v2.8.1 AppRestore applies its own patches from packaging/patches/
+# (each pinned by SHA-256 below, applied in this order):
 #   0001-ipatool-auth-info-country.patch - `auth info` also prints the
-#   signed-in account's raw storeFront and its ISO countryCode. Read-only.
+#   signed-in account's raw storeFront and its ISO countryCode (offline map
+#   from 2.6.0, because 2.8 discovers storefronts over the network). Read-only.
 #   0002-ipatool-list-purchases-all.patch - `list-purchases --all` returns the
 #   whole purchase history in one call; without the flag nothing changes.
 #   0003-ipatool-keychain-passphrase-env-stdin.patch - keychain passphrase via
 #   --keychain-passphrase-stdin (AppRestore uses only this; never argv/env).
-#   0004-ipatool-delisted-redownload.patch - licensed iOS redownload remains
-#   possible without a public catalog card; verify the returned app identity.
-#   0005-ipatool-readonly-download-probe.patch - compare download channels
+#   0004-ipatool-readonly-download-probe.patch - compare download channels
 #   without purchasing/downloading and without private response data.
-#   0006-ipatool-product-post-redirects.patch - preserve product POSTs across
-#   bounded, validated Apple redirects in diagnostics and real operations.
-#   0007-ipatool-purchase-evidence.patch - distinguish confirmed acquisition,
-#   ownership, refusal and uncertain responses; emit safe per-attempt evidence.
-#   0008-ipatool-unpinned-update.patch - let Apple select a licensed iOS update
-#   when the public catalog no longer contains an external version ID.
-#   0009-ipatool-purchase-locker.patch - `list-purchases --all` also merges
+#   0005-ipatool-purchase-locker.patch - `list-purchases --all` also merges
 #   this account's own iTunes purchase locker (visible and hidden) on the
 #   account storefront. A locker failure leaves the DAAP list unchanged.
+#   0006-ipatool-product-post-redirects.patch - preserve product POSTs across
+#   bounded, validated Apple redirects; the Store AMD proof is recomputed for
+#   every hop. Diagnostics use the same signed path as real downloads.
+#   0007-ipatool-purchase-evidence.patch - distinguish confirmed acquisition,
+#   ownership, refusal and uncertain responses; emit safe per-attempt evidence.
+#   0008-ipatool-unavailable-redownload-update-probe.patch - an empty volumeStore
+#   2059 may still use the read-only redownload channel; probe-download also
+#   inspects an unpinned updateProduct channel.
+#
+# Dropped with 2.8.1 (covered upstream): the 2.6.0 delisted-redownload patch
+# (upstream unpinned entitlement downloads + identity checks) and the unpinned
+# updateProduct download fallback (upstream deliberately keeps delisted
+# recovery to redownload + ent/download).
 #
 # The archive is reproducible: packaging/pack_ipatool.py writes it with a fixed
 # mtime (SOURCE_DATE_EPOCH, else the commit time of $commit), uid/gid 0 and a
 # gzip header without name or time. Same Go toolchain + same commit and
-# patches = same SHA-256. The Go toolchain is pinned below (go1.25.0, the same
-# version build-ipatool.yml installs); override with IPATOOL_GOTOOLCHAIN.
+# patches = same SHA-256. The Go toolchain is pinned below (go1.26.5, the same
+# version upstream v2.8.1 and build-ipatool.yml use); override with IPATOOL_GOTOOLCHAIN.
 #
 # linux-amd64 is only for local checks; AppRestore does not ship it.
 #
@@ -40,9 +46,9 @@
 set -euo pipefail
 
 asset="${1:?asset required: windows-amd64, macos-arm64, macos-amd64 or linux-amd64}"
-commit="cde7d00355e152714377b953ec57438626d3cb5a"
-version="2.6.0"
-go_toolchain="${IPATOOL_GOTOOLCHAIN:-go1.25.0}"
+commit="3e84853e2e5d60540a5022b64895d496910144eb"
+version="2.8.1"
+go_toolchain="${IPATOOL_GOTOOLCHAIN:-go1.26.5}"
 # Use exactly this toolchain (downloaded by go if the local one differs).
 export GOTOOLCHAIN="$go_toolchain"
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -100,15 +106,14 @@ sha256_of() {
 
 # name:sha256 of every patch, applied in this order.
 patches=(
-  "0001-ipatool-auth-info-country.patch:05d87977a554102c9b036306ec2c125febaa62433d2a080d588527a8225b7fb8"
-  "0002-ipatool-list-purchases-all.patch:025d9919871dba636a80559614a3ca402c37cf2be6965fb7a3203f4088e54445"
-  "0003-ipatool-keychain-passphrase-env-stdin.patch:76fdf028e6e6a5c11b9be9f647ab8281e17c2e4bd6ee1a22fa57c7d1c38e115c"
-  "0004-ipatool-delisted-redownload.patch:b97e7938e587c99650410f706e18992a9aad0289d58a2cff47619857d47feb8b"
-  "0005-ipatool-readonly-download-probe.patch:84cb1dd65ed7ea48a8020462b1aaa5c3cc67781ac9ca9a47b7e3367af3cfb2aa"
-  "0006-ipatool-product-post-redirects.patch:60e3892b9f7d9251b8bba83a27d79af796af1a0de009d1dc84d2c25ca9007981"
-  "0007-ipatool-purchase-evidence.patch:f7fb822c4897e31a9d8b57827e9fc56fd8521a99dddbf5174c59db2656c97afe"
-  "0008-ipatool-unpinned-update.patch:a1274240a24aa0c4f8e376775168f6db5710086bc7eaaf0a06580fb05ba69a22"
-  "0009-ipatool-purchase-locker.patch:e173d0729fc81a169cf519213e02b38087befe72fec621b7908da94c2bb124c4"
+  "0001-ipatool-auth-info-country.patch:8ed499c69be593789cc3fd05de4a220f8779be102ec5bc0a3e3b653346cfda6d"
+  "0002-ipatool-list-purchases-all.patch:035e6760ffdec8aedfe957bc3a3ea82dc2c0a6bfc7054afc1c6fa4eefb6e8e32"
+  "0003-ipatool-keychain-passphrase-env-stdin.patch:d1eb59ff504e1986735e46e9a1b4c81901b22ee746a1eb545a952e68a1aac701"
+  "0004-ipatool-readonly-download-probe.patch:cbe7fe7e62d417f8e729498adaf81196a5996eba0bee0259e329cf9647200837"
+  "0005-ipatool-purchase-locker.patch:f4d63cd207469c19cc06d2a0d48b67ace0df665ae3a9a3c73c0036200b9637d5"
+  "0006-ipatool-product-post-redirects.patch:1d9c10872990e9fff6802de101726ddbad13f26fedd2054ba202dae8f6691251"
+  "0007-ipatool-purchase-evidence.patch:e4b25df28cc2e8c7e01aae855d556c8d49e8437ffb0590e56ed515d64088632e"
+  "0008-ipatool-unavailable-redownload-update-probe.patch:fcfb39ecab336f7a865c0b7beea1b859ded469e333acba9a31c0f5a96684850d"
 )
 for entry in "${patches[@]}"; do
   patch_name="${entry%%:*}"
@@ -161,24 +166,21 @@ fi
     .
 )
 
-# The first two sentences exist only after the redirect fix (v2.6.0 does not
-# contain them). The exported appstore.CountryCodeFromStoreFront symbol exists
-# only after the auth info country patch ("countryCode" alone is already in
-# v2.6.0, so it cannot serve as a marker; the build does not strip symbols).
-# The --all sentence exists only after the list-purchases --all patch;
-# keychain-passphrase-stdin only after the passphrase patch.
+# Markers: the first two prove the 2.8 Store authentication (AMD provisioning)
+# is present; the rest prove each AppRestore patch shipped. The exported
+# appstore.CountryCodeFromStoreFront symbol exists only after patch 0001
+# (the build does not strip symbols).
 for marker in \
-  "too many authentication redirects" \
+  "store AMD state is not provisioned" \
   "unsupported authentication redirect status" \
   "appstore.CountryCodeFromStoreFront" \
   "--all cannot be combined with --page or --max-results" \
   "keychain-passphrase-stdin" \
-  "catalog-independent redownload does not match the requested app" \
   "Inspect download channels without purchase, asset download or private response data" \
+  "vt=lockerData" \
   "invalid Apple product redirect" \
   "purchase response unconfirmed" \
-  "catalog-independent update has no license material" \
-  "vt=lockerData"
+  "update_unpinned"
 do
   if ! grep -a -F -q -e "$marker" "$stage/bin/$name"; then
     echo "built ipatool is missing an expected fix: $marker" >&2
@@ -229,8 +231,8 @@ if [[ "$goos" == "$host_os" && "$goarch" == "$host_arch" ]]; then
   chmod +x "$stage/bin/$name" || true
   reported="$("$stage/bin/$name" --version 2>&1 || true)"
   printf '%s\n' "$reported"
-  if [[ "$reported" != *"2.6.0"* ]]; then
-    echo "ipatool --version did not report 2.6.0" >&2
+  if [[ "$reported" != *"$version"* ]]; then
+    echo "ipatool --version did not report $version" >&2
     exit 1
   fi
 fi

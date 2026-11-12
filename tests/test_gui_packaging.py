@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ICONS = ROOT / "packaging" / "icons"
 RELEASE = ROOT / ".github" / "workflows" / "release.yml"
 GUI_NAMES = ("AppRestore-GUI-Windows.zip", "AppRestore-GUI-macOS.zip")
+INTEL_MAC_NAME = "AppRestore-GUI-macOS-Intel.zip"
 
 
 def test_windows_ico_has_all_sizes_16_to_256():
@@ -54,6 +55,14 @@ def test_updater_asset_names_match_release_workflow():
     from apprestore_gui.updater import ASSET_BY_PLATFORM
 
     assert tuple(ASSET_BY_PLATFORM[p] for p in ("win32", "darwin")) == GUI_NAMES
+    from apprestore_gui.updater import INTEL_MAC_ASSET, asset_name_for
+
+    assert INTEL_MAC_ASSET == INTEL_MAC_NAME
+    assert asset_name_for("darwin", "x86_64") == INTEL_MAC_NAME
+    assert asset_name_for("darwin", "arm64") == GUI_NAMES[1]
+    assert asset_name_for("darwin") == GUI_NAMES[1]
+    workflow = RELEASE.read_text(encoding="utf-8")
+    assert "asset: " + INTEL_MAC_NAME in workflow and "runner: macos-15-intel" in workflow
 
 
 def test_release_builds_both_gui_apps_and_publishes_them_with_checksums():
@@ -64,12 +73,14 @@ def test_release_builds_both_gui_apps_and_publishes_them_with_checksums():
     assert "      - gui-windows\n" in publish and "      - gui-macos\n" in publish
     assert 'gui_windows="AppRestore-GUI-Windows.zip"' in publish
     assert 'gui_macos="AppRestore-GUI-macOS.zip"' in publish
-    assert '== 6 ]]' in publish
-    assert 'sha256sum "$gui_windows" "$gui_macos" >> SHA256SUMS.txt' in publish
+    assert f'gui_macos_intel="{INTEL_MAC_NAME}"' in publish
+    assert '== 7 ]]' in publish
+    assert 'sha256sum "$gui_windows" "$gui_macos" "$gui_macos_intel" >> SHA256SUMS.txt' in publish
     assert "sha256sum -c SHA256SUMS.txt" in publish
     upload = publish[publish.index('gh release upload "$tag"'):publish.index('gh release edit "$tag"')]
     assert '"${ASSET_DIR}/${gui_windows}"' in upload
     assert '"${ASSET_DIR}/${gui_macos}"' in upload
+    assert '"${ASSET_DIR}/${gui_macos_intel}"' in upload
     # The checksum file is extended before anything is uploaded.
     assert publish.index(">> SHA256SUMS.txt") < publish.index('gh release create "$tag"')
 

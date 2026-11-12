@@ -81,11 +81,11 @@ class InstallRequestState(str, Enum):
     INDETERMINATE = "indeterminate"
 
 
-IPATOOL_VERSION = "2.6.0"
-# Хеш windows-amd64.tar.gz со сборки, которая принимает HTTP 301 при входе.
+IPATOOL_VERSION = "2.8.1"
+# Хеш windows-amd64.tar.gz сборки ipatool 2.8.1 + патчи AppRestore (новый вход Apple).
 # Проверяется установщиком до распаковки. Не сверять им извлечённый ipatool.exe.
 IPATOOL_WINDOWS_AMD64_ARCHIVE_SHA256 = (
-    "639d9cd7f22cea2975fd8263b0a8cbd7a36e7ee742e4c3e3a910b85f05b4df14"
+    "4637a686dcafea42a0cc83da00469b951dec3c2ba488d8f48fc05322d99b8941"
 )
 # ipatool >= 2.4 подписывает запросы авторизации App Store через SAP, а сам
 # подписчик исполняется в эмуляторе Unicorn. Его shared library не входит в
@@ -95,10 +95,13 @@ IPATOOL_SAP_UNICORN_VERSION = "2.1.4"
 # Приватные фреймворки Apple, которые SAP-подписчик достаёт из пакета
 # обновления macOS. Держать в синхроне с internal/sap/assets апстрима.
 IPATOOL_SAP_ASSET_FILES = (
-    ("CommerceKit", 3271840),
-    ("CommerceCore", 207744),
-    ("CoreFP", 29014912),
-    ("CoreFP.icxs", 5288352),
+    ("AppleMediaServices", 14813888),
+    ("commerce", 2735088),
+    ("adid", 3047808),
+    ("CoreFP", 30764976),
+    ("CoreFP.icxs", 7365344),
+    ("fairplayd", 17389744),
+    ("FairPlayIOKit", 2132320),
 )
 # Имена самой Unicorn-библиотеки по платформам — по ним видно, что загрузка
 # дошла до конца, а не оставила пустой каталог под хеш.

@@ -23,12 +23,12 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-IPATOOL_VERSION = "2.6.0"
-# majd/ipatool commit that follows authentication redirects. Not a GitHub release.
-IPATOOL_SOURCE_COMMIT = "cde7d00355e152714377b953ec57438626d3cb5a"
-ARCHIVE_BASE = "https://github.com/J3ckJ/AppRestore/releases/download/ipatool-2.6.0-redirect"
+IPATOOL_VERSION = "2.8.1"
+# majd/ipatool v2.8.1 (restored App Store sign-in) plus AppRestore patches.
+IPATOOL_SOURCE_COMMIT = "3e84853e2e5d60540a5022b64895d496910144eb"
+ARCHIVE_BASE = "https://github.com/J3ckJ/AppRestore/releases/download/ipatool-2.8.1-apprestore"
 ARCHIVE_SHA256 = {
-    "windows-amd64": "639d9cd7f22cea2975fd8263b0a8cbd7a36e7ee742e4c3e3a910b85f05b4df14",
+    "windows-amd64": "4637a686dcafea42a0cc83da00469b951dec3c2ba488d8f48fc05322d99b8941",
     "macos-arm64": "faf98ef8067f1ef4783123d00561b4ece10dc7419631eb9555d88a1da2f61f3f",
     "macos-amd64": "576bde4baf04365fcdea46eb7f3e5bb6ea143d0d9e53d6e2711136cc608aac84",
 }

@@ -1,23 +1,5 @@
-From 329215620c68271b3a7d8ab2e4466bacc6980145 Mon Sep 17 00:00:00 2001
-From: AppRestore <apprestore@localhost>
-Date: Sat, 10 Oct 2026 18:04:28 +0300
-Subject: [PATCH 2/2] feat(purchases): add --all to list the whole purchase
- history in one call
-
-Apple returns the complete purchase history for every request and
-ipatool sliced it into pages locally, so walking 2.8k purchases in
-pages of 100 fetched the full history 29 times. --all returns the
-merged, date-sorted history as a single page (count == totalCount).
-Without the flag the paged behaviour is unchanged.
----
- cmd/purchases.go                         | 15 +++++++--
- cmd/purchases_test.go                    | 41 ++++++++++++++++++++++++
- pkg/appstore/appstore_owned_apps.go      | 19 ++++++++++-
- pkg/appstore/appstore_owned_apps_test.go | 29 +++++++++++++++++
- 4 files changed, 101 insertions(+), 3 deletions(-)
-
 diff --git a/cmd/purchases.go b/cmd/purchases.go
-index ca1c2d4..809157c 100644
+index ca1c2d471b16639d7a9c3bdd2d6ef606500e76ff..809157c7f3523d5cf477fa607d52470da14c5034 100644
 --- a/cmd/purchases.go
 +++ b/cmd/purchases.go
 @@ -14,6 +14,8 @@ import (
@@ -68,7 +50,7 @@ index ca1c2d4..809157c 100644
  
  	return cmd
 diff --git a/cmd/purchases_test.go b/cmd/purchases_test.go
-index 9c94d8d..aa2038d 100644
+index 9c94d8d0ec5113eaac8160f341c09a0eb1693cb5..aa2038d1e663a0784c8322566e2fd0de711c5eb2 100644
 --- a/cmd/purchases_test.go
 +++ b/cmd/purchases_test.go
 @@ -64,6 +64,47 @@ var _ = Describe("List Purchases command", func() {
@@ -120,7 +102,7 @@ index 9c94d8d..aa2038d 100644
  		cmd, _, err := rootCmd().Find([]string{"list-purchases"})
  
 diff --git a/pkg/appstore/appstore_owned_apps.go b/pkg/appstore/appstore_owned_apps.go
-index 33d5d1e..4d99586 100644
+index 6dcb63e9c1cded1de5ad72452a05defe1c43b765..f89e046a603d889034608cd03bd3e8c7b78bc589 100644
 --- a/pkg/appstore/appstore_owned_apps.go
 +++ b/pkg/appstore/appstore_owned_apps.go
 @@ -29,6 +29,9 @@ type OwnedAppsInput struct {
@@ -164,7 +146,7 @@ index 33d5d1e..4d99586 100644
  		input.Page = 1
  	}
 diff --git a/pkg/appstore/appstore_owned_apps_test.go b/pkg/appstore/appstore_owned_apps_test.go
-index 24ccaed..32c9fc7 100644
+index b21f13e1fdfd6805a695f45a468e3c6c5c8887f4..038e40bd63a74a682dfb8d8ffdae065156a47123 100644
 --- a/pkg/appstore/appstore_owned_apps_test.go
 +++ b/pkg/appstore/appstore_owned_apps_test.go
 @@ -162,6 +162,31 @@ var _ = Describe("AppStore (OwnedApps)", func() {
@@ -210,6 +192,3 @@ index 24ccaed..32c9fc7 100644
  		Entry("rejects an invalid platform", OwnedAppsInput{Platform: "invalid"}, OwnedAppsInput{}, "invalid platform"),
  		Entry("rejects unknown as a filter", OwnedAppsInput{Platform: PlatformUnknown}, OwnedAppsInput{}, "invalid platform"),
  	)
--- 
-2.47.3
-

@@ -1,11 +1,5 @@
-From 7c1a0b0e9d4f4a6b8c2e1d0f9a8b7c6d5e4f3a2b Mon Sep 17 00:00:00 2001
-From: Eugene Lyub <lyubevgenij@gmail.com>
-Date: Tue, 13 Oct 2026 12:00:00 +0000
-Subject: [PATCH] Merge this account purchase locker into list-purchases --all
-
----
 diff --git a/pkg/appstore/appstore_owned_apps.go b/pkg/appstore/appstore_owned_apps.go
-index 4d99586..7cb33ab 100644
+index f89e046a603d889034608cd03bd3e8c7b78bc589..04da6a25a090b7f4b1ad19baf487affb96bd75e7 100644
 --- a/pkg/appstore/appstore_owned_apps.go
 +++ b/pkg/appstore/appstore_owned_apps.go
 @@ -76,6 +76,9 @@ func (t *appstore) OwnedApps(input OwnedAppsInput) (OwnedAppsOutput, error) {
@@ -20,7 +14,7 @@ index 4d99586..7cb33ab 100644
  			return !slices.Contains(app.Platforms, input.Platform)
 diff --git a/pkg/appstore/appstore_restore_locker.go b/pkg/appstore/appstore_restore_locker.go
 new file mode 100644
-index 0000000..37096ce
+index 0000000000000000000000000000000000000000..37096ced9adcfe307b7b26cf38db9642305490b0
 --- /dev/null
 +++ b/pkg/appstore/appstore_restore_locker.go
 @@ -0,0 +1,582 @@
@@ -608,7 +602,7 @@ index 0000000..37096ce
 +}
 diff --git a/pkg/appstore/appstore_restore_locker_test.go b/pkg/appstore/appstore_restore_locker_test.go
 new file mode 100644
-index 0000000..cc11eed
+index 0000000000000000000000000000000000000000..cc11eed6f0ea58c4d254753e286b0eeb59362d6f
 --- /dev/null
 +++ b/pkg/appstore/appstore_restore_locker_test.go
 @@ -0,0 +1,79 @@

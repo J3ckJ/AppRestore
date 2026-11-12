@@ -3,11 +3,11 @@
 #
 # The published ipatool archives were built before patches 0001-0003, so a
 # checkout run from source needs a local build. This script:
-#   1. finds Go 1.25.0 (on PATH or in build/ipatool-bootstrap/), or downloads
-#      the official go1.25.0 archive from go.dev into build/ipatool-bootstrap/
+#   1. finds Go 1.26.5 (on PATH or in build/ipatool-bootstrap/), or downloads
+#      the official go1.26.5 archive from go.dev into build/ipatool-bootstrap/
 #      and checks its SHA-256 against the values pinned below (from
 #      https://go.dev/dl/?mode=json&include=all). The system Go is never touched.
-#   2. runs packaging/build-ipatool.sh (pinned commit cde7d00, patches 0001-0008
+#   2. runs packaging/build-ipatool.sh (pinned upstream v2.8.1 3e84853, patches 0001-0008
 #      checked by SHA-256 and applied with git apply, marker check, archive);
 #   3. installs the binary as bin/ipatool (resolve_tool() looks there first),
 #      prints its SHA-256 and confirms the markers of patches 0001-0008.
@@ -22,14 +22,14 @@
 # Tested: linux-amd64. macOS branch: untested (no Mac available), same steps.
 set -euo pipefail
 
-GO_VERSION="go1.25.0"
-# Official go.dev SHA-256 of the go1.25.0 archives.
+GO_VERSION="go1.26.5"
+# Official go.dev SHA-256 of the go1.26.5 archives.
 go_sha256() {
   case "$1" in
-    darwin-arm64) echo "544932844156d8172f7a28f77f2ac9c15a23046698b6243f633b0a0b00c0749c" ;;
-    darwin-amd64) echo "5bd60e823037062c2307c71e8111809865116714d6f6b410597cf5075dfd80ef" ;;
-    linux-amd64)  echo "2852af0cb20a13139b3448992e69b868e50ed0f8a1e5940ee1de9e19a123b613" ;;
-    linux-arm64)  echo "05de75d6994a2783699815ee553bd5a9327d8b79991de36e38b66862782f54ae" ;;
+    darwin-arm64) echo "efb87ff28af9a188d0536ef5d42e63dd52ba8263cd7344a993cc48dd11dedb6a" ;;
+    darwin-amd64) echo "6231d8d3b8f5552ec6cbf6d685bdd5482e1e703214b120e89b3bf0d7bf1ef725" ;;
+    linux-amd64)  echo "5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053" ;;
+    linux-arm64)  echo "fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49" ;;
     *) return 1 ;;
   esac
 }
@@ -37,15 +37,15 @@ go_sha256() {
 # Strings that exist in the binary only with the given patch (same strings
 # build-ipatool.sh checks; see packaging/patches/README.md).
 patch_markers=(
-  "redirect:too many authentication redirects"
+  "2.8-auth:store AMD state is not provisioned"
   "0001:appstore.CountryCodeFromStoreFront"
   "0002:--all cannot be combined with --page or --max-results"
   "0003:keychain-passphrase-stdin"
-  "0004:catalog-independent redownload does not match the requested app"
-  "0005:Inspect download channels without purchase, asset download or private response data"
+  "0004:Inspect download channels without purchase, asset download or private response data"
+  "0005:vt=lockerData"
   "0006:invalid Apple product redirect"
   "0007:purchase response unconfirmed"
-  "0008:catalog-independent update has no license material"
+  "0008:update_unpinned"
 )
 
 force=0
@@ -106,7 +106,7 @@ fi
 state="$root/build/ipatool-bootstrap"
 mkdir -p "$state"
 
-# --- Go 1.25.0 -------------------------------------------------------------
+# --- Go 1.26.5 -------------------------------------------------------------
 go_version_of() { GOTOOLCHAIN=local "$1" env GOVERSION 2>/dev/null || true; }
 
 go_bin=""
@@ -171,11 +171,11 @@ else
   rm -rf "$out"; mkdir -p "$out"
   say "building $asset with packaging/build-ipatool.sh"
   IPATOOL_OUT="$out" bash "$build_script" "$asset"
-  archive="$out/ipatool-2.6.0-$asset.tar.gz"
+  archive="$out/ipatool-2.8.1-$asset.tar.gz"
   [[ -f "$archive" ]] || die "build did not produce $archive"
   ex="$(mktemp -d "$state/ex.XXXXXX")"
   tar -xzf "$archive" -C "$ex"
-  built="$ex/bin/ipatool-2.6.0-$asset$suffix"
+  built="$ex/bin/ipatool-2.8.1-$asset$suffix"
   [[ -f "$built" ]] || die "unexpected archive layout"
   mkdir -p "$target_dir"
   chmod 0755 "$built"
@@ -200,7 +200,7 @@ for entry in "${patch_markers[@]}"; do
   echo "marker $label: OK ($marker)"
 done
 if [[ "$asset" == "$asset_os-$go_arch" ]]; then
-  "$target" --version 2>&1 | grep -q '2.6.0' || die "bin/ipatool --version does not report 2.6.0"
+  "$target" --version 2>&1 | grep -q '2.8.1' || die "bin/ipatool --version does not report 2.8.1"
   "$target" --help 2>&1 | grep -q -- '--keychain-passphrase-stdin' || die "bin/ipatool --help lacks --keychain-passphrase-stdin"
   echo "ipatool --version: $("$target" --version 2>&1)"
 fi

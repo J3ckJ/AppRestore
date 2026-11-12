@@ -94,7 +94,7 @@ if [[ "${1:-}" == "-m" && "${2:-}" == "apprestore_core.cli" ]]; then
     exit 87
   fi
   if [[ "${3:-}" == "--version" ]]; then
-    printf '%s\\n' '0.4.0'
+    printf '%s\\n' '0.4.1'
   else
     printf '%s\\n' 'APPRESTORE_MENU_OK'
   fi
@@ -251,7 +251,7 @@ def test_payload_installer_is_user_space_and_transactional() -> None:
     assert installer.index(safe_path) < installer.index('SCRIPT_DIR="$(cd ')
     assert '$HOME/Library/Application Support/AppRestore' in installer
     assert '$HOME/.local/bin' in installer
-    assert 'APPRESTORE_VERSION="0.4.0"' in installer
+    assert 'APPRESTORE_VERSION="0.4.1"' in installer
     assert f"path_line='{PATH_LINE}'" in installer
     assert "install_pinned_python \"$VENV_STAGING\"" in installer
     assert "VENV_STAGING" in installer
@@ -274,7 +274,7 @@ def test_payload_installer_is_user_space_and_transactional() -> None:
     assert "INSTALL_COMPLETE=true" in installer
     assert 'installed_version="$("$COMMAND_PATH" --version)"' in installer
     assert '[[ "$installed_version" == "$APPRESTORE_VERSION" ]]' in installer
-    assert 'IPATOOL_VERSION="2.6.0"' in installer
+    assert 'IPATOOL_VERSION="2.8.1"' in installer
     assert "576bde4baf04365fcdea46eb7f3e5bb6" in installer
     assert "faf98ef8067f1ef4783123d00561b4ec" in installer
     assert "--require-hashes" in installer
@@ -430,7 +430,7 @@ def test_payload_installs_apprestore_for_the_same_terminal_path(
         check=False,
     )
     assert launched.returncode == 0, launched.stdout + launched.stderr
-    assert launched.stdout.strip() == "0.4.0"
+    assert launched.stdout.strip() == "0.4.1"
     assert PATH_LINE in (home / ".zprofile").read_text(encoding="utf-8").splitlines()
     assert not list(
         (home / "Library" / "Application Support" / "AppRestore").glob(
@@ -487,7 +487,7 @@ def test_failed_update_restores_previous_working_venv(
         check=False,
     )
     assert launched.returncode == 0, launched.stdout + launched.stderr
-    assert launched.stdout.strip() == "0.4.0"
+    assert launched.stdout.strip() == "0.4.1"
     app_support = home / "Library" / "Application Support" / "AppRestore"
     assert not list(app_support.glob(".venv-*"))
 
@@ -526,7 +526,7 @@ def test_orphaned_backup_is_recovered_before_new_staging(
         check=False,
     )
     assert launched.returncode == 0, launched.stdout + launched.stderr
-    assert launched.stdout.strip() == "0.4.0"
+    assert launched.stdout.strip() == "0.4.1"
 
 
 @pytest.mark.skipif(
@@ -602,7 +602,7 @@ def test_backup_cleanup_failure_keeps_successful_new_install(
         check=False,
     )
     assert launched.returncode == 0, launched.stdout + launched.stderr
-    assert launched.stdout.strip() == "0.4.0"
+    assert launched.stdout.strip() == "0.4.1"
     assert "старый venv сохранён" in update.stderr
 
 
@@ -663,7 +663,7 @@ def test_real_moved_venv_launches_through_final_python_module(
         check=False,
     )
     assert launched.returncode == 0, launched.stdout + launched.stderr
-    assert launched.stdout.strip() == "0.4.0"
+    assert launched.stdout.strip() == "0.4.1"
 
 
 @pytest.mark.skipif(
@@ -725,4 +725,4 @@ def test_generated_bootstrap_installs_then_command_launches(
         check=False,
     )
     assert launched.returncode == 0, launched.stdout + launched.stderr
-    assert launched.stdout.strip() == "0.4.0"
+    assert launched.stdout.strip() == "0.4.1"

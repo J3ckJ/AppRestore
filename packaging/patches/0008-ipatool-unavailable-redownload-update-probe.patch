@@ -1,0 +1,87 @@
+diff --git a/pkg/appstore/appstore_download_product.go b/pkg/appstore/appstore_download_product.go
+index 3f1e9b273347422bb1469a34f606de43cb382383..a2277a62dadfb398deb400ee451bbe450eda9ebc 100644
+--- a/pkg/appstore/appstore_download_product.go
++++ b/pkg/appstore/appstore_download_product.go
+@@ -352,9 +352,18 @@ func newDownloadEndpoint(endpoint, path string) (downloadProductEndpoint, error)
+ 
+ // Limit recovery to the observed availability response; other customer messages
+ // and structured failures must retain their normal error handling.
++//
++// AppRestore: a 2059 (temporarily unavailable) without items is also an
++// availability response; a volumeStore 2059 is not proof that a previous
++// purchase is gone. Licence, token and storefront refusals keep their handling.
+ func isUnavailableDownloadProductResponse(res http.Result[downloadResult]) bool {
+ 	message := strings.ToLower(strings.TrimSpace(res.Data.CustomerMessage))
+ 
++	if res.StatusCode == gohttp.StatusOK && len(res.Data.Items) == 0 &&
++		res.Data.FailureType == FailureTypeTemporarilyUnavailable {
++		return true
++	}
++
+ 	return res.StatusCode == gohttp.StatusOK &&
+ 		res.Data.FailureType == "" && len(res.Data.Items) == 0 &&
+ 		(message == "no longer available" || strings.HasSuffix(message, " no longer available"))
+diff --git a/pkg/appstore/appstore_probe_download.go b/pkg/appstore/appstore_probe_download.go
+index 62499528741afbfe30183c7a3c3937cb00ee265e..12a5979a15ceb6b9f8c6633f5659dcf803d3b04c 100644
+--- a/pkg/appstore/appstore_probe_download.go
++++ b/pkg/appstore/appstore_probe_download.go
+@@ -253,6 +253,9 @@ func (t *appstore) ProbeDownload(input DownloadProbeInput) (DownloadProbeOutput,
+ 	} else {
+ 		request("minimal_redownload_unpinned", minimal, "", true)
+ 	}
++	// A catalog card may be gone while updateProduct can still select a
++	// licensed build. Its returned version also unlocks the pinned probes.
++	endpoint("update_unpinned", bag.UpdateEndpoint, updateProductPath, "")
+ 	version := input.ExternalVersionID
+ 	if version == "" {
+ 		for _, result := range out.Channels {
+diff --git a/pkg/appstore/appstore_probe_download_test.go b/pkg/appstore/appstore_probe_download_test.go
+index 93c1edcf2c1ae8e5c8d4ed3fda73c171dd9fe6f6..2d707f8d1b529f50bfbc0ff0f48108e020355458 100644
+--- a/pkg/appstore/appstore_probe_download_test.go
++++ b/pkg/appstore/appstore_probe_download_test.go
+@@ -106,9 +106,9 @@ func TestProbeReadOnlyChannelsAfterLicenseRefusal(t *testing.T) {
+ 			}
+ 		}
+ 		return http.Result[downloadResult]{StatusCode: 200, Data: downloadResult{FailureType: FailureTypeLicenseNotFound}}, nil
+-	}).Times(7)
++	}).Times(8)
+ 	out, err := store.ProbeDownload(DownloadProbeInput{Account: acc, App: app, ExternalVersionID: "123"})
+-	if err != nil || out.Country != "RU" || len(out.Channels) != 8 {
++	if err != nil || out.Country != "RU" || len(out.Channels) != 9 {
+ 		t.Fatalf("unexpected probe: %+v %v", out, err)
+ 	}
+ 	if out.Channels[2].Status != "package_and_license_offered" {
+diff --git a/pkg/appstore/appstore_unavailable_2059_test.go b/pkg/appstore/appstore_unavailable_2059_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..03cb1c418a1f7e55fc12dc1905baf2d6247a83eb
+--- /dev/null
++++ b/pkg/appstore/appstore_unavailable_2059_test.go
+@@ -0,0 +1,28 @@
++package appstore
++
++import (
++	gohttp "net/http"
++	"testing"
++
++	"github.com/majd/ipatool/v2/pkg/http"
++)
++
++// AppRestore: an empty volumeStore 2059 may still be served by redownload.
++func TestTemporarilyUnavailableWithoutItemsIsAvailabilityResponse(t *testing.T) {
++	ok := http.Result[downloadResult]{StatusCode: gohttp.StatusOK, Data: downloadResult{FailureType: FailureTypeTemporarilyUnavailable}}
++	if !isUnavailableDownloadProductResponse(ok) {
++		t.Fatal("2059 without items must allow the read-only redownload channel")
++	}
++
++	for _, res := range []http.Result[downloadResult]{
++		{StatusCode: 403, Data: downloadResult{FailureType: FailureTypeTemporarilyUnavailable}},
++		{StatusCode: gohttp.StatusOK, Data: downloadResult{FailureType: FailureTypeTemporarilyUnavailable, Items: make([]downloadItemResult, 1)}},
++		{StatusCode: gohttp.StatusOK, Data: downloadResult{FailureType: FailureTypeLicenseNotFound}},
++		{StatusCode: gohttp.StatusOK, Data: downloadResult{FailureType: FailureTypePasswordTokenExpired}},
++		{StatusCode: gohttp.StatusOK, Data: downloadResult{FailureType: "-128"}},
++	} {
++		if isUnavailableDownloadProductResponse(res) {
++			t.Fatalf("must not reinterpret %+v as availability", res)
++		}
++	}
++}

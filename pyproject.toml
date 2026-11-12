@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apprestore"
-version = "0.4.0"
+version = "0.4.1"
 description = "Restore offloaded iOS applications from verified IPA files on macOS and Windows."
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -12,6 +12,11 @@ license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 dependencies = [
     "pymobiledevice3==10.1.0",
+    # cryptography 49+ ships macOS wheels for arm64 only. Intel Macs keep the
+    # newest line with a universal2 wheel so the hash-locked, binary-only
+    # install (and the Intel GUI build) works without a Rust toolchain.
+    "cryptography>=48.0.1,<49 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "cryptography>=50.0.0 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
 ]
 
 [project.scripts]
