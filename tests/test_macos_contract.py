@@ -687,7 +687,7 @@ def test_generated_bootstrap_installs_then_command_launches(
     )
     assert build.returncode == 0, build.stdout + build.stderr
 
-    archive = release_root / "dist" / "AppRestore-0.4.0-source.zip"
+    archive = release_root / "dist" / "AppRestore-0.4.1-source.zip"
     bootstrap = release_root / "dist" / "install.sh"
     assert archive.is_file()
     assert bootstrap.is_file()
