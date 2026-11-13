@@ -275,8 +275,8 @@ def test_payload_installer_is_user_space_and_transactional() -> None:
     assert 'installed_version="$("$COMMAND_PATH" --version)"' in installer
     assert '[[ "$installed_version" == "$APPRESTORE_VERSION" ]]' in installer
     assert 'IPATOOL_VERSION="2.8.1"' in installer
-    assert "576bde4baf04365fcdea46eb7f3e5bb6" in installer
-    assert "faf98ef8067f1ef4783123d00561b4ec" in installer
+    assert "3506c9b524f4263f12cdbebfd0565239" in installer
+    assert "cdfb5ee00fe26928783df2fcfc1480b6" in installer
     assert "--require-hashes" in installer
     assert "--only-binary=:all:" in installer
     assert 'requirements/runtime.lock"' in installer

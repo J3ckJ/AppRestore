@@ -74,8 +74,11 @@ def test_release_builds_both_gui_apps_and_publishes_them_with_checksums():
     assert 'gui_windows="AppRestore-GUI-Windows.zip"' in publish
     assert 'gui_macos="AppRestore-GUI-macOS.zip"' in publish
     assert f'gui_macos_intel="{INTEL_MAC_NAME}"' in publish
-    assert '== 7 ]]' in publish
-    assert 'sha256sum "$gui_windows" "$gui_macos" "$gui_macos_intel" >> SHA256SUMS.txt' in publish
+    assert '== 10 ]]' in publish
+    assert (
+        'sha256sum "$gui_windows" "$gui_macos" "$gui_macos_intel" '
+        '"$cli_windows" "$cli_macos" "$cli_macos_intel" >> SHA256SUMS.txt'
+    ) in publish
     assert "sha256sum -c SHA256SUMS.txt" in publish
     upload = publish[publish.index('gh release upload "$tag"'):publish.index('gh release edit "$tag"')]
     assert '"${ASSET_DIR}/${gui_windows}"' in upload
@@ -101,3 +104,57 @@ def test_readme_offers_both_install_paths():
     assert "Терминальная версия" in readme
     for name in GUI_NAMES:
         assert name in readme
+
+
+CLI_NAMES = {
+    ("win32", "AMD64"): "AppRestore-CLI-Windows.zip",
+    ("darwin", "arm64"): "AppRestore-CLI-macOS.zip",
+    ("darwin", "x86_64"): "AppRestore-CLI-macOS-Intel.zip",
+}
+
+
+def test_cli_asset_names_cover_every_platform():
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location("package_cli", ROOT / "packaging" / "package_cli.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "packaging"))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(ROOT / "packaging"))
+    for (platform_name, machine), name in CLI_NAMES.items():
+        assert module.cli_asset_name(platform_name, machine) == name
+    assert module.cli_asset_name("linux", "x86_64") is None
+
+
+def test_release_builds_and_publishes_a_standalone_cli_for_every_platform():
+    workflow = RELEASE.read_text(encoding="utf-8")
+    assert workflow.count("pyinstaller packaging/apprestore-cli.spec") == 2
+    assert workflow.count("python packaging/package_cli.py --dist dist-cli --out cli-dist --expect-version") == 2
+    windows = workflow.split("  gui-windows:\n", 1)[1].split("  gui-macos:\n", 1)[0]
+    assert "cli-dist/AppRestore-CLI-Windows.zip" in windows
+    macos = workflow.split("  gui-macos:\n", 1)[1].split("  release-assets:\n", 1)[0]
+    assert "cli_asset: AppRestore-CLI-macOS.zip" in macos
+    assert "cli_asset: AppRestore-CLI-macOS-Intel.zip" in macos
+    publish = workflow.split("  publish:\n", 1)[1]
+    upload = publish[publish.index('gh release upload "$tag"'):publish.index('gh release edit "$tag"')]
+    for variable, name in (
+        ("cli_windows", "AppRestore-CLI-Windows.zip"),
+        ("cli_macos", "AppRestore-CLI-macOS.zip"),
+        ("cli_macos_intel", "AppRestore-CLI-macOS-Intel.zip"),
+    ):
+        assert f'{variable}="{name}"' in publish
+        assert f'"${{ASSET_DIR}}/${{{variable}}}"' in upload
+    for artifact in ("apprestore-cli-windows", "apprestore-cli-macos", "apprestore-cli-macos-intel"):
+        assert f"name: {artifact}-${{{{ needs.validate-tag.outputs.version }}}}" in publish
+
+
+def test_cli_spec_is_a_console_build_without_qt():
+    spec = (ROOT / "packaging" / "apprestore-cli.spec").read_text(encoding="utf-8")
+    assert "console=True" in spec
+    assert '"PySide6"' in spec and '"apprestore_gui"' in spec
+    entry = (ROOT / "packaging" / "apprestore_cli_entry.py").read_text(encoding="utf-8")
+    # pymobiledevice3 children must be dispatched before the CLI parses argv.
+    assert entry.index("maybe_dispatch") < entry.index("cli_main()")

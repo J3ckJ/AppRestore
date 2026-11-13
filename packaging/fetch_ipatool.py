@@ -1,10 +1,9 @@
 """Download the pinned ipatool build and place it next to the GUI bundle.
 
-Official ipatool 2.6.0 follows only HTTP 302 during Apple ID login. Apple
-sometimes answers 301, and that login fails before the password is checked.
-These archives are AppRestore's build of majd/ipatool commit
-``IPATOOL_SOURCE_COMMIT``, which follows 301, 302, 307 and 308. The reported
-version stays 2.6.0. The SHA-256 values match the installers
+These archives are AppRestore's build of majd/ipatool v2.8.1
+(``IPATOOL_SOURCE_COMMIT``, the restored App Store sign-in) with the patches in
+packaging/patches, built by .github/workflows/build-ipatool.yml and published
+in the ``ipatool-2.8.1-apprestore`` release. The SHA-256 values match the installers
 (install-windows.ps1 / install-macos.sh); tests/test_frozen_runtime.py keeps
 them in sync. ``resolve_tool("ipatool")`` looks next to ``sys.executable``
 first, so a frozen app finds this copy.
@@ -28,9 +27,9 @@ IPATOOL_VERSION = "2.8.1"
 IPATOOL_SOURCE_COMMIT = "3e84853e2e5d60540a5022b64895d496910144eb"
 ARCHIVE_BASE = "https://github.com/J3ckJ/AppRestore/releases/download/ipatool-2.8.1-apprestore"
 ARCHIVE_SHA256 = {
-    "windows-amd64": "4637a686dcafea42a0cc83da00469b951dec3c2ba488d8f48fc05322d99b8941",
-    "macos-arm64": "faf98ef8067f1ef4783123d00561b4ece10dc7419631eb9555d88a1da2f61f3f",
-    "macos-amd64": "576bde4baf04365fcdea46eb7f3e5bb6ea143d0d9e53d6e2711136cc608aac84",
+    "windows-amd64": "0c5165292d7d17371e9401599c00f4bbc615e75cf9265ffa586266336c48beee",
+    "macos-arm64": "cdfb5ee00fe26928783df2fcfc1480b604d4d261b08c0a6e04699da76dea9e92",
+    "macos-amd64": "3506c9b524f4263f12cdbebfd05652390cab9f1ec6490ff31c7b2e8121fba7b8",
 }
 MAX_BINARY_BYTES = 64 * 1024 * 1024
 

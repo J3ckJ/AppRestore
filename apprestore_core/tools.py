@@ -85,7 +85,7 @@ IPATOOL_VERSION = "2.8.1"
 # Хеш windows-amd64.tar.gz сборки ipatool 2.8.1 + патчи AppRestore (новый вход Apple).
 # Проверяется установщиком до распаковки. Не сверять им извлечённый ipatool.exe.
 IPATOOL_WINDOWS_AMD64_ARCHIVE_SHA256 = (
-    "4637a686dcafea42a0cc83da00469b951dec3c2ba488d8f48fc05322d99b8941"
+    "0c5165292d7d17371e9401599c00f4bbc615e75cf9265ffa586266336c48beee"
 )
 # ipatool >= 2.4 подписывает запросы авторизации App Store через SAP, а сам
 # подписчик исполняется в эмуляторе Unicorn. Его shared library не входит в

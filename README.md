@@ -70,6 +70,19 @@ App Store кнопки «Загрузить» уже нет: приложени�
 Как поставить, написано ниже, в разделе
 [Установка терминальной версии](#установка-терминальной-версии).
 
+Готовая терминальная версия без установки Python — распакуйте архив и
+запустите `apprestore` из папки `AppRestore-CLI` (подробности в `README.txt`
+внутри архива):
+
+| Система | Файл |
+|---|---|
+| Windows 10/11 (x64) | [AppRestore-CLI-Windows.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-CLI-Windows.zip) |
+| macOS на Apple Silicon | [AppRestore-CLI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-CLI-macOS.zip) |
+| macOS на Intel | [AppRestore-CLI-macOS-Intel.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-CLI-macOS-Intel.zip) |
+
+На macOS сборка подписана ad-hoc: перед первым запуском выполните
+`xattr -dr com.apple.quarantine AppRestore-CLI`.
+
 Контрольные суммы SHA-256 всех файлов лежат в
 [SHA256SUMS.txt](https://github.com/J3ckJ/AppRestore/releases/latest/download/SHA256SUMS.txt).
 
@@ -334,8 +347,10 @@ AppRestore распространяется по лицензии [GNU GPL v3](.
 - как выпускать новую версию: [docs/RELEASING.md](./docs/RELEASING.md);
 - история изменений: [CHANGELOG.md](./CHANGELOG.md).
 
-В каждом выпуске шесть файлов: `AppRestore-GUI-Windows.zip`,
-`AppRestore-GUI-macOS.zip`, `install.ps1`, `install.sh`,
+В каждом выпуске десять файлов: программа с окном `AppRestore-GUI-Windows.zip`,
+`AppRestore-GUI-macOS.zip`, `AppRestore-GUI-macOS-Intel.zip`; готовая
+терминальная версия `AppRestore-CLI-Windows.zip`, `AppRestore-CLI-macOS.zip`,
+`AppRestore-CLI-macOS-Intel.zip`; установщики `install.ps1`, `install.sh`;
 `AppRestore-<версия>-source.zip` и `SHA256SUMS.txt`.
 
 ---

@@ -42,3 +42,6 @@ Thumbs.db
 Desktop.ini
 screenshots/
 /bin/
+build-cli/
+dist-cli/
+cli-dist/

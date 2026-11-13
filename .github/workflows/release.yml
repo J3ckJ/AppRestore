@@ -235,11 +235,28 @@ jobs:
           python packaging/package_gui.py --out gui-dist --expect-version "${{ needs.validate-tag.outputs.version }}" --ipatool-archive dist/ipatool/ipatool-2.8.1-windows-amd64.tar.gz
           if ($LASTEXITCODE -ne 0) { throw "GUI packaging failed" }
 
+      - name: Build, verify and zip the standalone CLI
+        shell: pwsh
+        run: |
+          pyinstaller packaging/apprestore-cli.spec --noconfirm --clean --distpath dist-cli --workpath build-cli
+          if ($LASTEXITCODE -ne 0) { throw "pyinstaller (CLI) failed" }
+          python packaging/package_cli.py --dist dist-cli --out cli-dist --expect-version "${{ needs.validate-tag.outputs.version }}" --ipatool-archive dist/ipatool/ipatool-2.8.1-windows-amd64.tar.gz
+          if ($LASTEXITCODE -ne 0) { throw "CLI packaging failed" }
+          if (-not (Test-Path cli-dist/AppRestore-CLI-Windows.zip)) { throw "CLI asset missing" }
+
       - name: Upload GUI asset
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: apprestore-gui-windows-${{ needs.validate-tag.outputs.version }}
           path: gui-dist/AppRestore-GUI-Windows.zip
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload CLI asset
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: apprestore-cli-windows-${{ needs.validate-tag.outputs.version }}
+          path: cli-dist/AppRestore-CLI-Windows.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -258,6 +275,8 @@ jobs:
             arch: arm64
             asset: AppRestore-GUI-macOS.zip
             artifact: apprestore-gui-macos
+            cli_asset: AppRestore-CLI-macOS.zip
+            cli_artifact: apprestore-cli-macos
           # Intel build: runtime.lock pins a cryptography line with a
           # universal2 wheel for x86_64 macOS, so this stays binary-only.
           - runner: macos-15-intel
@@ -265,6 +284,8 @@ jobs:
             arch: x86_64
             asset: AppRestore-GUI-macOS-Intel.zip
             artifact: apprestore-gui-macos-intel
+            cli_asset: AppRestore-CLI-macOS-Intel.zip
+            cli_artifact: apprestore-cli-macos-intel
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
 
@@ -319,12 +340,29 @@ jobs:
           python packaging/package_gui.py --out gui-dist --expect-version "${{ needs.validate-tag.outputs.version }}" \
             --ipatool-archive "dist/ipatool/ipatool-2.8.1-${ipatool_asset}.tar.gz"
           test -f "gui-dist/${{ matrix.asset }}"
+          echo "ipatool_asset=${ipatool_asset}" >> "$GITHUB_ENV"
+
+      - name: Build, verify and zip the standalone CLI
+        run: |
+          set -euo pipefail
+          pyinstaller packaging/apprestore-cli.spec --noconfirm --clean --distpath dist-cli --workpath build-cli
+          python packaging/package_cli.py --dist dist-cli --out cli-dist --expect-version "${{ needs.validate-tag.outputs.version }}" \
+            --ipatool-archive "dist/ipatool/ipatool-2.8.1-${ipatool_asset}.tar.gz"
+          test -f "cli-dist/${{ matrix.cli_asset }}"
 
       - name: Upload GUI asset
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}-${{ needs.validate-tag.outputs.version }}
           path: gui-dist/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload CLI asset
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.cli_artifact }}-${{ needs.validate-tag.outputs.version }}
+          path: cli-dist/${{ matrix.cli_asset }}
           if-no-files-found: error
           retention-days: 7
 
@@ -432,6 +470,24 @@ jobs:
           name: apprestore-gui-macos-intel-${{ needs.validate-tag.outputs.version }}
           path: ${{ runner.temp }}/apprestore-release
 
+      - name: Download Windows CLI
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: apprestore-cli-windows-${{ needs.validate-tag.outputs.version }}
+          path: ${{ runner.temp }}/apprestore-release
+
+      - name: Download macOS CLI
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: apprestore-cli-macos-${{ needs.validate-tag.outputs.version }}
+          path: ${{ runner.temp }}/apprestore-release
+
+      - name: Download macOS Intel CLI
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: apprestore-cli-macos-intel-${{ needs.validate-tag.outputs.version }}
+          path: ${{ runner.temp }}/apprestore-release
+
       - name: Check out tagged source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -450,14 +506,17 @@ jobs:
           gui_windows="AppRestore-GUI-Windows.zip"
           gui_macos="AppRestore-GUI-macOS.zip"
           gui_macos_intel="AppRestore-GUI-macOS-Intel.zip"
-          for asset in "$archive" install.ps1 install.sh SHA256SUMS.txt "$gui_windows" "$gui_macos" "$gui_macos_intel"; do
+          cli_windows="AppRestore-CLI-Windows.zip"
+          cli_macos="AppRestore-CLI-macOS.zip"
+          cli_macos_intel="AppRestore-CLI-macOS-Intel.zip"
+          for asset in "$archive" install.ps1 install.sh SHA256SUMS.txt "$gui_windows" "$gui_macos" "$gui_macos_intel" "$cli_windows" "$cli_macos" "$cli_macos_intel"; do
             test -f "${ASSET_DIR}/${asset}"
           done
-          [[ "$(find "$ASSET_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 7 ]]
-          # One SHA256SUMS.txt for both variants (terminal and app with a window).
+          [[ "$(find "$ASSET_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 10 ]]
+          # One SHA256SUMS.txt for every variant (terminal and app with a window).
           (
             cd "$ASSET_DIR"
-            sha256sum "$gui_windows" "$gui_macos" "$gui_macos_intel" >> SHA256SUMS.txt
+            sha256sum "$gui_windows" "$gui_macos" "$gui_macos_intel" "$cli_windows" "$cli_macos" "$cli_macos_intel" >> SHA256SUMS.txt
             sha256sum -c SHA256SUMS.txt
           )
           notes_file="${RUNNER_TEMP}/release-notes.md"
@@ -476,6 +535,9 @@ jobs:
           export GUI_WINDOWS="$gui_windows"
           export GUI_MACOS="$gui_macos"
           export GUI_MACOS_INTEL="$gui_macos_intel"
+          export CLI_WINDOWS="$cli_windows"
+          export CLI_MACOS="$cli_macos"
+          export CLI_MACOS_INTEL="$cli_macos_intel"
           export PREV_TAG="$prev"
           python3 - <<'PY'
           import os
@@ -499,7 +561,10 @@ jobs:
                   "Сборки: программа с окном — "
                   f"`{os.environ['GUI_WINDOWS']}`, `{os.environ['GUI_MACOS']}` (Apple Silicon) "
                   f"и `{os.environ['GUI_MACOS_INTEL']}` (Intel), "
-                  "терминал — `install.ps1` (Windows) или `install.sh` (macOS). "
+                  "терминал без установки Python — "
+                  f"`{os.environ['CLI_WINDOWS']}`, `{os.environ['CLI_MACOS']}` (Apple Silicon) "
+                  f"и `{os.environ['CLI_MACOS_INTEL']}` (Intel), "
+                  "или установщики `install.ps1` (Windows) и `install.sh` (macOS). "
                   "Суммы SHA-256 в `SHA256SUMS.txt`."
               ),
           ]
@@ -558,6 +623,9 @@ jobs:
             "${ASSET_DIR}/${gui_windows}" \
             "${ASSET_DIR}/${gui_macos}" \
             "${ASSET_DIR}/${gui_macos_intel}" \
+            "${ASSET_DIR}/${cli_windows}" \
+            "${ASSET_DIR}/${cli_macos}" \
+            "${ASSET_DIR}/${cli_macos_intel}" \
             --repo "$GITHUB_REPOSITORY"
           gh release edit "$tag" \
             --repo "$GITHUB_REPOSITORY" \
