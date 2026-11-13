@@ -1,9 +1,17 @@
 name: CLI build
 
-# Manual check of the standalone CLI assets before tagging a release.
+# Check of the standalone CLI assets before tagging a release (by hand or
+# when a pull request changes the CLI packaging).
 # release.yml builds the same assets for the tagged commit.
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - packaging/apprestore-cli.spec
+      - packaging/apprestore_cli_entry.py
+      - packaging/package_cli.py
+      - packaging/fetch_ipatool.py
+      - .github/workflows/cli-build.yml
 
 permissions:
   contents: read
