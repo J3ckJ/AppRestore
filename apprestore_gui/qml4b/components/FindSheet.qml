@@ -60,15 +60,15 @@ Item {
             height: 44
             radius: Theme.radiusSearch
             readonly property bool typed: input.text.length > 0
-            color: typed ? Theme.card : Theme.soft
-            border.width: typed ? 2 : 0
-            border.color: Theme.ink
+            color: typed || input.activeFocus ? Theme.card : Theme.soft
+            border.width: input.activeFocus ? 2 : 1
+            border.color: input.activeFocus ? Theme.focusRing : Theme.line
             Glyph { x: 14; anchors.verticalCenter: parent.verticalCenter; name: sbox.typed ? "search-ink" : "search"; size: 16 }
             TextInput {
                 id: input
                 objectName: "findInput"
                 x: 14 + 16 + 10
-                width: parent.width - x - 14
+                width: parent.width - x - (clearButton.visible ? 44 : 14)
                 anchors.verticalCenter: parent.verticalCenter
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.style("search").size
@@ -78,8 +78,18 @@ Item {
                 focus: true
                 text: root.f.query
                 onTextEdited: debounce.restart()
-                Keys.onEscapePressed: { if (text !== "") { text = ""; root.f.search("") } else root.f.close() }
+                onAccepted: { debounce.stop(); root.f.search(text) }
+                Keys.onEscapePressed: { debounce.stop(); if (text !== "") { text = ""; root.f.search("") } else root.f.close() }
                 Accessible.name: root.v.placeholder || ""
+            }
+            ClearSearchButton {
+                id: clearButton
+                objectName: "findClear"
+                visible: sbox.typed
+                anchors.right: parent.right
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                onClicked: { debounce.stop(); input.text = ""; root.f.search(""); input.forceActiveFocus() }
             }
             // empty field = placeholder only (no suggestions)
             T {
@@ -159,6 +169,18 @@ Item {
                 width: list.width
                 spacing: 12
                 topPadding: 14
+                Row {
+                    objectName: "findSearchProgress"
+                    visible: !!root.v.searching || !!root.v.checking
+                    spacing: 10
+                    Basic.BusyIndicator {
+                        width: 16; height: 16
+                        running: parent.visible
+                        padding: 0
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    T { token: "status"; color: Theme.ink2; text: root.v.searching ? "Ищем в App Store…" : "Проверяем доступность…" }
+                }
                 // archive: spinner under the groups, nothing is blocked
                 Row {
                     objectName: "findSpinner"

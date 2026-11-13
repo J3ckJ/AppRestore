@@ -334,11 +334,12 @@ class FindState:
         typed = bool(self.query.strip())
         busy = self.archive_state == "busy"
         searching = typed and not self.store_done
-        empty = typed and self.store_done and not busy and not rows
+        empty = typed and self.store_done and self.offers_done and not busy and not rows
         return {
             "rows": rows,
             "typed": typed,
             "searching": searching,
+            "checking": not self.offers_done and not searching and not self.offline,
             "spinner": SEARCHING_ARCHIVE if busy else "",
             "empty": EMPTY_TEXT if empty else "",
             "emptyLink": ARCHIVE_LINK if empty and not self.archive_enabled else "",

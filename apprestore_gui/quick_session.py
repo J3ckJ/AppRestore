@@ -1143,6 +1143,10 @@ class QuickSession(QObject):
                 return
             forced = self._force
             self._force = False
+        if forced:
+            invalidate = getattr(self.service, "invalidate_device_apps", None)
+            if callable(invalidate):
+                invalidate()
         try:
             udids = self.service.connected_udids()
         except Exception as exc:  # noqa: BLE001

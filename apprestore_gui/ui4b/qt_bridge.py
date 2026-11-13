@@ -11,6 +11,7 @@ Thin on purpose: every decision is in ``selection``, ``space``, ``home``,
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -127,6 +128,7 @@ class PickerModel(QAbstractListModel):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._rows: list[dict[str, object]] = []
+        self._headers: list[int] = []
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
         return 0 if parent.isValid() else len(self._rows)
@@ -146,6 +148,15 @@ class PickerModel(QAbstractListModel):
         return list(self._rows)
 
     def set_rows(self, rows: list[dict[str, object]]) -> None:
+        if rows == self._rows:
+            return
+        header = -1
+        headers = []
+        for i, row in enumerate(rows):
+            if row.get("kind") == "header":
+                header = i
+            headers.append(header)
+        self._headers = headers
         same = len(rows) == len(self._rows) and all(
             a.get("key") == b.get("key") for a, b in zip(rows, self._rows)
         )
@@ -159,6 +170,12 @@ class PickerModel(QAbstractListModel):
         for i, (a, b) in enumerate(zip(old, rows)):
             if a != b:
                 self.dataChanged.emit(self.index(i), self.index(i))
+
+    def header_at(self, index: int) -> dict[str, object]:
+        if not 0 <= index < len(self._headers):
+            return {}
+        header = self._headers[index]
+        return dict(self._rows[header]) if header >= 0 else {}
 
 
 class SourceBase(QObject):
@@ -354,7 +371,7 @@ class SessionSource(SourceBase):
         self._space = UNKNOWN_SPACE
         self._space_udid = ""
         session.changed.connect(self._on_session)
-        session.purchasesChanged.connect(self.changed)
+        session.purchasesChanged.connect(self._on_purchases)
         if hasattr(session, "sessionChanged"):
             session.sessionChanged.connect(self._on_session)
         session.installProgress.connect(self.progress)
@@ -377,6 +394,7 @@ class SessionSource(SourceBase):
         self._accounts: list[dict[str, object]] = []
         self._statuses: dict[str, object] = {}
         self._builtin_names: dict[str, str] | None = None
+        self._purchase_name_book: dict[str, str] | None = None
         #: app_names.display_names in the background (names_lookup); results → changed
         self._names = NameLookup(vendored_display_names(), notify=self._namesReady.emit)
         self._namesReady.connect(self.changed)
@@ -390,6 +408,10 @@ class SessionSource(SourceBase):
         self._probe_hosts: Callable[[], bool] = any_host_answers
 
     # -- reading ---------------------------------------------------------------
+
+    def _on_purchases(self) -> None:
+        self._purchase_name_book = None
+        self.changed.emit()
 
     def _on_session(self) -> None:
         s = self.session
@@ -508,6 +530,9 @@ class SessionSource(SourceBase):
         self._missing_udid = ""
         self._phone_udid = ""
         self._space_udid = ""
+        invalidate = getattr(getattr(self.session, "service", None), "invalidate_device_apps", None)
+        if callable(invalidate):
+            invalidate()
         refresh = getattr(self.session, "refresh", None)
         if callable(refresh):
             refresh()  # QuickSession re-reads the offloaded list (its loop, _force)
@@ -557,7 +582,9 @@ class SessionSource(SourceBase):
     def _name_books(self) -> tuple[dict[str, str], dict[str, str]]:
         if self._builtin_names is None:
             self._builtin_names = builtin_names()
-        return purchase_names(list(self.session.purchases or [])), self._builtin_names
+        if self._purchase_name_book is None:
+            self._purchase_name_book = purchase_names(self.session.purchases or [])
+        return self._purchase_name_book, self._builtin_names
 
     def _named(self, apps: list[Any], nameless: list[tuple[str, str]] | None = None) -> list[Any]:
         """device CFBundleDisplayName/CFBundleName/iTunesMetadata → purchases cache →
@@ -651,22 +678,19 @@ class SessionSource(SourceBase):
         return {str(row.get("trackId") or "") for row in rows} - {""}
 
     def free_prices(self, store_ids: list[str]) -> dict[str, float | None]:
-        from apprestore_core.license_gate import lookup_offer
-
+        country = self._account_country()
+        out: dict[str, float | None] = {str(sid): None for sid in store_ids}
+        ids = [sid for sid in out if sid.isdigit() and int(sid) > 0]
+        if not country or not ids:
+            return out
         try:
-            country = str(self.session.service.core.tools.account_country() or "").strip().lower()
-        except Exception:  # noqa: BLE001
-            country = ""
-        out: dict[str, float | None] = {}
-        for store_id in store_ids:
-            price: float | None = None
-            if country and str(store_id).isdigit():
-                try:
-                    offer = lookup_offer(str(store_id), (country,))
-                    price = float(offer["price"]) if offer and offer.get("price") is not None else None
-                except Exception:  # noqa: BLE001 - unknown price: the gate refuses it anyway
-                    price = None
-            out[str(store_id)] = price
+            offers = lookup_itunes_offers(ids, country)
+        except Exception:  # noqa: BLE001 - missing prices stay unknown
+            return out
+        for sid in ids:
+            price = (offers.get(sid) or {}).get("price")
+            if isinstance(price, (int, float)) and not isinstance(price, bool) and math.isfinite(price) and price >= 0:
+                out[sid] = float(price)
         return out
 
     def _account_country(self) -> str:
@@ -697,6 +721,9 @@ class SessionSource(SourceBase):
             self.session.loadPurchases()
         udid = self.session.current_udid()
         if self.connected and udid:
+            invalidate = getattr(self.session.service, "invalidate_device_apps", None)
+            if callable(invalidate):
+                invalidate()
             self._missing_udid = udid
             threading.Thread(target=self._load_missing, args=(udid,), daemon=True, name="ui4b-missing").start()
 
@@ -919,6 +946,7 @@ class Restore4b(QObject):
             self._scan_started = True
             self.source.start_scan()
         queue = self.flow.queue if self.flow.queue.entries else None
+        limit_note, limit_total = self._limit_note_for_queue(queue)
         self._home = home_view(
             HomeInput(
                 connected=src.connected,
@@ -936,14 +964,17 @@ class Restore4b(QObject):
                 store_problem=self.flow.store_problem,
                 store_problem_app=self.flow.store_problem_app,
                 store_problem_name=self.flow.store_problem_name,
-                limit_note=self._limit_note_for_queue(queue)[0],
-                limit_total=self._limit_note_for_queue(queue)[1],
+                limit_note=limit_note,
+                limit_total=limit_total,
                 component_details=component.details_text(self._patches_missing)
                 if self._component_details and self._patches_missing else "",
                 component=bool(self._patches_missing),
             )
         )
-        self.picker.set_rows(self.selection.rows())
+        picker_key = self.selection.view_key
+        if picker_key != getattr(self, "_picker_key", None):
+            self.picker.set_rows(self.selection.rows())
+            self._picker_key = picker_key
         self._revision += 1
         self.changed.emit()
 
@@ -1033,13 +1064,7 @@ class Restore4b(QObject):
     def headerAt(self, index: int, _revision: int = 0) -> dict[str, object]:
         """Header row of the group that list row ``index`` belongs to (sticky header)."""
 
-        rows = self.picker.rows()
-        if not 0 <= index < len(rows):
-            return {}
-        for row in reversed(rows[: index + 1]):
-            if row.get("kind") == "header":
-                return dict(row)
-        return {}
+        return self.picker.header_at(index)
 
     _storeFound = Signal(object)
 

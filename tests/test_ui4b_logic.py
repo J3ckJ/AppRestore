@@ -1145,7 +1145,7 @@ def test_quick_ui_runs_on_real_sources_fakes_only_behind_flags() -> None:
 
     ss = inspect.getsource(qt_bridge.SessionSource)
     for call in ("service.missing(", "query_device_space(", "session.purchases", "account_country()",
-                 "classify_region_ids(", "lookup_offer(", "session.installStore(", "session.restore("):
+                 "classify_region_ids(", "lookup_itunes_offers(", "session.installStore(", "session.restore("):
         assert call in ss, call
     base = inspect.getsource(qt_bridge.SourceBase)
     assert "read_counts(journal_path())" in base and "next_slot(path)" in base

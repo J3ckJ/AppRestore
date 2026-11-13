@@ -829,7 +829,7 @@ class AppRestoreTools:
                     "IsDownloading",
                 ]
                 if include_store_metadata:
-                    return_attributes.extend(["iTunesMetadata", "ApplicationSINF"])
+                    return_attributes.append("iTunesMetadata")
                 options: dict[str, Any] = {
                     "ApplicationType": "User",
                     "ShowPlaceholders": True,
@@ -851,7 +851,7 @@ class AppRestoreTools:
         from .catalog import enrich_app_record, find_store_id
 
         try:
-            payload = self._list_apps_with_metadata(udid, timeout=15)
+            payload = self._list_apps_with_metadata(udid, timeout=15, bundle_id=bundle_id)
         except Exception:
             return None
         if not isinstance(payload, dict):

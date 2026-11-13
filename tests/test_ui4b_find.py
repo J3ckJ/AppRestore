@@ -552,3 +552,52 @@ def test_offline_find_builtin_only_install_disabled_no_archive_no_footnote(qapp)
     assert c.finder.banner["text"] == "Нет интернета. Найденное можно будет поставить, когда он появится"
     assert rows(c) and all(not r["enabled"] for r in rows(c))
     assert all(net is False for _, net in d.calls) and v["footnote"] == "" and not v["spinner"]
+
+
+def test_store_results_appear_before_region_and_offer_checks(qapp) -> None:
+    c, src = controller(delisted=Delisted([hit(SIRIUS, "Сириус", "Dev")]))
+    src.find_store = [{"storeId": VK, "name": "Сириус ВК", "source": "appstore"}]
+    checked = []
+
+    def statuses(ids):
+        assert {r["storeId"] for r in rows(c)} == {VK, SIRIUS}
+        assert c.finder.view["checking"]
+        assert all(not r["action"] for r in rows(c))
+        checked.append(ids)
+        return {}
+
+    src.store_statuses = statuses
+    c.finder.openWith("сириус")
+    assert checked == [[SIRIUS]]
+    assert not c.finder.view["checking"]
+
+
+def test_superseded_queries_do_not_start_network_work(qapp) -> None:
+    c, src = controller()
+    pending, queries = [], []
+    c.finder._spawn = pending.append
+    src.search_store = lambda query, purchases: queries.append(query) or []
+    c.finder.openWith("старый запрос")
+    c.finder.search("новый запрос")
+    pending[0]()
+    assert queries == []
+    pending[1]()
+    assert queries == ["новый запрос"]
+
+
+def test_query_changed_during_search_skips_remaining_metadata(qapp) -> None:
+    c, src = controller()
+    pending, checks = [], []
+    c.finder._spawn = pending.append
+
+    def search(query, purchases):
+        c.finder.search("новый")
+        return [{"storeId": VK, "name": "Старый", "source": "appstore"}]
+
+    src.search_store = search
+    src.store_offers = lambda ids: checks.append(ids) or {}
+    c.finder.openWith("старый")
+    pending[0]()
+    assert checks == []
+    assert c.finder.query == "новый"
+    assert rows(c) == []

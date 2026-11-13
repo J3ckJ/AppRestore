@@ -48,6 +48,7 @@ class GuiService:
             self._service.tools._ipatool_session_authenticated = False
 
     def _attach_service(self, service: AppRestoreService) -> AppRestoreService:
+        service.device_inventory_ttl = 5.0
         service.tools.runner = KeychainRunner(self.keychain_passphrase)
         service.license_mode = "gui"  # journal mode for the Widgets window
         if self._keychain_passphrase:
@@ -117,6 +118,10 @@ class GuiService:
         if self.demo_mode:
             return demo.demo_offloaded()
         return self.core.offloaded(udid)
+
+    def invalidate_device_apps(self) -> None:
+        if not self.demo_mode:
+            self.core.invalidate_device_apps()
 
     def installed_apps(self, udid: str) -> list[InstalledApp]:
         if self.demo_mode:
