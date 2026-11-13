@@ -1,7 +1,115 @@
+diff --git a/cmd/probe_download.go b/cmd/probe_download.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..e481872df3c77cda6b5d8a4ca656b768a6d09ce9
+--- /dev/null
++++ b/cmd/probe_download.go
+@@ -0,0 +1,48 @@
++package cmd
++
++import (
++	"errors"
++
++	"github.com/majd/ipatool/v2/pkg/appstore"
++	"github.com/spf13/cobra"
++)
++
++type downloadProber interface {
++	ProbeDownload(appstore.DownloadProbeInput) (appstore.DownloadProbeOutput, error)
++}
++
++func probeDownloadCmd() *cobra.Command {
++	return probeDownloadCmdWithAppStore(func() appstore.AppStore { return dependencies.AppStore })
++}
++
++func probeDownloadCmdWithAppStore(factory func() appstore.AppStore) *cobra.Command {
++	var appID int64
++	var versionID string
++	cmd := &cobra.Command{
++		Use:   "probe-download",
++		Short: "Inspect download channels without purchase, asset download or private response data",
++		RunE: func(cmd *cobra.Command, args []string) error {
++			if appID <= 0 {
++				return errors.New("a positive app ID is required")
++			}
++			store := factory()
++			prober, ok := store.(downloadProber)
++			if !ok {
++				return errors.New("download probe is not supported by this build")
++			}
++			info, err := store.AccountInfo()
++			if err != nil {
++				return errors.New("cannot open saved account for download probe")
++			}
++			out, err := prober.ProbeDownload(appstore.DownloadProbeInput{Context: cmd.Context(), Account: info.Account, App: appstore.App{ID: appID}, ExternalVersionID: versionID})
++			if err != nil {
++				return err
++			}
++			dependencies.Logger.Log().Interface("probe", out).Bool("success", true).Send()
++			return nil
++		},
++	}
++	cmd.Flags().Int64VarP(&appID, "app-id", "i", 0, "App Store ID to inspect")
++	cmd.Flags().StringVar(&versionID, "external-version-id", "", "Known version ID to inspect without a public catalog card")
++	return cmd
++}
+diff --git a/cmd/probe_download_test.go b/cmd/probe_download_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..f86c6efee240b74a34bfde714e35dc9abfe98e94
+--- /dev/null
++++ b/cmd/probe_download_test.go
+@@ -0,0 +1,46 @@
++package cmd
++
++import (
++	"context"
++	"testing"
++
++	"github.com/majd/ipatool/v2/pkg/appstore"
++	"github.com/majd/ipatool/v2/pkg/log"
++)
++
++type fakeDownloadProber struct {
++	*fakePurchaseAppStore
++	input appstore.DownloadProbeInput
++}
++
++func (f *fakeDownloadProber) ProbeDownload(input appstore.DownloadProbeInput) (appstore.DownloadProbeOutput, error) {
++	f.input = input
++	return appstore.DownloadProbeOutput{AppID: input.App.ID}, nil
++}
++
++func TestProbeCommandDoesNotDownloadOrPurchase(t *testing.T) {
++	previous := dependencies
++	defer func() { dependencies = previous }()
++	dependencies.Logger = log.NewLogger(log.Args{})
++	store := &fakeDownloadProber{fakePurchaseAppStore: &fakePurchaseAppStore{}}
++	cmd := probeDownloadCmdWithAppStore(func() appstore.AppStore { return store })
++	cmd.SetContext(context.Background())
++	cmd.SetArgs([]string{"--app-id", "1117817509", "--external-version-id", "123"})
++	if err := cmd.Execute(); err != nil {
++		t.Fatal(err)
++	}
++	if store.input.App.ID != 1117817509 || store.input.ExternalVersionID != "123" || store.purchaseInput.App.ID != 0 || store.lookupCalls != 0 {
++		t.Fatal("wrong probe/purchase input")
++	}
++	if cmd.Flag("purchase") != nil {
++		t.Fatal("probe exposes purchase")
++	}
++}
++
++func TestProbeCommandRequiresIDBeforeAccount(t *testing.T) {
++	cmd := probeDownloadCmdWithAppStore(func() appstore.AppStore { t.Fatal("must not access account"); return nil })
++	cmd.SetArgs([]string{})
++	if err := cmd.Execute(); err == nil {
++		t.Fatal("accepted missing ID")
++	}
++}
 diff --git a/cmd/root.go b/cmd/root.go
+index 20e1794a54781660bf20b0303e6bfd1549818258..d4833887e8b6df81a21a14b3a347ca02d31ad2f0 100644
 --- a/cmd/root.go
 +++ b/cmd/root.go
-@@ -50,5 +50,6 @@
+@@ -48,6 +48,7 @@ func rootCmd() *cobra.Command {
+ 
  	cmd.AddCommand(authCmd())
  	cmd.AddCommand(downloadCmd())
 +	cmd.AddCommand(probeDownloadCmd())
@@ -10,7 +118,7 @@ diff --git a/cmd/root.go b/cmd/root.go
  	cmd.AddCommand(searchCmd())
 diff --git a/pkg/appstore/appstore_probe_download.go b/pkg/appstore/appstore_probe_download.go
 new file mode 100644
-index 0000000..1faaf16
+index 0000000000000000000000000000000000000000..17b2a58023620ed6a220aa14a81a549a98500567
 --- /dev/null
 +++ b/pkg/appstore/appstore_probe_download.go
 @@ -0,0 +1,323 @@
@@ -198,7 +306,7 @@ index 0000000..1faaf16
 +
 +func (t *appstore) probeVersion(ctx context.Context, acc Account, app App) (string, DownloadProbeChannel) {
 +	result := DownloadProbeChannel{Channel: "version_lookup", Status: "version_unavailable"}
-+	country, err := countryCodeFromStoreFront(acc.StoreFront)
++	country, err := t.countryCodeForDiagnostics(acc.StoreFront)
 +	if err != nil {
 +		result.Status = "country_unavailable"
 +		return "", result
@@ -250,7 +358,7 @@ index 0000000..1faaf16
 +		return DownloadProbeOutput{}, errors.New("failed to resolve diagnostic device identity")
 +	}
 +	guid := strings.ReplaceAll(strings.ToUpper(macAddr), ":", "")
-+	country, _ := countryCodeFromStoreFront(input.Account.StoreFront)
++	country, _ := t.countryCodeForDiagnostics(input.Account.StoreFront)
 +	out := DownloadProbeOutput{AppID: input.App.ID, Country: country, Channels: []DownloadProbeChannel{}}
 +	acc, app := input.Account, input.App
 +	request := func(channel string, endpoint downloadProductEndpoint, version string, legacy bool) {
@@ -339,7 +447,7 @@ index 0000000..1faaf16
 +}
 diff --git a/pkg/appstore/appstore_probe_download_test.go b/pkg/appstore/appstore_probe_download_test.go
 new file mode 100644
-index 0000000..336748b
+index 0000000000000000000000000000000000000000..336748b90becd6aba6f273be762873000598ae80
 --- /dev/null
 +++ b/pkg/appstore/appstore_probe_download_test.go
 @@ -0,0 +1,184 @@
@@ -525,111 +633,5 @@ index 0000000..336748b
 +	_, err := store.sendProbeProduct(req)
 +	if !errors.Is(err, errProbeRedirectLimit) {
 +		t.Fatal("unbounded diagnostic redirect")
-+	}
-+}
-diff --git a/cmd/probe_download.go b/cmd/probe_download.go
-new file mode 100644
-index 0000000..e481872
---- /dev/null
-+++ b/cmd/probe_download.go
-@@ -0,0 +1,48 @@
-+package cmd
-+
-+import (
-+	"errors"
-+
-+	"github.com/majd/ipatool/v2/pkg/appstore"
-+	"github.com/spf13/cobra"
-+)
-+
-+type downloadProber interface {
-+	ProbeDownload(appstore.DownloadProbeInput) (appstore.DownloadProbeOutput, error)
-+}
-+
-+func probeDownloadCmd() *cobra.Command {
-+	return probeDownloadCmdWithAppStore(func() appstore.AppStore { return dependencies.AppStore })
-+}
-+
-+func probeDownloadCmdWithAppStore(factory func() appstore.AppStore) *cobra.Command {
-+	var appID int64
-+	var versionID string
-+	cmd := &cobra.Command{
-+		Use:   "probe-download",
-+		Short: "Inspect download channels without purchase, asset download or private response data",
-+		RunE: func(cmd *cobra.Command, args []string) error {
-+			if appID <= 0 {
-+				return errors.New("a positive app ID is required")
-+			}
-+			store := factory()
-+			prober, ok := store.(downloadProber)
-+			if !ok {
-+				return errors.New("download probe is not supported by this build")
-+			}
-+			info, err := store.AccountInfo()
-+			if err != nil {
-+				return errors.New("cannot open saved account for download probe")
-+			}
-+			out, err := prober.ProbeDownload(appstore.DownloadProbeInput{Context: cmd.Context(), Account: info.Account, App: appstore.App{ID: appID}, ExternalVersionID: versionID})
-+			if err != nil {
-+				return err
-+			}
-+			dependencies.Logger.Log().Interface("probe", out).Bool("success", true).Send()
-+			return nil
-+		},
-+	}
-+	cmd.Flags().Int64VarP(&appID, "app-id", "i", 0, "App Store ID to inspect")
-+	cmd.Flags().StringVar(&versionID, "external-version-id", "", "Known version ID to inspect without a public catalog card")
-+	return cmd
-+}
-diff --git a/cmd/probe_download_test.go b/cmd/probe_download_test.go
-new file mode 100644
-index 0000000..f86c6ef
---- /dev/null
-+++ b/cmd/probe_download_test.go
-@@ -0,0 +1,46 @@
-+package cmd
-+
-+import (
-+	"context"
-+	"testing"
-+
-+	"github.com/majd/ipatool/v2/pkg/appstore"
-+	"github.com/majd/ipatool/v2/pkg/log"
-+)
-+
-+type fakeDownloadProber struct {
-+	*fakePurchaseAppStore
-+	input appstore.DownloadProbeInput
-+}
-+
-+func (f *fakeDownloadProber) ProbeDownload(input appstore.DownloadProbeInput) (appstore.DownloadProbeOutput, error) {
-+	f.input = input
-+	return appstore.DownloadProbeOutput{AppID: input.App.ID}, nil
-+}
-+
-+func TestProbeCommandDoesNotDownloadOrPurchase(t *testing.T) {
-+	previous := dependencies
-+	defer func() { dependencies = previous }()
-+	dependencies.Logger = log.NewLogger(log.Args{})
-+	store := &fakeDownloadProber{fakePurchaseAppStore: &fakePurchaseAppStore{}}
-+	cmd := probeDownloadCmdWithAppStore(func() appstore.AppStore { return store })
-+	cmd.SetContext(context.Background())
-+	cmd.SetArgs([]string{"--app-id", "1117817509", "--external-version-id", "123"})
-+	if err := cmd.Execute(); err != nil {
-+		t.Fatal(err)
-+	}
-+	if store.input.App.ID != 1117817509 || store.input.ExternalVersionID != "123" || store.purchaseInput.App.ID != 0 || store.lookupCalls != 0 {
-+		t.Fatal("wrong probe/purchase input")
-+	}
-+	if cmd.Flag("purchase") != nil {
-+		t.Fatal("probe exposes purchase")
-+	}
-+}
-+
-+func TestProbeCommandRequiresIDBeforeAccount(t *testing.T) {
-+	cmd := probeDownloadCmdWithAppStore(func() appstore.AppStore { t.Fatal("must not access account"); return nil })
-+	cmd.SetArgs([]string{})
-+	if err := cmd.Execute(); err == nil {
-+		t.Fatal("accepted missing ID")
 +	}
 +}

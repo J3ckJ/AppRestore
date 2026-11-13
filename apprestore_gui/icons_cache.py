@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import threading
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -41,18 +42,31 @@ class ArtworkCache:
         self.timeout = timeout
         self._meta_path = self.cache_dir / "index.json"
         self._index: dict[str, Any] = {}
+        self._metadata_lock = threading.RLock()
         if self._meta_path.is_file():
             try:
                 self._index = json.loads(self._meta_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 self._index = {}
+        if not isinstance(self._index, dict):
+            self._index = {}
+
+    def _write_cache(self, path: Path, data: bytes) -> None:
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=self.cache_dir, prefix=".art-", delete=False) as handle:
+                temporary = Path(handle.name)
+                handle.write(data)
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def _save_index(self) -> None:
         try:
-            self._meta_path.write_text(
-                json.dumps(self._index, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            with self._metadata_lock:
+                self._write_cache(self._meta_path, json.dumps(self._index, ensure_ascii=False).encode("utf-8"))
         except OSError:
             pass
 
@@ -67,6 +81,12 @@ class ArtworkCache:
         bundle_id: str | None = None,
         store_id: str | None = None,
         country: str = "us",
+    ) -> dict[str, Any] | None:
+        with self._metadata_lock:
+            return self._lookup(bundle_id=bundle_id, store_id=store_id, country=country)
+
+    def _lookup(
+        self, *, bundle_id: str | None, store_id: str | None, country: str,
     ) -> dict[str, Any] | None:
         params: dict[str, str] = {"country": country}
         key: str
@@ -107,6 +127,10 @@ class ArtworkCache:
         return info
 
     def prime_store_ids(self, store_ids: list[str]) -> None:
+        with self._metadata_lock:
+            self._prime_store_ids(store_ids)
+
+    def _prime_store_ids(self, store_ids: list[str]) -> None:
         """Fill the artwork index for many store ids in one lookup per country.
 
         The open sheet used to ask iTunes once per icon. A miss then waited
@@ -177,7 +201,7 @@ class ArtworkCache:
         except (urllib.error.URLError, TimeoutError, OSError):
             return path if path.is_file() else None
         try:
-            path.write_bytes(data)
+            self._write_cache(path, data)
         except OSError:
             return None
         return path
@@ -301,15 +325,25 @@ class ArtworkCache:
             source = self._favicon_file(site)
         if source is None:
             return None
-        image = QImage(str(source))
-        if image.isNull():
-            return None
         digest = hashlib.sha256(f"v3|{source}|{size}".encode("utf-8")).hexdigest()[:16]
         dest = self.cache_dir / f"round-{digest}.png"
         if dest.is_file() and dest.stat().st_size > 64:
             return dest
+        image = QImage(str(source))
+        if image.isNull():
+            return None
         rounded = _as_icon(image, size)
-        if rounded.isNull() or not rounded.save(str(dest), "PNG"):
+        if rounded.isNull():
+            return None
+        from PySide6.QtCore import QBuffer, QIODevice
+
+        buffer = QBuffer()
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        if not rounded.save(buffer, "PNG"):
+            return None
+        try:
+            self._write_cache(dest, bytes(buffer.data()))
+        except OSError:
             return None
         return dest
 
@@ -453,8 +487,8 @@ def _icon_token(store_id: str, bundle_id: str, site: str, icon_url: str) -> str:
 class IconBook(QObject):
     """Local icon files for the Quick UI. Lookup never blocks the window.
 
-    One worker thread drains a queue (no parallel loaders writing the same
-    ``index.json``), every result reaches the GUI thread through a queued signal
+    A bounded set of workers drains a priority queue. Metadata writes are
+    serialized and atomic; results reach the GUI thread through a queued signal
     (``revision`` changes only there), and a lookup that found nothing is tried
     again later (network may come up after start) — at most ``MAX_TRIES`` times
     per session, ``RETRY_S`` apart.
@@ -465,6 +499,7 @@ class IconBook(QObject):
 
     MAX_TRIES = 3
     RETRY_S = 45.0
+    WORKERS = 4
 
     def __init__(self, cache: ArtworkCache | None = None) -> None:
         super().__init__()
@@ -585,12 +620,24 @@ class IconBook(QObject):
         worker.start()
 
     def _drain(self) -> None:
-        # One icon at a time, so a sheet opened mid-queue can jump ahead.
-        # The iTunes answer for the icons waiting at the front is one request.
+        while True:
+            with self._lock:
+                count = min(self.WORKERS, len(self._queue))
+                if not count:
+                    self._worker = None
+                    return
+            workers = [threading.Thread(target=self._drain_worker, name="apprestore-artwork", daemon=True)
+                       for _ in range(count)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join()
+
+    def _drain_worker(self) -> None:
+        # Metadata is primed in batches; independent image downloads overlap.
         while True:
             with self._lock:
                 if not self._queue:
-                    self._worker = None
                     return
                 ids = [item[0] for item in self._queue[:40] if item and str(item[0]).isdigit()]
             if ids:
@@ -600,7 +647,6 @@ class IconBook(QObject):
                     pass
             with self._lock:
                 if not self._queue:
-                    self._worker = None
                     return
                 item = self._queue.pop(0)
             self.load_now([item])

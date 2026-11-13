@@ -42,6 +42,9 @@ ASSET_BY_PLATFORM = {
     "win32": "AppRestore-GUI-Windows.zip",
     "darwin": "AppRestore-GUI-macOS.zip",
 }
+#: Intel Macs get their own build: the Apple Silicon app does not run there.
+INTEL_MAC_ASSET = "AppRestore-GUI-macOS-Intel.zip"
+_INTEL_MACHINES = ("x86_64", "amd64", "i386")
 
 Fetch = Callable[[str], bytes]
 Progress = Callable[[int, int], None]
@@ -97,8 +100,21 @@ def _http_get(url: str, timeout: float = 30.0) -> bytes:
         return response.read()
 
 
-def asset_name_for(platform: str | None = None) -> str | None:
-    return ASSET_BY_PLATFORM.get(platform or sys.platform)
+def asset_name_for(platform: str | None = None, machine: str | None = None) -> str | None:
+    """Release asset for this platform; on macOS also by CPU (Intel vs Apple Silicon).
+
+    ``machine`` defaults to this host's CPU only when ``platform`` is not given.
+    """
+    host = platform is None
+    platform = platform or sys.platform
+    if platform == "darwin":
+        if machine is None and host:
+            import platform as _platform
+
+            machine = _platform.machine()
+        if (machine or "").lower() in _INTEL_MACHINES:
+            return INTEL_MAC_ASSET
+    return ASSET_BY_PLATFORM.get(platform)
 
 
 def _trusted_download_url(url: str) -> bool:

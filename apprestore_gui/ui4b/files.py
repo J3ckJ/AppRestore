@@ -1,5 +1,5 @@
 """«Файлы IPA» in 4b (like 0.3.2's «Библиотека IPA»): the IPA files already on this
-computer, «Выгрузить с устройства» and «Выбрать на ПК».
+computer, «Скачать IPA из App Store» and «Выбрать на ПК».
 
 Reuses QuickSession as is: ``libraryFiles`` / ``loadLibrary`` (service.scan_local),
 ``phoneApps`` / ``saveCopies`` (download_to_library through license_gate, the same
@@ -18,14 +18,18 @@ from .formatting import format_size
 DONE = "Готово"
 
 TITLE = "Файлы IPA"
-EXPORT_TITLE = "Выгрузить с устройства"
-EXPORT = "Выгрузить с устройства"
+EXPORT_TITLE = "Скачать IPA из App Store"
+EXPORT = "Скачать IPA из App Store"
 PICK = "Выбрать на ПК"
 INSTALL = "Поставить"
 BACK = "Назад"
-EMPTY = "На этом компьютере пока нет файлов IPA. Их можно выгрузить с подключённого телефона или выбрать файл на компьютере."
+EMPTY = "На этом компьютере пока нет файлов IPA. Их можно скачать из App Store по списку приложений телефона или выбрать файл на компьютере."
 EXPORT_EMPTY = "Подключите телефон кабелем: здесь появятся приложения, копию которых можно сохранить."
-EXPORT_HINT = "Копия сохраняется на этот компьютер, чтобы потом поставить её обратно."
+EXPORT_HINT = (
+    "IPA скачивается из App Store по списку приложений телефона. "
+    "Нужен доступ к приложению на вашем Apple ID. Версия может отличаться от установленной; "
+    "данные приложения с телефона не копируются."
+)
 
 
 def _size(path: str) -> str:
@@ -133,9 +137,9 @@ def files_view(*, open_: bool, mode: str, library: list[dict[str, str]], export:
     if exporting:
         return {
             "open": open_, "mode": "export", "title": EXPORT_TITLE, "close": DONE, "where": "",
-            "rows": export, "empty": "" if export else EXPORT_EMPTY, "note": note or EXPORT_HINT,
+            "rows": export, "empty": "" if export else EXPORT_EMPTY, "note": note, "hint": EXPORT_HINT,
             "busy": busy, "secondary": BACK, "secondaryEnabled": not busy,
-            "primary": f"Сохранить {n}" if n > 1 else "Сохранить", "primaryEnabled": bool(n) and not busy,
+            "primary": f"Скачать {n}" if n > 1 else "Скачать", "primaryEnabled": bool(n) and not busy,
         }
     return {
         "open": open_, "mode": "list", "title": TITLE, "close": DONE, "where": where,

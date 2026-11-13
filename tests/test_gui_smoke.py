@@ -46,7 +46,7 @@ def test_store_acquire_checkbox_is_off_by_default(qapp, qtbot) -> None:
     assert window.acquire.isChecked() is False
     export_button = window.pages["library"].findChild(QPushButton, "export_from_device")
     assert export_button is not None
-    assert export_button.text() == "Выгрузить с устройства"
+    assert export_button.text() == "Скачать IPA из App Store"
     table = window.pages["install"].findChild(QTableWidget, "install_table")
     assert table is not None
     assert table.wordWrap() is False

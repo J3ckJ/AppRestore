@@ -225,7 +225,7 @@ Window {
         sourceComponent: AccountSheet {}
     }
 
-    // -- «Файлы IPA» (as in 0.3.2): library, «Выгрузить с устройства», «Выбрать на ПК» --
+    // -- «Файлы IPA»: library, «Скачать IPA из App Store», «Выбрать на ПК» --
     Loader {
         anchors.fill: parent
         active: !!ui.files.open

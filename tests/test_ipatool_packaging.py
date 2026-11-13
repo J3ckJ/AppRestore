@@ -83,7 +83,7 @@ def test_locally_built_archive_can_be_installed_into_gui_bundle(tmp_path: Path) 
     binary = tmp_path / "built.exe"
     binary.write_bytes(b"MZ patched ipatool\0appstore.CountryCodeFromStoreFront")
     archive = tmp_path / "ipatool.tar.gz"
-    _pack_module().pack(binary, "ipatool-2.6.0-windows-amd64.exe", MTIME, archive)
+    _pack_module().pack(binary, "ipatool-2.8.1-windows-amd64.exe", MTIME, archive)
     destination = tmp_path / "AppRestore"
     _fetch_module().install_archive(archive, "windows-amd64", [destination])
     assert (destination / "ipatool.exe").read_bytes() == binary.read_bytes()
@@ -110,12 +110,11 @@ def test_patch_pins_match_files_and_order() -> None:
         "0001-ipatool-auth-info-country.patch",
         "0002-ipatool-list-purchases-all.patch",
         "0003-ipatool-keychain-passphrase-env-stdin.patch",
-        "0004-ipatool-delisted-redownload.patch",
-        "0005-ipatool-readonly-download-probe.patch",
+        "0004-ipatool-readonly-download-probe.patch",
+        "0005-ipatool-purchase-locker.patch",
         "0006-ipatool-product-post-redirects.patch",
         "0007-ipatool-purchase-evidence.patch",
-        "0008-ipatool-unpinned-update.patch",
-        "0009-ipatool-purchase-locker.patch",
+        "0008-ipatool-unavailable-redownload-update-probe.patch",
     ]
     patches = ROOT / "packaging" / "patches"
     for name, pinned in entries:
@@ -125,11 +124,11 @@ def test_patch_pins_match_files_and_order() -> None:
         "appstore.CountryCodeFromStoreFront",
         "--all cannot be combined with --page or --max-results",
         "keychain-passphrase-stdin",
-        "catalog-independent redownload does not match the requested app",
+        "store AMD state is not provisioned",
         "Inspect download channels without purchase, asset download or private response data",
         "invalid Apple product redirect",
         "purchase response unconfirmed",
-        "catalog-independent update has no license material",
+        "update_unpinned",
         "vt=lockerData",
     ):
         assert f'"{marker}"' in script
@@ -152,7 +151,7 @@ def test_gui_workflows_build_and_bundle_current_patched_ipatool() -> None:
         workflow = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
         assert "packaging/build-ipatool.sh" in workflow, name
         assert "--ipatool-archive" in workflow, name
-        assert "go-version: \"1.25.0\"" in workflow, name
+        assert "go-version: \"1.26.5\"" in workflow, name
     selftest = (ROOT / "apprestore_gui" / "selftest.py").read_text(encoding="utf-8")
     assert "capabilities.patched_build" in selftest
     assert "appstore.CountryCodeFromStoreFront" in selftest

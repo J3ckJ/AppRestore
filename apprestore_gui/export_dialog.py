@@ -81,7 +81,7 @@ class ExportFromDeviceDialog(QDialog):
         self._fill_at = 0
         self.saved_any = 0
 
-        self.setWindowTitle("Выгрузить с устройства")
+        self.setWindowTitle("Скачать IPA из App Store")
         self.setModal(True)
         self.resize(760, 560)
         self.progress.connect(self._set_status)
@@ -91,7 +91,8 @@ class ExportFromDeviceDialog(QDialog):
         layout.setSpacing(10)
         lead = QLabel(
             "Список читается с iPhone. IPA скачивается из App Store на ваш Apple ID "
-            "и сохраняется в библиотеку."
+            "и сохраняется в библиотеку, если доступен для вашего аккаунта. "
+            "Версия может отличаться от установленной; данные приложения с телефона не копируются."
         )
         lead.setWordWrap(True)
         lead.setStyleSheet(f"color:{MUTED};font-weight:400;border:none;")

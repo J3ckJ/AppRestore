@@ -10,7 +10,7 @@ check version -> zip as AppRestore-GUI-Windows.zip / AppRestore-GUI-macOS.zip
 on the unpacked copy.
 
     python packaging/package_gui.py --out gui-dist --ipatool-archive ARCHIVE
-        [--expect-version 0.4.0]
+        [--expect-version 0.4.1]
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "packaging"))
 
-from apprestore_gui.updater import ASSET_BY_PLATFORM, HEALTH_FLAG, extract_zip  # noqa: E402
+from apprestore_gui.updater import HEALTH_FLAG, asset_name_for, extract_zip  # noqa: E402
 from fetch_ipatool import current_asset, install_archive, install_license  # noqa: E402
 
 
@@ -61,7 +61,7 @@ def main() -> int:
     dist = Path(args.dist)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    asset = ASSET_BY_PLATFORM.get(sys.platform)
+    asset = asset_name_for()
     if not asset:
         print("GUI release assets are built on Windows and macOS only", file=sys.stderr)
         return 2

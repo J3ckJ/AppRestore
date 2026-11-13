@@ -117,6 +117,9 @@ class ErrorCode(str, enum.Enum):
     NO_CATALOG_VERSION = "no_catalog_version"
     RATE_LIMITED = "rate_limited"
     AUTH_SERVER_UNUSABLE = "auth_server_unusable"
+    #: ipatool >= 2.8 could not prepare Apple's sign-in components (Unicorn
+    #: runtime, Store frameworks from swcdn.apple.com, provisioning emulator).
+    SIGNIN_COMPONENTS = "signin_components"
     # Transport
     NETWORK = "network"
     TIMEOUT = "timeout"
@@ -158,6 +161,7 @@ MESSAGES_RU: Mapping[ErrorCode, str] = {
     ErrorCode.NO_CATALOG_VERSION: "В каталоге Apple нет актуальной версии (часто снятое приложение). Нужна сохранённая версия или лицензия.",
     ErrorCode.RATE_LIMITED: "Слишком много попыток входа. Подождите несколько минут.",
     ErrorCode.AUTH_SERVER_UNUSABLE: "Сервер входа Apple не ответил нормально. Повторите позже или из другой сети.",
+    ErrorCode.SIGNIN_COMPONENTS: "Не удалось подготовить компоненты входа Apple. Первый вход скачивает их из интернета (около 80 МБ) — проверьте подключение и повторите.",
     ErrorCode.NETWORK: "Нет связи с Apple. Проверьте подключение к интернету и попробуйте ещё раз.",
     ErrorCode.TIMEOUT: "Apple не ответила вовремя. Проверьте интернет и повторите.",
     ErrorCode.INVALID_ARGUMENT: "Неверный параметр запроса к ipatool.",
@@ -198,7 +202,7 @@ _RULES: Sequence[tuple[ErrorCode, "re.Pattern[str]"]] = tuple(
         (ErrorCode.STORE_MISMATCH, r"account not in this store|(?<![\w-])-128(?![\d.])"),
         (ErrorCode.KEYCHAIN_PASSPHRASE_REQUIRED, r"keychain passphrase is required"),
         (ErrorCode.KEYCHAIN_PASSPHRASE_WRONG, r"KeyUnwrap\(\)|integrity check failed"),
-        (ErrorCode.NOT_SIGNED_IN, r"could not be found in the keyring|failed to get account"),
+        (ErrorCode.NOT_SIGNED_IN, r"could not be found in the keyring|failed to get account|store AMD state is not provisioned"),
         (ErrorCode.TOKEN_EXPIRED, r"password token is expired|\b2034\b|\b2042\b"),
         (ErrorCode.AUTH_CODE_REQUIRED, r"auth code is required|BadLogin"),
         (ErrorCode.TWO_FACTOR_REJECTED, r"did not complete verification|\b5005\b"),
@@ -220,6 +224,11 @@ _RULES: Sequence[tuple[ErrorCode, "re.Pattern[str]"]] = tuple(
         (ErrorCode.APP_NOT_FOUND, r"\bapp not found\b"),
         (ErrorCode.APPLE_REJECTED, r"unknown error has occurred|unable to process|MZCommerce"),
         (ErrorCode.FLAG_UNSUPPORTED, r"unknown flag|unknown shorthand flag"),
+        (
+            ErrorCode.SIGNIN_COMPONENTS,
+            r"unicorn|SAP action signer|prepare Apple authentication|apple assets|"
+            r"Store provisioning|locate user cache|find user cache directory",
+        ),
         (ErrorCode.INVALID_ARGUMENT, r"must (?:not exceed|be greater than)|invalid platform|either the app ID|cannot be combined"),
         (
             ErrorCode.NETWORK,

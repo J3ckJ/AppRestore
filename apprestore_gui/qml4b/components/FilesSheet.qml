@@ -2,9 +2,9 @@ import QtQuick
 import "../theme"
 
 // «Файлы IPA» (like 0.3.2's library), anatomy of «Что вернуть»: title, list
-// (icon, name, version · size), bottom bar «Выгрузить с устройства» (secondary)
+// (icon, name, version · size), bottom bar «Скачать IPA из App Store» (secondary)
 // and «Выбрать на ПК» (primary). Export mode: the phone's apps with checks,
-// «Назад» / «Сохранить N». Theme tokens only; icons from iconBook or the placeholder.
+// «Назад» / «Скачать N». Theme tokens only; icons from iconBook or the placeholder.
 Item {
     id: root
     objectName: "filesSheet"
@@ -64,11 +64,24 @@ Item {
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line }
         }
 
+        T {
+            id: exportHint
+            objectName: "filesExportHint"
+            x: Theme.listPadX
+            y: head.height + 12
+            width: parent.width - 2 * Theme.listPadX
+            visible: root.exporting
+            token: "status"
+            color: Theme.ink2
+            wrapMode: Text.WordWrap
+            text: root.v.hint || ""
+        }
+
         ListView {
             id: list
             objectName: "filesList"
             x: Theme.listPadX
-            y: head.height + 8
+            y: root.exporting ? exportHint.y + exportHint.height + 12 : head.height + 8
             width: parent.width - 2 * Theme.listPadX
             height: foot.y - y
             clip: true

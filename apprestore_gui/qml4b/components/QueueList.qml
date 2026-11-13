@@ -22,6 +22,14 @@ Column {
             height: (cur ? 14 + 16 : 22) + body.height + 1
             Accessible.role: cur ? Accessible.ProgressBar : Accessible.StaticText
             Accessible.name: modelData.name + ", " + (cur ? modelData.detail : (modelData.right || modelData.detail))
+            Rectangle {
+                visible: row.cur
+                y: 1
+                width: parent.width
+                height: parent.height - 2
+                radius: Theme.radiusSearch
+                color: Theme.accentTint
+            }
             AppIcon {
                 anchors.verticalCenter: body.verticalCenter
                 width: Theme.rowIconSize; height: Theme.rowIconSize
@@ -35,7 +43,7 @@ Column {
                 x: Theme.rowIconSize + 14
                 y: row.cur ? 14 : 11
                 width: root.width - x - right.width - 14
-                T { Accessible.ignored: true; token: "rowTitle"; text: row.modelData.name; color: row.wait ? Theme.ink2 : Theme.ink }
+                T { Accessible.ignored: true; width: parent.width; elide: Text.ElideRight; token: "rowTitle"; text: row.modelData.name; color: row.wait ? Theme.ink2 : Theme.ink }
                 Item { width: 1; height: 2 }
                 T {
                     Accessible.ignored: true

@@ -103,12 +103,17 @@ Publish-job отказывается перезаписывать уже сущ�
 AppRestore-<version>-source.zip
 AppRestore-GUI-Windows.zip
 AppRestore-GUI-macOS.zip
+AppRestore-GUI-macOS-Intel.zip
+AppRestore-CLI-Windows.zip
+AppRestore-CLI-macOS.zip
+AppRestore-CLI-macOS-Intel.zip
 install.ps1
 install.sh
 SHA256SUMS.txt
 ```
 
-Имена `AppRestore-GUI-Windows.zip` и `AppRestore-GUI-macOS.zip` не меняйте:
+Имена `AppRestore-GUI-Windows.zip`, `AppRestore-GUI-macOS.zip` и
+`AppRestore-GUI-macOS-Intel.zip` не меняйте:
 по ним «Проверить обновления» в графической версии находит свой файл, а сумму
 берёт из `SHA256SUMS.txt`.
 

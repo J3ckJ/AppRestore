@@ -44,6 +44,8 @@ def search_store(
         name = str(row.get("name") or "")
         if (store_id and sid == store_id) or (words and words in name.casefold()):
             add(sid, name, "purchases")
+    if len(out) >= limit or (store_id and store_id in seen):
+        return out
     try:
         if store_id:
             found = itunes_lookup(store_id)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import re
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -74,7 +75,10 @@ def parse_query(text: str) -> tuple[str, str]:
 
 
 def match_item(item: RestoreItem, query: str) -> Match | None:
-    words, store_id = parse_query(query)
+    return _match_item(item, *parse_query(query))
+
+
+def _match_item(item: RestoreItem, words: str, store_id: str) -> Match | None:
     if store_id:
         return Match() if item.store_id == store_id else None
     if not words:
@@ -114,6 +118,7 @@ class Selection:
         mark_color: str = "#f6ebe4",
     ) -> None:
         self._items: list[RestoreItem] = []
+        self._data_revision = 0
         self._by_key: dict[str, RestoreItem] = {}
         self._selected: set[str] = set()
         self.sort = SORT_SIZE
@@ -136,7 +141,11 @@ class Selection:
         """New list; marks survive for keys that are still there."""
 
         first = not self._items
-        self._source = list(items)
+        source = list(items)
+        if source == self._source and selected is None:
+            return
+        self._source = source
+        self._data_revision += 1
         self._items = self._derive(self._source)
         self._by_key = {item.key: item for item in self._items}
         if selected is not None:
@@ -168,6 +177,7 @@ class Selection:
         if offline == self.offline:
             return
         self.offline = offline
+        self._data_revision += 1
         before = set(self._selected)
         self._items = self._derive(self._source)
         self._by_key = {item.key: item for item in self._items}
@@ -265,10 +275,11 @@ class Selection:
         )
 
     def _visible_items(self) -> list[RestoreItem]:
+        words, store_id = parse_query(self.query)
         return [
             item
             for item in self._items
-            if (self.rail == RAIL_ALL or item.group == self.rail) and match_item(item, self.query) is not None
+            if (self.rail == RAIL_ALL or item.group == self.rail) and _match_item(item, words, store_id) is not None
         ]
 
     # -- views -------------------------------------------------------------------
@@ -348,20 +359,43 @@ class Selection:
         return rows
 
     def _visible_items_ignoring_rail(self) -> list[RestoreItem]:
-        return [item for item in self._items if match_item(item, self.query) is not None]
+        words, store_id = parse_query(self.query)
+        return [item for item in self._items if _match_item(item, words, store_id) is not None]
+
+    @property
+    def view_key(self) -> tuple:
+        """Only inputs that change picker rows; progress does not rebuild them."""
+        return (self._data_revision, self.query, self.sort, self.rail, self.offline,
+                self.mark_color, frozenset(self._selected), tuple(GROUP_TITLES.items()))
 
     def rows(self) -> list[dict[str, object]]:
+        key = self.view_key
+        if key != getattr(self, "_rows_key", None):
+            self._rows_cache = self._render_rows()
+            self._rows_key = key
+        # Callers own the returned rows; edits must not corrupt the render cache.
+        return [dict(row) for row in self._rows_cache]
+
+    def _render_rows(self) -> list[dict[str, object]]:
         """Flat rows for the list: a header per group, then its apps."""
 
         searching = bool(self.query.strip())
         visible = self._visible_items()
+        words, store_id = parse_query(self.query)
+        totals = Counter(item.group for item in self._items)
+        groups: dict[str, list[RestoreItem]] = {}
+        for item in visible:
+            groups.setdefault(item.group, []).append(item)
         out: list[dict[str, object]] = []
         for group in self.group_order:
-            in_group = self._sorted([item for item in visible if item.group == group])
+            in_group = self._sorted(groups.get(group, []))
             if not in_group:
                 continue
-            total = self.group_total(group)
-            state = self.group_state(group)
+            total = totals[group]
+            selectable = [item for item in in_group if item.selectable]
+            chosen = sum(item.key in self._selected for item in selectable)
+            state = (CHECK_DISABLED if not selectable else CHECK_OFF if not chosen
+                     else CHECK_ON if chosen == len(selectable) else CHECK_MIXED)
             if group == GROUP_NOPHONE:
                 action = ""
             elif group == GROUP_REGION and not any(i.selectable for i in in_group):
@@ -384,7 +418,7 @@ class Selection:
                 }
             )
             for item in in_group:
-                match = match_item(item, self.query)
+                match = _match_item(item, words, store_id)
                 checked = item.key in self._selected
                 out.append(
                     {

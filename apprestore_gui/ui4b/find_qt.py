@@ -33,6 +33,7 @@ class Find4b(QObject):
     #: list keeps its scroll position when the user signs in
     bannerChanged = Signal()
     _storeDone = Signal(int, object, object, object)  # gen, rows, offers, statuses
+    _storeRowsReady = Signal(int, object)  # show results before slower metadata
     _archiveDone = Signal(int, object, bool, object, object)  # gen, hits, down, statuses, offers
 
     def __init__(
@@ -74,6 +75,7 @@ class Find4b(QObject):
         self._open = False
         self._gen = 0
         self._storeDone.connect(self._on_store)
+        self._storeRowsReady.connect(self._on_store_rows)
         self._archiveDone.connect(self._on_archive)
 
     def set_delisted(self, raw: Callable[[str, bool], tuple[list[Any], bool]]) -> None:
@@ -158,8 +160,14 @@ class Find4b(QObject):
                 owned_now = set(st.owned or ())
 
                 def lookups() -> None:
+                    if gen != self._gen:
+                        return
                     statuses = source.store_statuses(ids)
+                    if gen != self._gen:
+                        return
                     offers = source.store_offers([i for i in ids if i not in owned_now])
+                    if gen != self._gen:
+                        return
                     record_prices({k: (v or {}).get("price") for k, v in dict(offers or {}).items()})
                     self._storeDone.emit(gen, [], offers, statuses)
 
@@ -168,21 +176,34 @@ class Find4b(QObject):
                 st.offers_done = True
             return
         st.builtin = [h for h in self._delisted(query, False)[0] if h.origin != "wayback"]  # instant
+        purchases = self.source.purchase_rows()
+        # Cached purchases are available immediately, even on a slow connection.
+        st.store = search_store(query, purchases, itunes_search=lambda *a, **k: [],
+                                itunes_lookup=lambda *a, **k: None)
         self.changed.emit()
-        source, offline, purchases = self.source, st.offline, self.source.purchase_rows()
+        source, offline = self.source, st.offline
         owned = set(st.owned or ())
         builtin_ids = [h.store_id for h in st.builtin]
 
         def work() -> None:
+            if gen != self._gen:
+                return
             if offline:  # purchases from the cache only, no App Store
                 rows = search_store(query, purchases, itunes_search=lambda *a, **k: [],
                                     itunes_lookup=lambda *a, **k: None)
                 self._storeDone.emit(gen, rows, {}, {})
                 return
-            statuses = source.store_statuses(builtin_ids) if builtin_ids else {}
             rows = source.search_store(query, purchases)
+            if gen != self._gen:
+                return
+            self._storeRowsReady.emit(gen, rows)
+            statuses = source.store_statuses(builtin_ids) if builtin_ids else {}
+            if gen != self._gen:
+                return
             ids = [str(r.get("storeId")) for r in rows] + builtin_ids
             offers = source.store_offers([i for i in dict.fromkeys(ids) if i not in owned])
+            if gen != self._gen:
+                return
             record_prices({k: (v or {}).get("price") for k, v in dict(offers or {}).items()})
             self._storeDone.emit(gen, rows, offers, statuses)
 
@@ -216,6 +237,13 @@ class Find4b(QObject):
 
     # -- answers ---------------------------------------------------------------------
 
+    def _on_store_rows(self, gen: int, rows: object) -> None:
+        if gen != self._gen:
+            return
+        self.state.store = list(rows or [])
+        self.state.store_done = True
+        self.changed.emit()
+
     def _on_store(self, gen: int, rows: object, offers: object, statuses: object) -> None:
         if gen != self._gen:
             return
@@ -235,10 +263,18 @@ class Find4b(QObject):
         owned = set(st.owned or ())
 
         def work() -> None:
+            if gen != self._gen:
+                return
             hits, down = self._delisted(query, True)
+            if gen != self._gen:
+                return
             ids = [h.store_id for h in hits]
             statuses = source.store_statuses(ids) if ids else {}
+            if gen != self._gen:
+                return
             offers = source.store_offers([i for i in ids if i not in owned]) if ids else {}
+            if gen != self._gen:
+                return
             record_prices({k: (v or {}).get("price") for k, v in dict(offers or {}).items()})
             self._archiveDone.emit(gen, hits, bool(down), statuses, offers)
 

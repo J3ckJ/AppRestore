@@ -1,45 +1,56 @@
 diff --git a/pkg/appstore/appstore_download_product.go b/pkg/appstore/appstore_download_product.go
-index 4fa8ba5..cea87bd 100644
+index 4f737c47a74087cf1498fb18209146713a6823d7..3f1e9b273347422bb1469a34f606de43cb382383 100644
 --- a/pkg/appstore/appstore_download_product.go
 +++ b/pkg/appstore/appstore_download_product.go
-@@ -68,7 +68,7 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
- 
- 	volumeStore := t.volumeStoreEndpoint(acc)
- 
--	res, err := t.downloadClient.Send(t.downloadProductRequest(volumeStore, acc, app, guid, externalVersionID))
-+	res, err := t.sendStoreDownloadProduct(ctx, t.downloadProductRequest(volumeStore, acc, app, guid, externalVersionID))
- 	if err != nil {
- 		return res, platform, fmt.Errorf("failed to send http request: %w", err)
- 	}
-@@ -112,7 +112,7 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
- 		catalogIndependent = err != nil
- 	}
- 
--	redownloadRes, err := t.downloadClient.Send(t.downloadProductRequest(redownload, acc, app, guid, externalVersionID))
-+	redownloadRes, err := t.sendStoreDownloadProduct(ctx, t.downloadProductRequest(redownload, acc, app, guid, externalVersionID))
- 	if bag.UpdateEndpoint != "" && externalVersionID != "" &&
- 		(platform == "" || platform == PlatformIPhone || platform == PlatformIPad || platform == PlatformMacOS || platform == PlatformAppleTV) &&
- 		(isEmptyRedownloadError(err) || (err == nil && isUnavailableDownloadProductResponse(redownloadRes))) {
-@@ -172,7 +172,7 @@ func (t *appstore) sendUpdateProduct(endpoint string, acc Account, app App, guid
- 	// The bag's updateProduct can serve pinned iOS, macOS, and tvOS versions when redownload
- 	// returns an empty HTTP 500 or a message-only availability error. Keep
- 	// the same session and version selection.
--	res, err := t.downloadClient.Send(t.downloadProductRequest(update, acc, app, guid, externalVersionID))
-+	res, err := sendStoreProduct(t.downloadClient, t.downloadProductRequest(update, acc, app, guid, externalVersionID))
- 	if err != nil {
- 		return res, fmt.Errorf("failed to send update request: %w", err)
- 	}
-@@ -285,3 +285,8 @@ func (*appstore) downloadProductRequest(endpoint downloadProductEndpoint, acc Ac
- 		},
- 	}
+@@ -263,23 +263,39 @@ func (t *appstore) sendUpdateProductContext(ctx context.Context, endpoint string
  }
+ 
+ func (t *appstore) sendCommerceDownloadRequest(ctx context.Context, request http.Request, guid string) (http.Result[downloadResult], error) {
++	var (
++		sign    func(context.Context, *http.Request) error
++		signErr error
++	)
 +
-+func (t *appstore) sendStoreDownloadProduct(ctx context.Context, req http.Request) (http.Result[downloadResult], error) {
-+	req.Context = ctx
-+	return sendStoreProduct(t.downloadClient, req)
-+}
+ 	if t.authBackend != nil {
+ 		hardwareID, err := hex.DecodeString(guid)
+ 		if err != nil || len(hardwareID) != 6 {
+ 			return http.Result[downloadResult]{}, errors.New("store download requires a six-byte device GUID")
+ 		}
+ 
+-		proof, err := t.storeAMDProof(ctx, request.URL, hardwareID)
+-		if err != nil {
+-			return http.Result[downloadResult]{}, err
+-		}
++		// AppRestore: recompute the AMD proof for every validated redirect hop.
++		sign = func(ctx context.Context, req *http.Request) error {
++			proof, err := t.storeAMDProof(ctx, req.URL, hardwareID)
++			if err != nil {
++				signErr = err
++
++				return err
++			}
+ 
+-		for key, value := range proof {
+-			request.Headers[key] = value
++			for key, value := range proof {
++				req.Headers[key] = value
++			}
++
++			return nil
+ 		}
+ 	}
+ 
+-	result, err := t.downloadClient.Send(request)
++	result, err := sendStoreProduct(t.downloadClient, request, sign)
++	if signErr != nil {
++		return http.Result[downloadResult]{}, signErr
++	}
++
+ 	if err != nil {
+ 		return result, fmt.Errorf("send Store commerce request: %w", err)
+ 	}
 diff --git a/pkg/appstore/appstore_probe_download.go b/pkg/appstore/appstore_probe_download.go
-index 1faaf16..4d67560 100644
+index 17b2a58023620ed6a220aa14a81a549a98500567..62499528741afbfe30183c7a3c3937cb00ee265e 100644
 --- a/pkg/appstore/appstore_probe_download.go
 +++ b/pkg/appstore/appstore_probe_download.go
 @@ -5,8 +5,6 @@ import (
@@ -51,7 +62,7 @@ index 1faaf16..4d67560 100644
  	"strconv"
  	"strings"
  	"time"
-@@ -40,46 +38,12 @@ type DownloadProbeOutput struct {
+@@ -40,46 +38,18 @@ type DownloadProbeOutput struct {
  	Channels []DownloadProbeChannel `json:"channels"`
  }
  
@@ -64,8 +75,7 @@ index 1faaf16..4d67560 100644
 -
 -// Follow only a bounded redirect to the exact same product operation on an
 -// approved Apple Store host. Never allow a redirect to purchase or asset URLs.
-+// Diagnostics and real downloads must exercise identical redirect handling.
- func (t *appstore) sendProbeProduct(req http.Request) (http.Result[downloadResult], error) {
+-func (t *appstore) sendProbeProduct(req http.Request) (http.Result[downloadResult], error) {
 -	for attempt := 0; attempt <= 3; attempt++ {
 -		res, err := t.downloadClient.Send(req)
 -		if err != nil || !http.IsAuthenticationRedirect(res.StatusCode) {
@@ -96,18 +106,65 @@ index 1faaf16..4d67560 100644
 -			next.RawQuery = base.RawQuery
 -		}
 -		req.URL = next.String()
--	}
++// Diagnostics and real downloads must exercise identical redirect handling
++// and the same store AMD proof (required since ipatool 2.8).
++func (t *appstore) sendProbeProduct(req http.Request, guid string) (http.Result[downloadResult], error) {
++	ctx := req.Context
++	if ctx == nil {
++		ctx = context.Background()
+ 	}
 -	return http.Result[downloadResult]{}, errProbeRedirectLimit
-+	return sendStoreProduct(t.downloadClient, req)
++
++	return t.sendCommerceDownloadRequest(ctx, req, guid)
  }
  
  func positiveProbeID(value string) bool {
+@@ -247,7 +217,7 @@ func (t *appstore) ProbeDownload(input DownloadProbeInput) (DownloadProbeOutput,
+ 			delete(req.Payload.(*http.XMLPayload).Content, "serialNumber")
+ 		}
+ 		req.Context, req.NoRedirects = ctx, true
+-		res, sendErr := t.sendProbeProduct(req)
++		res, sendErr := t.sendProbeProduct(req, guid)
+ 		out.Channels = append(out.Channels, probeResponse(channel, app, version, res, sendErr))
+ 	}
+ 	// Compare the ordinary pod route with the pre-2.3 CLI's p25 route and
+diff --git a/pkg/appstore/appstore_probe_download_test.go b/pkg/appstore/appstore_probe_download_test.go
+index 336748b90becd6aba6f273be762873000598ae80..93c1edcf2c1ae8e5c8d4ed3fda73c171dd9fe6f6 100644
+--- a/pkg/appstore/appstore_probe_download_test.go
++++ b/pkg/appstore/appstore_probe_download_test.go
+@@ -144,7 +144,7 @@ func TestProbeFollowsOnlySameOperationAppleRedirect(t *testing.T) {
+ 		}
+ 		return http.Result[downloadResult]{StatusCode: 200, Data: downloadResult{FailureType: FailureTypeLicenseNotFound}}, nil
+ 	})
+-	res, err := store.sendProbeProduct(req)
++	res, err := store.sendProbeProduct(req, "001122334455")
+ 	if err != nil || res.Data.FailureType != FailureTypeLicenseNotFound {
+ 		t.Fatal("did not follow approved Store pod redirect")
+ 	}
+@@ -164,7 +164,7 @@ func TestProbeRejectsPrivatePurchaseAndRegionRedirects(t *testing.T) {
+ 		store := &appstore{downloadClient: download}
+ 		req := store.downloadProductRequest(store.volumeStoreEndpoint(Account{}), Account{}, App{ID: 42}, "001122334455", "")
+ 		download.EXPECT().Send(gomock.Any()).Return(http.Result[downloadResult]{StatusCode: 302, Headers: map[string]string{"Location": location}}, nil)
+-		res, err := store.sendProbeProduct(req)
++		res, err := store.sendProbeProduct(req, "001122334455")
+ 		if !errors.Is(err, errProbeRedirect) || probeResponse("legacy_volume_unpinned", App{ID: 42}, "", res, err).Status != "invalid_redirect" {
+ 			t.Fatal("accepted unsafe redirect")
+ 		}
+@@ -177,7 +177,7 @@ func TestProbeRedirectsAreBounded(t *testing.T) {
+ 	store := &appstore{downloadClient: download}
+ 	req := store.downloadProductRequest(store.volumeStoreEndpoint(Account{}), Account{}, App{ID: 42}, "001122334455", "")
+ 	download.EXPECT().Send(gomock.Any()).Return(http.Result[downloadResult]{StatusCode: 302, Headers: map[string]string{"Location": "https://p42-buy.itunes.apple.com" + PrivateAppStoreAPIPathDownload}}, nil).Times(4)
+-	_, err := store.sendProbeProduct(req)
++	_, err := store.sendProbeProduct(req, "001122334455")
+ 	if !errors.Is(err, errProbeRedirectLimit) {
+ 		t.Fatal("unbounded diagnostic redirect")
+ 	}
 diff --git a/pkg/appstore/appstore_product_redirect.go b/pkg/appstore/appstore_product_redirect.go
 new file mode 100644
-index 0000000..3c31ef8
+index 0000000000000000000000000000000000000000..14fdde5d63e30d3a549beb3895d1ebc8e9492a70
 --- /dev/null
 +++ b/pkg/appstore/appstore_product_redirect.go
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,85 @@
 +package appstore
 +
 +import (
@@ -128,51 +185,74 @@ index 0000000..3c31ef8
 +// Product POSTs must survive Store pod redirects. net/http otherwise changes
 +// 301/302/303 POSTs to GETs. Replay only the same operation, body and account,
 +// never a new purchase endpoint, storefront, GUID or arbitrary destination.
-+func sendStoreProduct[R any](client http.Client[R], req http.Request) (http.Result[R], error) {
++// sign (optional) is called before every hop so per-URL proofs such as the
++// store AMD headers are recomputed for the redirected address.
++func sendStoreProduct[R any](client http.Client[R], req http.Request, sign func(ctx context.Context, req *http.Request) error) (http.Result[R], error) {
 +	ctx := req.Context
 +	if ctx == nil {
 +		ctx = context.Background()
 +	}
++
 +	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 +	defer cancel()
-+	req.Context, req.NoRedirects = ctx, true
++
++	// Keep the caller's request context untouched; the bounded ctx above only
++	// limits the redirect loop itself.
++	req.NoRedirects = true
++
 +	for attempt := 0; attempt <= 3; attempt++ {
 +		if err := ctx.Err(); err != nil {
 +			return http.Result[R]{}, err
 +		}
++
++		if sign != nil {
++			if err := sign(ctx, &req); err != nil {
++				return http.Result[R]{}, err
++			}
++		}
++
 +		res, err := client.Send(req)
 +		if err != nil || !http.IsAuthenticationRedirect(res.StatusCode) {
 +			return res, err
 +		}
++
 +		if attempt == 3 {
 +			return res, errStoreProductRedirectLimit
 +		}
++
 +		location, locErr := res.GetHeader("Location")
 +		base, baseErr := url.Parse(req.URL)
 +		next, nextErr := url.Parse(location)
++
 +		if locErr != nil || strings.TrimSpace(location) == "" || baseErr != nil || nextErr != nil {
 +			return res, errStoreProductRedirect
 +		}
++
 +		next = base.ResolveReference(next)
 +		host := strings.ToLower(next.Host)
++
 +		if next.Scheme != "https" || !(storeProductHost.MatchString(host) || host == downloadDispatchDomain) ||
 +			next.User != nil || next.Fragment != "" || next.Path != base.Path || next.RawPath != "" {
 +			return res, errStoreProductRedirect
 +		}
++
 +		query, queryErr := url.ParseQuery(next.RawQuery)
 +		baseQuery, baseQueryErr := url.ParseQuery(base.RawQuery)
++
 +		if queryErr != nil || baseQueryErr != nil || (len(query) != 0 && query.Encode() != baseQuery.Encode()) {
 +			return res, errStoreProductRedirect
 +		}
++
 +		// A relative/absolute Location may omit the original guid query.
 +		next.RawQuery = base.RawQuery
 +		req.URL = next.String()
 +	}
++
 +	return http.Result[R]{}, errStoreProductRedirectLimit
 +}
 diff --git a/pkg/appstore/appstore_product_redirect_test.go b/pkg/appstore/appstore_product_redirect_test.go
 new file mode 100644
-index 0000000..5a3a9b4
+index 0000000000000000000000000000000000000000..52f39cafbd742c43f22aa40fe090e61651613ffb
 --- /dev/null
 +++ b/pkg/appstore/appstore_product_redirect_test.go
 @@ -0,0 +1,100 @@
@@ -200,7 +280,7 @@ index 0000000..5a3a9b4
 +			gomock.InOrder(
 +				client.EXPECT().Send(gomock.Any()).DoAndReturn(func(req http.Request) (http.Result[downloadResult], error) {
 +					original = req
-+					if !req.NoRedirects || req.Context == nil {
++					if !req.NoRedirects {
 +						t.Fatal("production request still permits implicit HTTP redirects")
 +					}
 +					return http.Result[downloadResult]{StatusCode: status, Headers: map[string]string{
@@ -253,7 +333,7 @@ index 0000000..5a3a9b4
 +		client.EXPECT().Send(gomock.Any()).Return(http.Result[downloadResult]{StatusCode: 302, Headers: map[string]string{
 +			"Location": "https://p42-buy.itunes.apple.com/r/redownload?" + query,
 +		}}, nil)
-+		_, err := sendStoreProduct(client, http.Request{Method: http.MethodPOST, URL: "https://downloaddispatch.itunes.apple.com/r/redownload?guid=abc"})
++		_, err := sendStoreProduct(client, http.Request{Method: http.MethodPOST, URL: "https://downloaddispatch.itunes.apple.com/r/redownload?guid=abc"}, nil)
 +		if !errors.Is(err, errStoreProductRedirect) {
 +			t.Fatal("accepted an ambiguous or altered query")
 +		}
@@ -262,7 +342,7 @@ index 0000000..5a3a9b4
 +	client := http.NewMockClient[purchaseResult](ctrl)
 +	want := errors.New("lost response")
 +	client.EXPECT().Send(gomock.Any()).Return(http.Result[purchaseResult]{}, want).Times(1)
-+	_, err := sendStoreProduct(client, http.Request{Method: http.MethodPOST, URL: "https://buy.itunes.apple.com" + PrivateAppStoreAPIPathPurchase})
++	_, err := sendStoreProduct(client, http.Request{Method: http.MethodPOST, URL: "https://buy.itunes.apple.com" + PrivateAppStoreAPIPathPurchase}, nil)
 +	if !errors.Is(err, want) {
 +		t.Fatal("transport failure was changed or retried")
 +	}
@@ -271,13 +351,13 @@ index 0000000..5a3a9b4
 +func TestStoreProductHonorsCancellationBeforeAnyRequest(t *testing.T) {
 +	ctx, cancel := context.WithCancel(context.Background())
 +	cancel()
-+	_, err := sendStoreProduct[purchaseResult](nil, http.Request{Context: ctx})
++	_, err := sendStoreProduct[purchaseResult](nil, http.Request{Context: ctx}, nil)
 +	if !errors.Is(err, context.Canceled) {
 +		t.Fatal("ignored cancellation")
 +	}
 +}
 diff --git a/pkg/appstore/appstore_purchase.go b/pkg/appstore/appstore_purchase.go
-index 517fd79..a1c81a2 100644
+index 3289368d3cd2d392ec26453082c0a5e29d679c43..8d73605dc7da35fce0e52c5cf1a9e228fe5de4a0 100644
 --- a/pkg/appstore/appstore_purchase.go
 +++ b/pkg/appstore/appstore_purchase.go
 @@ -60,7 +60,7 @@ type purchaseResult struct {
@@ -285,7 +365,7 @@ index 517fd79..a1c81a2 100644
  func (t *appstore) purchaseWithParams(acc Account, app App, guid string, pricingParameters string) error {
  	req := t.purchaseRequest(acc, app, acc.StoreFront, guid, pricingParameters)
 -	res, err := t.purchaseClient.Send(req)
-+	res, err := sendStoreProduct(t.purchaseClient, req)
++	res, err := sendStoreProduct(t.purchaseClient, req, nil)
  
  	if err != nil {
  		return fmt.Errorf("request failed: %w", err)

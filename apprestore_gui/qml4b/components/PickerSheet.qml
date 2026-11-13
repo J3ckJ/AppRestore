@@ -75,11 +75,14 @@ Item {
                         T {
                             id: railTitle
                             x: 14; y: 10
+                            width: parent.width - x - railCount.width - 28
+                            wrapMode: Text.WordWrap
                             token: "rail"
                             text: modelData.title
                             color: modelData.zero ? Theme.ink3 : Theme.ink
                         }
                         T {
+                            id: railCount
                             anchors.right: parent.right
                             anchors.rightMargin: 14
                             anchors.baseline: railTitle.baseline
@@ -132,14 +135,15 @@ Item {
                 height: 44
                 radius: Theme.radiusSearch
                 readonly property bool typed: input.text.length > 0
-                color: typed ? Theme.card : Theme.soft
-                border.width: typed ? 2 : 0
-                border.color: Theme.ink
+                color: typed || input.activeFocus ? Theme.card : Theme.soft
+                border.width: input.activeFocus ? 2 : 1
+                border.color: input.activeFocus ? Theme.focusRing : Theme.line
                 Glyph { x: 14; anchors.verticalCenter: parent.verticalCenter; name: sbox.typed ? "search-ink" : "search"; size: 16 }
                 TextInput {
                     id: input
+                    objectName: "pickerSearchInput"
                     x: 14 + 16 + 10
-                    width: parent.width - x - (sbox.typed ? escHint.width + 28 : 14)
+                    width: parent.width - x - (sbox.typed ? 44 : 14)
                     anchors.verticalCenter: parent.verticalCenter
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.style("search").size
@@ -149,6 +153,7 @@ Item {
                     text: ui.query
                     onTextEdited: ui.setQuery(text)
                     Keys.onEscapePressed: { text = ""; ui.setQuery("") }
+                    Accessible.name: "Поиск приложений для восстановления"
                 }
                 T {
                     x: input.x
@@ -158,15 +163,13 @@ Item {
                     color: Theme.ink3Text
                     text: "Название, разработчик или номер из App Store"
                 }
-                T {
-                    id: escHint
+                ClearSearchButton {
+                    objectName: "pickerClear"
                     visible: sbox.typed
                     anchors.right: parent.right
-                    anchors.rightMargin: 14
+                    anchors.rightMargin: 8
                     anchors.verticalCenter: parent.verticalCenter
-                    token: "rowNote"
-                    color: Theme.ink3Text
-                    text: "Esc — очистить"
+                    onClicked: { input.text = ""; ui.setQuery(""); input.forceActiveFocus() }
                 }
             }
             Rectangle {

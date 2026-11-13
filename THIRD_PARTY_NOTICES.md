@@ -24,25 +24,25 @@ universal wheel `requirements/wheels/hexdump-3.3-py3-none-any.whl`. Их SHA-256
 и рецепт зафиксированы в `requirements/README.md` и
 `requirements/runtime.lock`.
 
-## ipatool 2.6.0
+## ipatool 2.8.1
 
 - Назначение: авторизация и загрузка IPA, доступных учётной записи App Store.
 - Проект: <https://github.com/majd/ipatool>
 - Лицензия upstream: MIT.
-- Текст лицензии: <https://github.com/majd/ipatool/blob/cde7d00355e152714377b953ec57438626d3cb5a/LICENSE>
-- Сборка: коммит `cde7d00355e152714377b953ec57438626d3cb5a`. Официальный архив v2.6.0 не принимает перенаправление HTTP 301 при входе в Apple ID. Установщики берут архивы этой сборки и принимают их только при SHA-256 ниже.
+- Текст лицензии: <https://github.com/majd/ipatool/blob/3e84853e2e5d60540a5022b64895d496910144eb/LICENSE>
+- Сборка: v2.8.1, коммит `3e84853e2e5d60540a5022b64895d496910144eb`, плюс патчи AppRestore из `packaging/patches/`. Установщики берут архивы этой сборки и принимают их только при SHA-256 ниже.
 
 Windows:
 
 ```text
-639d9cd7f22cea2975fd8263b0a8cbd7a36e7ee742e4c3e3a910b85f05b4df14
+0c5165292d7d17371e9401599c00f4bbc615e75cf9265ffa586266336c48beee
 ```
 
 macOS:
 
 ```text
-576bde4baf04365fcdea46eb7f3e5bb6ea143d0d9e53d6e2711136cc608aac84  macos-amd64
-faf98ef8067f1ef4783123d00561b4ece10dc7419631eb9555d88a1da2f61f3f  macos-arm64
+3506c9b524f4263f12cdbebfd05652390cab9f1ec6490ff31c7b2e8121fba7b8  macos-amd64
+cdfb5ee00fe26928783df2fcfc1480b604d4d261b08c0a6e04699da76dea9e92  macos-arm64
 ```
 
 ## Unicorn Engine 2.1.4

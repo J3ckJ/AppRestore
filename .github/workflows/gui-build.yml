@@ -22,7 +22,7 @@ jobs:
           python-version: "3.12"
       - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
-          go-version: "1.25.0"
+          go-version: "1.26.5"
           cache: false
       - name: Install
         shell: pwsh
@@ -34,7 +34,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_gui_errors.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py tests/test_auth_pty_posix.py tests/test_quick_session.py tests/test_ui4b_names_icons.py tests/test_ui4b_logic.py tests/test_ui4b_passphrase.py
+          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_gui_errors.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py tests/test_auth_pty_posix.py tests/test_quick_session.py tests/test_ui4b_names_icons.py tests/test_ui4b_logic.py tests/test_ui4b_passphrase.py tests/test_account_vault.py tests/test_session_storage_errors.py tests/test_ui4b_eugene_bugs.py
       - name: Build
         shell: pwsh
         run: |
@@ -44,7 +44,7 @@ jobs:
         run: |
           bash packaging/build-ipatool.sh windows-amd64
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          python packaging/package_gui.py --out gui-dist --ipatool-archive dist/ipatool/ipatool-2.6.0-windows-amd64.tar.gz
+          python packaging/package_gui.py --out gui-dist --ipatool-archive dist/ipatool/ipatool-2.8.1-windows-amd64.tar.gz
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
@@ -71,7 +71,7 @@ jobs:
           python-version: "3.12"
       - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
-          go-version: "1.25.0"
+          go-version: "1.26.5"
           cache: false
       - name: Install
         run: |
@@ -81,7 +81,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_gui_errors.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py tests/test_auth_pty_posix.py tests/test_quick_session.py tests/test_ui4b_names_icons.py tests/test_ui4b_logic.py tests/test_ui4b_passphrase.py
+          python -m pytest -q tests/test_gui_icons.py tests/test_gui_adapter.py tests/test_gui_smoke.py tests/test_gui_errors.py tests/test_frozen_runtime.py tests/test_gui_updater.py tests/test_gui_update_ui.py tests/test_gui_packaging.py tests/test_auth_pty_posix.py tests/test_quick_session.py tests/test_ui4b_names_icons.py tests/test_ui4b_logic.py tests/test_ui4b_passphrase.py tests/test_account_vault.py tests/test_session_storage_errors.py tests/test_ui4b_eugene_bugs.py
       - name: Build
         run: |
           pyinstaller packaging/apprestore-gui.spec --noconfirm --clean
@@ -95,7 +95,7 @@ jobs:
           esac
           bash packaging/build-ipatool.sh "$ipatool_asset"
           python packaging/package_gui.py --out gui-dist \
-            --ipatool-archive "dist/ipatool/ipatool-2.6.0-${ipatool_asset}.tar.gz"
+            --ipatool-archive "dist/ipatool/ipatool-2.8.1-${ipatool_asset}.tar.gz"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

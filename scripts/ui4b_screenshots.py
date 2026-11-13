@@ -188,7 +188,8 @@ def main() -> int:
     args = parser.parse_args()
 
     os.environ.setdefault("QT_SCALE_FACTOR", str(args.scale))
-    from PySide6.QtGui import QFont, QGuiApplication, QImage
+    from PySide6.QtGui import QFont, QImage
+    from PySide6.QtWidgets import QApplication
     from PySide6.QtQml import QQmlApplicationEngine
     from PySide6.QtQuickControls2 import QQuickStyle
 
@@ -197,7 +198,7 @@ def main() -> int:
     from apprestore_gui.ui4b.window import load
 
     QQuickStyle.setStyle("Basic")
-    app = QGuiApplication([sys.argv[0]])
+    app = QApplication([sys.argv[0]])
     if args.font:
         app.setFont(QFont(args.font))
     out = Path(args.out)

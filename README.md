@@ -15,7 +15,7 @@
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3"></a>
 </p>
 
-> **Статус:** beta · Версия 0.4.0. Windows и macOS · проект не связан с Apple Inc.
+> **Статус:** beta · Версия 0.4.1. Windows и macOS · проект не связан с Apple Inc.
 
 ## Что это
 
@@ -52,14 +52,15 @@ App Store кнопки «Загрузить» уже нет: приложени�
 |---|---|
 | Windows 10/11 (64 бит) | [AppRestore-GUI-Windows.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-Windows.zip) |
 | macOS на Apple Silicon (M1 и новее) | [AppRestore-GUI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip) |
+| macOS на Intel | [AppRestore-GUI-macOS-Intel.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS-Intel.zip) |
 
-На Mac с процессором Intel графическая версия не запустится. Используйте
-терминальную версию.
+Для Mac с процессором Intel выберите отдельную сборку
+`AppRestore-GUI-macOS-Intel.zip`; сборка без `Intel` предназначена для Apple Silicon.
 
 ### Терминальная версия
 
-Меню в окне терминала. Подходит, если вам удобна командная строка, нужен Mac
-с Intel или вы хотите запускать команды из скриптов. Ставится одной командой.
+Меню в окне терминала. Подходит, если вам удобна командная строка или вы
+хотите запускать команды из скриптов. Работает и на Mac с Intel. Ставится одной командой.
 
 | Система | Файл |
 |---|---|
@@ -68,6 +69,19 @@ App Store кнопки «Загрузить» уже нет: приложени�
 
 Как поставить, написано ниже, в разделе
 [Установка терминальной версии](#установка-терминальной-версии).
+
+Готовая терминальная версия без установки Python — распакуйте архив и
+запустите `apprestore` из папки `AppRestore-CLI` (подробности в `README.txt`
+внутри архива):
+
+| Система | Файл |
+|---|---|
+| Windows 10/11 (x64) | [AppRestore-CLI-Windows.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-CLI-Windows.zip) |
+| macOS на Apple Silicon | [AppRestore-CLI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-CLI-macOS.zip) |
+| macOS на Intel | [AppRestore-CLI-macOS-Intel.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-CLI-macOS-Intel.zip) |
+
+На macOS сборка подписана ad-hoc: перед первым запуском выполните
+`xattr -dr com.apple.quarantine AppRestore-CLI`.
 
 Контрольные суммы SHA-256 всех файлов лежат в
 [SHA256SUMS.txt](https://github.com/J3ckJ/AppRestore/releases/latest/download/SHA256SUMS.txt).
@@ -103,11 +117,13 @@ App Store кнопки «Загрузить» уже нет: приложени�
 
 ### macOS
 
-1. Скачайте [AppRestore-GUI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip).
+1. Скачайте [AppRestore-GUI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip)
+   для Apple Silicon или [AppRestore-GUI-macOS-Intel.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS-Intel.zip)
+   для Intel.
 2. Проверьте, что архив не подменён. Сборка не подписана и не нотаризована
    Apple, поэтому macOS её не знает и проверить её можете только вы. В
    «Терминале» выполните `shasum -a 256 ~/Downloads/AppRestore-GUI-macOS.zip`
-   и сравните результат со строкой этого файла в
+   (для Intel подставьте имя `AppRestore-GUI-macOS-Intel.zip`) и сравните результат со строкой этого файла в
    [SHA256SUMS.txt](https://github.com/J3ckJ/AppRestore/releases/latest/download/SHA256SUMS.txt).
    Если не совпадает, не открывайте программу.
 3. Откройте архив и перенесите `AppRestore.app` в папку «Программы».
@@ -129,6 +145,12 @@ App Store кнопки «Загрузить» уже нет: приложени�
    приложения в App Store, отметьте нужное и нажмите **Скачать и установить**.
 
 ![Поиск и установка приложения](docs/screenshots/install.png)
+
+В разделе **Файлы IPA** (в классическом окне — **Библиотека IPA**) действие
+**Скачать IPA из App Store** берёт список приложений с телефона и скачивает
+доступные для вашего Apple ID IPA из магазина. Это не извлечение установленной
+версии: скачанная версия может отличаться, а данные приложения с телефона
+не копируются.
 
 Галочка **«Получить бесплатно в App Store на ваш Apple ID»** нужна, если
 бесплатного приложения ещё не было на вашем Apple ID. Тогда программа сначала
@@ -152,7 +174,7 @@ App Store кнопки «Загрузить» уже нет: приложени�
 
 Установщик скачивает архив с исходным кодом нужной версии, сверяет его
 контрольную сумму SHA-256 и ставит AppRestore только для вашего пользователя,
-без прав администратора. Вместе с ним ставится проверенный **ipatool 2.6.0**.
+без прав администратора. Вместе с ним ставится проверенный **ipatool 2.8.1**.
 
 ### Windows (одна строка в PowerShell)
 
@@ -296,8 +318,8 @@ ipatool на Windows, чтобы зашифровать сохранённый �
 
 - только законный путь: ваш Apple ID и ваши файлы IPA;
 - защита приложений (DRM) не обходится, пиратские IPA не поддерживаются;
-- графическая версия для macOS работает только на Apple Silicon и не подписана
-  в Apple;
+- графическая версия для macOS собирается отдельно для Apple Silicon и Intel
+  и не подписана в Apple;
 - сборки для Windows не подписаны, поэтому SmartScreen показывает
   предупреждение;
 - Linux не поддерживается;
@@ -311,7 +333,7 @@ AppRestore распространяется по лицензии [GNU GPL v3](.
 
 Главные компоненты:
 
-- **ipatool 2.6.0** (MIT): вход в Apple ID и загрузка IPA;
+- **ipatool 2.8.1** (MIT): вход в Apple ID и загрузка IPA;
 - **pymobiledevice3**: связь с iPhone по USB;
 - **PySide6 (Qt)**: окно графической версии;
 - **Unicorn 2.1.4**: служебный компонент, который ipatool скачивает сам при
@@ -325,8 +347,10 @@ AppRestore распространяется по лицензии [GNU GPL v3](.
 - как выпускать новую версию: [docs/RELEASING.md](./docs/RELEASING.md);
 - история изменений: [CHANGELOG.md](./CHANGELOG.md).
 
-В каждом выпуске шесть файлов: `AppRestore-GUI-Windows.zip`,
-`AppRestore-GUI-macOS.zip`, `install.ps1`, `install.sh`,
+В каждом выпуске десять файлов: программа с окном `AppRestore-GUI-Windows.zip`,
+`AppRestore-GUI-macOS.zip`, `AppRestore-GUI-macOS-Intel.zip`; готовая
+терминальная версия `AppRestore-CLI-Windows.zip`, `AppRestore-CLI-macOS.zip`,
+`AppRestore-CLI-macOS-Intel.zip`; установщики `install.ps1`, `install.sh`;
 `AppRestore-<версия>-source.zip` и `SHA256SUMS.txt`.
 
 ---
@@ -334,7 +358,7 @@ AppRestore распространяется по лицензии [GNU GPL v3](.
 ## English summary
 
 **AppRestore** brings offloaded or deleted apps back to an iPhone over USB from
-Windows or macOS, using your own Apple ID and the verified **ipatool 2.6.0**.
+Windows or macOS, using your own Apple ID and the verified **ipatool 2.8.1**.
 It does not bypass DRM.
 
 Download from
@@ -342,7 +366,8 @@ Download from
 
 - **Desktop app (no command line):**
   [Windows](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-Windows.zip),
-  [macOS, Apple Silicon](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip).
+  [macOS, Apple Silicon](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip),
+  [macOS, Intel](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS-Intel.zip).
   Both builds are unsigned (and not notarized by Apple), so first compare the
   archive's SHA-256 (`Get-FileHash` on Windows, `shasum -a 256` on macOS) with
   [SHA256SUMS.txt](https://github.com/J3ckJ/AppRestore/releases/latest/download/SHA256SUMS.txt).

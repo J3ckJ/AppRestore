@@ -298,13 +298,31 @@ def _explain_login_failure(exit_status: object, transcript: str, *, code_sent: b
         return WRONG_CODE_TEXT
     if any(hint in text for hint in ("invalid password", "incorrect password", "wrong password", "bad credentials")):
         return "Apple не приняла пароль. Проверьте его и нажмите «Войти» ещё раз."
-    if "http 204" in text or "empty or non-plist" in text:
-        return (
-            "Пароль дошёл до ipatool, но адрес входа App Store "
-            "(buy.itunes.apple.com) ответил пустым HTTP 204. "
-            "Сайт icloud.com — другой вход, он может открываться, "
-            "когда магазин приложений вход не принимает."
+    if "rate limited" in text or "requested a wait longer" in text:
+        return "Apple временно ограничила попытки входа. Подождите несколько минут и попробуйте ещё раз."
+    if any(
+        hint in text
+        for hint in (
+            "unicorn",
+            "sap action signer",
+            "prepare apple authentication",
+            "apple assets",
+            "locate user cache",
+            "find user cache directory",
         )
+    ):
+        return (
+            "Не удалось подготовить компоненты входа Apple. При первом входе "
+            "ipatool 2.8 скачивает их из интернета (около 80 МБ) — проверьте "
+            "подключение и нажмите «Войти» ещё раз."
+        )
+    if "store provisioning" in text or "store amd" in text:
+        return (
+            "Apple не завершила подготовку этого компьютера к входу. "
+            "Нажмите «Войти» ещё раз; если не поможет — попробуйте позже."
+        )
+    if "http 204" in text or "empty or non-plist" in text:
+        return "Apple не приняла запрос входа (пустой ответ HTTP 204). Попробуйте ещё раз через пару минут."
     if "http 301" in text:
         return "Apple не приняла вход. Попробуйте ещё раз позже."
     return f"Вход не удался (код {exit_status}). Текст ipatool показан выше."
@@ -683,7 +701,7 @@ def login_argv(ipatool: str) -> list[str]:
     return [ipatool, "auth", "login"]
 
 
-#: ipatool cde7d00 prompts, verbatim, printed without a newline (cmd/auth.go, prompt.go).
+#: ipatool 2.8.1 prompts (unchanged since 2.6), verbatim, printed without a newline (cmd/auth.go, prompt.go).
 PROMPT_APPLE_ID = "enter Apple ID (email address or phone number): "
 PROMPT_PASSWORD = "enter password: "
 PROMPT_CODE = "enter 2FA code: "
@@ -912,7 +930,7 @@ def _drive_windows_unlock(
                 _kind, value = user_inbox.get_nowait()
             except queue.Empty:
                 break
-            cleaned = value.strip()
+            cleaned = value
             if not cleaned:
                 continue
             secrets.append(cleaned)
@@ -1050,7 +1068,7 @@ def _drive_windows_login(
                 kind, value = user_inbox.get_nowait()
             except queue.Empty:
                 break
-            cleaned = value.strip()
+            cleaned = value.strip() if kind == "code" else value
             if not cleaned:
                 continue
             secrets.append(cleaned)

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from concurrent.futures import Future
 import hashlib
 import os
 import re
 import stat
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -90,6 +92,14 @@ class AppRestoreService:
             list[IpaMetadata],
             list[tuple[Path, str]],
         ] | None = None
+        self._scan_lock = threading.Lock()
+        # The GUI opens several views of the same phone together. Share that
+        # read briefly; CLI operations keep fresh reads by default.
+        self.device_inventory_ttl = 0.0
+        self._inventory_lock = threading.Lock()
+        self._inventory_epoch = 0
+        self._inventories: dict[str, tuple[float, object]] = {}
+        self._inventory_pending: dict[tuple[int, str], Future] = {}
         #: GUI: the IPA is verified and about to go onto the phone.
         self.on_device_install: Callable[[], None] | None = None
 
@@ -167,18 +177,57 @@ class AppRestoreService:
         # One CLI/menu operation often asks for the same inventory several
         # times.  Cache it for the service lifetime; an explicit scan refreshes
         # the view after users add/remove IPA files.
-        if refresh or self._local_scan_cache is None:
-            entries, errors = scan_ipas(
-                ipa_search_roots(self.library),
-                index=self._ipa_index,
-            )
-            self._local_scan_cache = (entries, errors)
-        return self._local_scan_cache
+        with self._scan_lock:
+            if refresh or self._local_scan_cache is None:
+                entries, errors = scan_ipas(
+                    ipa_search_roots(self.library),
+                    index=self._ipa_index,
+                )
+                self._local_scan_cache = (entries, errors)
+            return self._local_scan_cache
+
+    def invalidate_device_apps(self) -> None:
+        """Do not reuse inventory across a refresh or device mutation."""
+        with self._inventory_lock:
+            self._inventory_epoch += 1
+            self._inventories.clear()
+
+    def _device_apps(self, udid: str) -> object:
+        ttl = self.device_inventory_ttl
+        if ttl <= 0:
+            return self.tools.list_apps(udid)
+        with self._inventory_lock:
+            cached = self._inventories.get(udid)
+            if cached is not None and time.monotonic() < cached[0]:
+                return cached[1]
+            key = (self._inventory_epoch, udid)
+            pending = self._inventory_pending.get(key)
+            owner = pending is None
+            if pending is None:
+                pending = Future()
+                self._inventory_pending[key] = pending
+        if not owner:
+            return pending.result()
+        try:
+            payload = self.tools.list_apps(udid)
+            with self._inventory_lock:
+                if key[0] == self._inventory_epoch:
+                    if len(self._inventories) >= 8:
+                        self._inventories.pop(next(iter(self._inventories)))
+                    self._inventories[udid] = (time.monotonic() + ttl, payload)
+            pending.set_result(payload)
+            return payload
+        except BaseException as exc:
+            pending.set_exception(exc)
+            raise
+        finally:
+            with self._inventory_lock:
+                self._inventory_pending.pop(key, None)
 
     def offloaded(self, udid: str) -> list[OffloadedApp]:
         local, _ = self.scan_local()
         catalog = load_imazing_catalog(imazing_catalog_candidates())
-        payload = self.tools.list_apps(udid)
+        payload = self._device_apps(udid)
         return parse_offloaded_apps(payload, local, catalog)
 
     def installed(self, udid: str) -> list[InstalledApp]:
@@ -186,7 +235,7 @@ class AppRestoreService:
 
         local, _ = self.scan_local()
         catalog = load_imazing_catalog(imazing_catalog_candidates())
-        payload = self.tools.list_apps(udid)
+        payload = self._device_apps(udid)
         return parse_installed_apps(payload, local, catalog)
 
     def missing(self, udid: str) -> list[MissingApp]:
@@ -198,7 +247,7 @@ class AppRestoreService:
         """
         local, _ = self.scan_local()
         records = load_imazing_app_records(imazing_catalog_candidates())
-        payload = self.tools.list_apps(udid)
+        payload = self._device_apps(udid)
         present = installed_bundle_ids(payload)
         apps = parse_missing_apps(
             installed=present,
@@ -1047,7 +1096,8 @@ class AppRestoreService:
                 provenance="verified-download",
                 status="confirmed",
             )
-            self._local_scan_cache = None
+            with self._scan_lock:
+                self._local_scan_cache = None
             return target
 
     def download_by_store_id(
@@ -1136,7 +1186,8 @@ class AppRestoreService:
                 provenance="verified-download",
                 status="confirmed",
             )
-            self._local_scan_cache = None
+            with self._scan_lock:
+                self._local_scan_cache = None
             return target
 
     def restore_by_store_id(
@@ -1177,6 +1228,7 @@ class AppRestoreService:
         *,
         expected_bundle_id: str | None = None,
     ) -> IpaMetadata:
+        self.invalidate_device_apps()
         source = Path(ipa).expanduser()
         with self._staged_ipa(
             source,
@@ -1199,6 +1251,7 @@ class AppRestoreService:
                     ready.metadata.path,
                 )
             finally:
+                self.invalidate_device_apps()
                 self._reverify_same_ipa(
                     ready,
                     context="staged IPA changed while the installer was reading it",
@@ -1286,12 +1339,16 @@ class AppRestoreService:
         if try_device_redownload:
             print("  asking iPhone to redownload the app…")
         if try_device_redownload:
+            self.invalidate_device_apps()
             request_state = self.tools.device_request_redownload(
                 udid,
                 app.bundle_id,
             )
             if request_state is not RedownloadRequestState.FAILED_BEFORE_REQUEST:
-                self._wait_for_native_redownload(udid, app.bundle_id)
+                try:
+                    self._wait_for_native_redownload(udid, app.bundle_id)
+                finally:
+                    self.invalidate_device_apps()
                 self._remember_app_best_effort(
                     store_id=app.store_id,
                     bundle_id=app.bundle_id,

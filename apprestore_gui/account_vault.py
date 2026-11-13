@@ -8,10 +8,22 @@ nor the Apple ID password is written here.
 
 from __future__ import annotations
 
+import os
 import shutil
+import tempfile
+import threading
 from pathlib import Path
 
 _FILES = ("account", "cookies", "kbsync-v1")
+_SESSION_LOCK = threading.RLock()
+
+
+class SessionRecoveryError(OSError):
+    """A failed rollback left the previous session in a private backup."""
+
+    def __init__(self, backup: Path) -> None:
+        self.backup = backup
+        super().__init__(f"Не удалось вернуть прежнюю сессию. Резервная копия: {backup}")
 
 
 def live_dir() -> Path:
@@ -33,8 +45,19 @@ def active_email(root: Path | None = None) -> str:
 
 
 def _mark_active(email: str, root: Path) -> None:
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "active.txt").write_text(email.strip(), encoding="utf-8")
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root,
+                                         prefix=".active-", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(email.strip())
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(root / "active.txt")
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def next_account_step(current: str, wanted: str, *, saved: bool, kept: bool) -> str:
@@ -93,29 +116,35 @@ def save_session(email: str, *, live: Path | None = None, root: Path | None = No
     if "@" not in email:
         return False
     source = live or live_dir()
-    if not (source / "account").is_file():
-        return False
     dest = vault_path(email, root)
-    store = dest.parent
-    dest.mkdir(parents=True, exist_ok=True)
-    _copy_session(source, dest)
-    (dest / "email.txt").write_text(email, encoding="utf-8")
-    _mark_active(email, store)
-    return True
+    with _SESSION_LOCK:
+        if not (source / "account").is_file():
+            return False
+        _replace_session(source, dest, email, dest.parent, saved=True)
+        return True
 
 
 def restore_session(email: str, *, live: Path | None = None, root: Path | None = None) -> bool:
-    source = vault_path(email, root)
-    if not (source / "account").is_file():
+    email = email.strip()
+    if "@" not in email:
         return False
+    source = vault_path(email, root)
     dest = live or live_dir()
-    dest.mkdir(parents=True, exist_ok=True)
-    _copy_session(source, dest)
-    _mark_active(email, source.parent)
-    return True
+    with _SESSION_LOCK:
+        if not (source / "account").is_file():
+            return False
+        _replace_session(source, dest, email, source.parent, saved=False)
+        return True
 
 
 def forget_session(email: str, root: Path | None = None) -> None:
+    if "@" not in email:
+        return
+    with _SESSION_LOCK:
+        _forget_session(email, root)
+
+
+def _forget_session(email: str, root: Path | None = None) -> None:
     store = root or vault_root()
     folder = vault_path(email, store)
     if folder.is_dir():
@@ -128,11 +157,65 @@ def forget_session(email: str, root: Path | None = None) -> None:
             pass
 
 
+def _replace_session(source: Path, dest: Path, email: str, root: Path, *, saved: bool) -> None:
+    """Stage a complete directory before replacing it, retaining rollback data.
+
+    The caller holds _SESSION_LOCK and QuickSession excludes ipatool work while
+    switching. Directory renames stay on the same volume. Unrelated ipatool
+    files are preserved. This handles I/O failures; it is not a cross-process
+    lock or a guarantee against power loss between the directory renames.
+    """
+
+    if source.is_symlink() or dest.is_symlink():
+        raise OSError("Нельзя использовать ссылку вместо каталога сессии")
+    dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    transaction = Path(tempfile.mkdtemp(prefix=f".{dest.name}-session-", dir=dest.parent))
+    staged = transaction / "new"
+    backup = transaction / "previous"
+    moved = installed = False
+    keep_backup = False
+    try:
+        if dest.exists():
+            shutil.copytree(dest, staged, symlinks=True)
+            staged.chmod(0o700)
+        else:
+            staged.mkdir(mode=0o700)
+        _copy_session(source, staged)
+        if saved:
+            label = staged / "email.txt"
+            label.unlink(missing_ok=True)
+            label.write_text(email, encoding="utf-8")
+            label.chmod(0o600)
+        if dest.exists():
+            dest.rename(backup)
+            moved = True
+        staged.rename(dest)
+        installed = True
+        _mark_active(email, root)
+    except BaseException:
+        try:
+            if installed:
+                dest.rename(staged)
+            if moved:
+                backup.rename(dest)
+        except OSError as rollback_error:
+            keep_backup = True
+            raise SessionRecoveryError(backup if moved else dest) from rollback_error
+        raise
+    finally:
+        # Never delete the user's previous session if rollback itself failed.
+        if not keep_backup:
+            shutil.rmtree(transaction, ignore_errors=True)
+
+
 def _copy_session(source: Path, dest: Path) -> None:
     for name in _FILES:
         origin = source / name
         target = dest / name
+        # A staged symlink must never redirect a write outside the transaction.
+        target.unlink(missing_ok=True)
+        if origin.is_symlink():
+            raise OSError("Нельзя использовать ссылку вместо файла сессии")
         if origin.is_file():
             shutil.copy2(origin, target)
-        elif target.exists():
-            target.unlink()
+            target.chmod(0o600)
