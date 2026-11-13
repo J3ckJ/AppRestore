@@ -127,13 +127,14 @@ def test_files_view_rows_and_buttons(tmp_path) -> None:
                             {"path": str(tmp_path / "x.ipa"), "name": "", "detail": "x.ipa"}])
     assert rows[0]["meta"].startswith("11.2 · ") and rows[1]["name"] == "x" and rows[1]["meta"] == ""
     v = Fv.files_view(open_=True, mode="list", library=rows, export=[], note="", busy=False, connected=False)
-    assert (v["title"], v["secondary"], v["primary"]) == ("Файлы IPA", "Выгрузить с устройства", "Выбрать на ПК")
+    assert (v["title"], v["secondary"], v["primary"]) == ("Файлы IPA", "Скачать IPA из App Store", "Выбрать на ПК")
     assert v["secondaryEnabled"] is False and v["primaryEnabled"] is True
     empty = Fv.files_view(open_=True, mode="list", library=[], export=[], note="", busy=False, connected=True)
     assert empty["empty"] == Fv.EMPTY
     ex = Fv.export_rows([{"bundleId": "a", "name": "A"}, {"bundleId": "b", "name": "B"}], {"a", "b"})
     v = Fv.files_view(open_=True, mode="export", library=[], export=ex, note="", busy=False, connected=True)
-    assert v["primary"] == "Сохранить 2" and v["primaryEnabled"] and v["secondary"] == "Назад"
+    assert v["primary"] == "Скачать 2" and v["primaryEnabled"] and v["secondary"] == "Назад"
+    assert "данные приложения с телефона не копируются" in v["hint"]
 
 
 class _FilesSource(FakeSource):
@@ -178,7 +179,7 @@ def test_files_sheet_flow_and_qml(qapp, tmp_path) -> None:
     sheet = window.findChild(QObject, "filesSheet")
     assert sheet is not None
     assert window.findChild(QObject, "filesPrimary").property("text") == "Выбрать на ПК"
-    assert window.findChild(QObject, "filesSecondary").property("text") == "Выгрузить с устройства"
+    assert window.findChild(QObject, "filesSecondary").property("text") == "Скачать IPA из App Store"
     c.filesExport()
     bid = c.files["rows"][0]["key"]
     c.filesToggle(bid)

@@ -54,13 +54,13 @@ App Store кнопки «Загрузить» уже нет: приложени�
 | macOS на Apple Silicon (M1 и новее) | [AppRestore-GUI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip) |
 | macOS на Intel | [AppRestore-GUI-macOS-Intel.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS-Intel.zip) |
 
-На Mac с процессором Intel графическая версия не запустится. Используйте
-терминальную версию.
+Для Mac с процессором Intel выберите отдельную сборку
+`AppRestore-GUI-macOS-Intel.zip`; сборка без `Intel` предназначена для Apple Silicon.
 
 ### Терминальная версия
 
-Меню в окне терминала. Подходит, если вам удобна командная строка, нужен Mac
-с Intel или вы хотите запускать команды из скриптов. Ставится одной командой.
+Меню в окне терминала. Подходит, если вам удобна командная строка или вы
+хотите запускать команды из скриптов. Работает и на Mac с Intel. Ставится одной командой.
 
 | Система | Файл |
 |---|---|
@@ -104,11 +104,13 @@ App Store кнопки «Загрузить» уже нет: приложени�
 
 ### macOS
 
-1. Скачайте [AppRestore-GUI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip).
+1. Скачайте [AppRestore-GUI-macOS.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS.zip)
+   для Apple Silicon или [AppRestore-GUI-macOS-Intel.zip](https://github.com/J3ckJ/AppRestore/releases/latest/download/AppRestore-GUI-macOS-Intel.zip)
+   для Intel.
 2. Проверьте, что архив не подменён. Сборка не подписана и не нотаризована
    Apple, поэтому macOS её не знает и проверить её можете только вы. В
    «Терминале» выполните `shasum -a 256 ~/Downloads/AppRestore-GUI-macOS.zip`
-   и сравните результат со строкой этого файла в
+   (для Intel подставьте имя `AppRestore-GUI-macOS-Intel.zip`) и сравните результат со строкой этого файла в
    [SHA256SUMS.txt](https://github.com/J3ckJ/AppRestore/releases/latest/download/SHA256SUMS.txt).
    Если не совпадает, не открывайте программу.
 3. Откройте архив и перенесите `AppRestore.app` в папку «Программы».
@@ -130,6 +132,12 @@ App Store кнопки «Загрузить» уже нет: приложени�
    приложения в App Store, отметьте нужное и нажмите **Скачать и установить**.
 
 ![Поиск и установка приложения](docs/screenshots/install.png)
+
+В разделе **Файлы IPA** (в классическом окне — **Библиотека IPA**) действие
+**Скачать IPA из App Store** берёт список приложений с телефона и скачивает
+доступные для вашего Apple ID IPA из магазина. Это не извлечение установленной
+версии: скачанная версия может отличаться, а данные приложения с телефона
+не копируются.
 
 Галочка **«Получить бесплатно в App Store на ваш Apple ID»** нужна, если
 бесплатного приложения ещё не было на вашем Apple ID. Тогда программа сначала

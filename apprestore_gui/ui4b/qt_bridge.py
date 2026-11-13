@@ -1586,7 +1586,7 @@ class Restore4b(QObject):
 
     @Slot()
     def filesExport(self) -> None:
-        """«Выгрузить с устройства»: the installed apps on the phone, pick, save copies."""
+        """Pick installed apps to download their IPA files from the App Store."""
 
         self._files_mode = "export"
         self._files_chosen = set()

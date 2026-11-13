@@ -95,3 +95,51 @@ def test_window_login_asks_for_code_on_posix(
     transcript = "".join(output)
     assert password not in transcript
     assert "enter password" in transcript
+
+
+@pytest.mark.parametrize("driver", ["login", "unlock"])
+@pytest.mark.parametrize("queued", [False, True])
+def test_keychain_spaces_survive_real_terminal_input(tmp_path, monkeypatch, driver, queued):
+    from apprestore_gui import auth_pty
+
+    secret = "  secret with spaces  "
+    tool = tmp_path / "ipatool"
+    tool.write_text(
+        f"#!{sys.executable}\n"
+        "import sys, termios\n"
+        "settings = termios.tcgetattr(0)\n"
+        "settings[3] &= ~termios.ECHO\n"
+        "termios.tcsetattr(0, termios.TCSANOW, settings)\n"
+        "if 'login' in sys.argv:\n"
+        "    sys.stdout.write('enter password: '); sys.stdout.flush()\n"
+        "    sys.stdin.readline()\n"
+        "    sys.stdout.write('\\nenter 2FA code: '); sys.stdout.flush()\n"
+        "    sys.stdin.readline()\n"
+        "sys.stdout.write('\\nenter keychain passphrase: '); sys.stdout.flush()\n"
+        "got = sys.stdin.readline().rstrip('\\r\\n')\n"
+        f"ok = got == {secret!r}\n"
+        "print('ok' if ok else 'bad')\n"
+        "sys.exit(0 if ok else 1)\n",
+        encoding="utf-8",
+    )
+    tool.chmod(0o755)
+    monkeypatch.setattr(auth_pty, "_which_ipatool", lambda: str(tool))
+    monkeypatch.setattr(auth_pty, "_apple_login_host_reachable", lambda *a, **kw: True)
+    inbox = auth_pty.queue.Queue()
+    # For unlock, queue an answer before entering the loop. For login it is
+    # queued only when the passphrase prompt appears, after password and 2FA.
+    if queued and driver == "unlock":
+        inbox.put(("passphrase", secret))
+    output = []
+    kwargs = dict(
+        passphrase="unused" if queued and driver == "unlock" else "" if queued else secret,
+        on_output=output.append, on_status=None,
+        on_need=lambda kind: inbox.put((kind, secret)), inbox=inbox, cancel=None,
+    )
+    if driver == "login":
+        result = auth_pty._drive_windows_login(email="a@example.com",
+                                             password="pw", code="123456", timeout=30, **kwargs)
+    else:
+        result = auth_pty._drive_windows_unlock(**kwargs)
+    assert result.ok, result.message
+    assert secret not in "".join(output)

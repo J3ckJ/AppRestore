@@ -1508,7 +1508,7 @@ class MainWindow(QMainWindow):
         scan.clicked.connect(self.reload_library)
         pick = QPushButton("Выбрать файл")
         pick.clicked.connect(self._pick_ipa)
-        export_from_device = QPushButton("Выгрузить с устройства")
+        export_from_device = QPushButton("Скачать IPA из App Store")
         export_from_device.setObjectName("export_from_device")
         export_from_device.clicked.connect(self._export_from_device)
         install = QPushButton("Установить")

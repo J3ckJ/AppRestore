@@ -18,6 +18,7 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 from apprestore_core.models import Device, InstalledApp, IpaMetadata, OffloadedApp
 from apprestore_gui.account_bindings import account_email, load_bindings, remember_binding
 from apprestore_gui.account_vault import (
+    SessionRecoveryError,
     active_email,
     forget_session,
     has_session,
@@ -642,8 +643,36 @@ class QuickSession(QObject):
             return
         try:
             self._login_idle(email, password)
+        except OSError as exc:
+            self._session_storage_error(exc)
         finally:
             self._tool_lock.release()
+
+    def _session_storage_error(self, error: OSError, *, invalidate: bool = False) -> None:
+        """A failed switch must not advance the account shown in the window."""
+
+        invalidate = invalidate or isinstance(error, SessionRecoveryError)
+        if invalidate:
+            self.service.clear_keychain_passphrase()
+        with self._lock:
+            self._switch_asked = None
+            self._return_account = ""
+            self._auth_status = (
+                str(error) if isinstance(error, SessionRecoveryError)
+                else "Не удалось сохранить или переключить сессию Apple ID. "
+                     "Проверьте свободное место и права на папки, затем повторите."
+            )
+            if invalidate:
+                self._signed = False
+                self._phase = "locked" if keychain_has_saved_account() else "out"
+                self._account_email = ""
+                self._pending_email = ""
+                self._after_unlock = ""
+                self._auth_status += " Откройте сессию заново."
+        if invalidate:
+            self._follow_purchases_account("")
+            self._on_session_view(SESSION_UNKNOWN)
+        self.changed.emit()
 
     def _acquire_account_change(self) -> bool:
         with self._lock:
@@ -668,7 +697,9 @@ class QuickSession(QObject):
         with self._lock:
             current = self._account_email.strip() if self._signed else ""
         self._return_account = ""
-        if current and current.lower() != email.lower() and save_session(current):
+        if current and current.lower() != email.lower():
+            if not save_session(current):
+                raise OSError("Файлы текущей сессии не найдены")
             self._return_account = current
         self._pending_email = email
         self._set_auth("running", "Входим…")
@@ -708,7 +739,6 @@ class QuickSession(QObject):
 
     @Slot(str)
     def unlock(self, passphrase: str) -> None:
-        passphrase = passphrase.strip()
         if not passphrase:
             self._set_auth(self._phase or "locked", "Введите пароль связки ключей. Это не пароль Apple ID.")
             return
@@ -885,7 +915,12 @@ class QuickSession(QObject):
         elif self._return_account:
             previous = self._return_account
             self._return_account = ""
-            restore_session(previous)
+            try:
+                if not restore_session(previous):
+                    raise OSError("Сохранённая сессия не найдена")
+            except OSError as exc:
+                self._session_storage_error(exc, invalidate=True)
+                return
             secret = self._passphrases.get(previous.lower(), "")
             if secret:
                 self.service.remember_keychain_passphrase(secret, session_open=True)
@@ -901,6 +936,7 @@ class QuickSession(QObject):
     def _refresh_auth(self) -> None:
         email = ""
         info = None
+        storage_failed = False
         # probe_keychain starts a passwordless child: a file keyring is locked
         # again in EACH process, even immediately after a successful unlock.
         # Use the GUI's secure stdin runner while it holds the passphrase.
@@ -951,7 +987,14 @@ class QuickSession(QObject):
                 follow = self._after_unlock
                 self._after_unlock = ""
         if state == "in" and saved:
-            save_session(saved)
+            try:
+                save_session(saved)
+            except OSError as exc:
+                storage_failed = True
+                self._session_storage_error(exc)
+                if isinstance(exc, SessionRecoveryError):
+                    return
+                follow = ""  # Do not switch away without a saved current session.
             self._follow_purchases_account(saved)
             # The onboarding scan can fire while _on_auth_done still has no
             # email (unlocking an existing account, not logging in anew). That
@@ -971,7 +1014,7 @@ class QuickSession(QObject):
             self.keychainPrompt.emit("")
         if state == "in" and follow and follow.lower() != saved.lower():
             self.followAccount.emit(follow)
-        elif state in ("in", "locked", "out"):
+        elif not storage_failed and state in ("in", "locked", "out"):
             self._consider_account()
 
     def _consider_account(self) -> None:
@@ -1021,6 +1064,8 @@ class QuickSession(QObject):
             return
         try:
             self._switch_idle(email)
+        except OSError as exc:
+            self._session_storage_error(exc)
         finally:
             self._tool_lock.release()
 
@@ -1048,7 +1093,8 @@ class QuickSession(QObject):
             self.keychainPrompt.emit("")
             return
         if known and known.lower() != email.lower():
-            save_session(known)
+            if not save_session(known):
+                raise OSError("Файлы текущей сессии не найдены")
         if not restore_session(email):
             self.loginPrompt.emit(email)
             return

@@ -930,7 +930,7 @@ def _drive_windows_unlock(
                 _kind, value = user_inbox.get_nowait()
             except queue.Empty:
                 break
-            cleaned = value.strip()
+            cleaned = value
             if not cleaned:
                 continue
             secrets.append(cleaned)
@@ -1068,7 +1068,7 @@ def _drive_windows_login(
                 kind, value = user_inbox.get_nowait()
             except queue.Empty:
                 break
-            cleaned = value.strip()
+            cleaned = value.strip() if kind == "code" else value
             if not cleaned:
                 continue
             secrets.append(cleaned)
