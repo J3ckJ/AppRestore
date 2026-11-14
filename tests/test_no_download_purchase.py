@@ -109,6 +109,7 @@ def test_grants_are_minted_by_the_gate_only() -> None:
 AUTH_INFO_US: dict[str, object] = {
     "level": "info",
     "name": "Test User",
+    "email": "test@example.com",
     "storeFront": "143441-1,34",
     "countryCode": "US",
     "success": True,
@@ -291,7 +292,7 @@ def test_widgets_checkbox_refuses_over_limit(world, which) -> None:
 
 def test_cli_bundle_id_is_looked_up_in_account_country_then_gated(world) -> None:
     runner, root, journal, _price = world
-    runner.auth = {"storeFront": "143469-16,29", "success": True}  # RU, no countryCode
+    runner.auth = {"email": "test@example.com", "storeFront": "143469-16,29", "success": True}  # RU, no countryCode
     asked: list[tuple[str, tuple[str, ...] | None]] = []
 
     def lookup(bundle_id, countries=None):
@@ -309,7 +310,7 @@ def test_cli_bundle_id_is_looked_up_in_account_country_then_gated(world) -> None
 
 def test_cli_bundle_id_falls_back_to_the_country_list(world) -> None:
     runner, root, _journal, _price = world
-    runner.auth = {"storeFront": "143517-2,32", "success": True}  # KZ, no countryCode
+    runner.auth = {"email": "test@example.com", "storeFront": "143517-2,32", "success": True}  # KZ, no countryCode
     asked: list[object] = []
 
     def lookup(bundle_id, countries=None):
@@ -339,7 +340,7 @@ def test_cli_bundle_id_not_found_refuses_without_purchase(world, capsys) -> None
     "auth",
     [
         {"level": "info", "name": "x", "email": "x@example.com", "success": True},  # old cde7d00
-        {"level": "info", "name": "x", "storeFront": "", "success": True},
+        {"level": "info", "name": "x", "email": "x@example.com", "storeFront": "", "success": True},
     ],
 )
 def test_cli_unknown_account_country_refuses_purchase(world, capsys, auth) -> None:
@@ -354,7 +355,7 @@ def test_cli_unknown_account_country_refuses_purchase(world, capsys, auth) -> No
 
 def test_cli_bundle_lookup_may_use_the_list_but_the_gate_still_refuses(world, capsys) -> None:
     runner, root, journal, _price = world
-    runner.auth = {"level": "info", "name": "x", "success": True}  # no country at all
+    runner.auth = {"level": "info", "name": "x", "email": "x@example.com", "success": True}  # no country at all
     asked: list[object] = []
 
     def lookup(bundle_id, countries=None):

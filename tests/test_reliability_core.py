@@ -36,6 +36,9 @@ class DeviceTools:
         self.install_result = install_result
         self.install_paths: list[Path] = []
 
+    def ipatool_auth_info(self) -> dict[str, object]:
+        return {"email": "test@example.com", "success": True}
+
     def install_ipa(self, _udid: str, ipa: Path) -> InstallRequestState:
         self.install_paths.append(ipa)
         return self.install_result
@@ -107,6 +110,10 @@ class ReliabilityCoreTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def service(self, tools: object) -> AppRestoreService:
+        if isinstance(tools, mock.Mock):
+            tools.ipatool_auth_info.return_value = {
+                "email": "test@example.com", "success": True,
+            }
         return AppRestoreService(
             tools=tools,  # type: ignore[arg-type]
             library=self.library,
@@ -281,11 +288,13 @@ class ReliabilityCoreTests(unittest.TestCase):
         tools.ipatool_authenticated.assert_not_called()
 
     def test_missing_and_find_local_share_one_inventory_scan(self) -> None:
-        ipa_path = make_ipa(self.root / "local.ipa")
-        metadata = read_ipa_metadata(ipa_path)
         tools = mock.Mock()
         tools.list_apps.return_value = {}
         service = self.service(tools)
+        ipa_path = make_ipa(
+            service._account_ipa_directory(service._ipa_account_key()) / "local.ipa"
+        )
+        metadata = read_ipa_metadata(ipa_path)
 
         with (
             mock.patch(
@@ -368,7 +377,7 @@ class ReliabilityCoreTests(unittest.TestCase):
             "com.example.app",
             "App",
             "1.0",
-            local_ipa=self.root / "App.ipa",
+            local_ipa=service._account_ipa_directory(service._ipa_account_key()) / "App.ipa",
         )
         status = service.restore_offloaded("UDID", local)
         self.assertIn("local IPA", status)
@@ -415,7 +424,7 @@ class ReliabilityCoreTests(unittest.TestCase):
         app = MissingApp(
             "com.example.missing",
             "Missing",
-            local_ipa=self.root / "Missing.ipa",
+            local_ipa=service._account_ipa_directory(service._ipa_account_key()) / "Missing.ipa",
         )
 
         warning = io.StringIO()
