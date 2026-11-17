@@ -316,13 +316,13 @@ def test_settings_archive_switch_persists_and_updates_check(qapp) -> None:
     assert failed.settings["updateStatus"].startswith("Не удалось проверить обновления")
 
 
-def test_windows_settings_link_and_mac_menu_in_qml() -> None:
+def test_windows_linux_settings_link_and_mac_menu_in_qml() -> None:
     from apprestore_gui.ui4b.window import QML_DIR
 
     hero = (QML_DIR / "components" / "HomeHero.qml").read_text(encoding="utf-8")
     main = (QML_DIR / "Main.qml").read_text(encoding="utf-8")
     menu = (QML_DIR / "components" / "MacMenu.qml").read_text(encoding="utf-8")
-    assert 'Theme.isWin && (root.view.links || []).indexOf("Apple ID") >= 0 ? ["Настройки"]' in hero
+    assert '(!Theme.isMac || Theme.isWin) && (root.view.links || []).indexOf("Apple ID") >= 0 ? ["Настройки"]' in hero
     assert '"Ctrl+,"' in main and "PreferencesRole" in menu and "Настройки…" in menu
 
 
@@ -378,7 +378,7 @@ def test_apple_rejected_screen_mark_in_memory_no_region_group_no_retry(qapp, tmp
     assert not any(APPLE_REJECTED_NOTE in p.read_text(errors="ignore") for p in tmp_path.rglob("*") if p.is_file())
 
 
-def test_store_mismatch_keeps_its_own_screen(qapp) -> None:
+def test_store_mismatch_keeps_its_own_screen(qapp, qtbot) -> None:
     from apprestore_core.ipatool_api import MESSAGES_RU, ErrorCode
 
     src = FakeSource("missing")
@@ -390,9 +390,7 @@ def test_store_mismatch_keeps_its_own_screen(qapp) -> None:
     item = next(i for i in c.selection.items if i.store_id == sid)
     c.toggle(item.key)
     c.restoreSelected()
-    for _ in range(5):
-        qapp.processEvents()
-    assert c.flow.running
+    qtbot.waitUntil(lambda: c.flow.running, timeout=2000)
     src.installSettled.emit(sid, False, MESSAGES_RU[ErrorCode.STORE_MISMATCH])
     assert c.home["state"] == STATE_STORE_MISMATCH and c.home.get("cta2") == "Войти заново"
     assert c.flow.apple_rejected == set()

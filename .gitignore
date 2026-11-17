@@ -45,3 +45,7 @@ screenshots/
 build-cli/
 dist-cli/
 cli-dist/
+
+# Linux release archives
+linux-dist/
+gui-dist/

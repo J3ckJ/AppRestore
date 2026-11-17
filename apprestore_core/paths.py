@@ -28,8 +28,10 @@ def cache_dir() -> Path:
     if platform.system() == "Windows":
         root = os.environ.get("LOCALAPPDATA")
         return Path(root) / "AppRestore" if root else Path.home() / "AppData" / "Local" / "AppRestore"
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    return Path(xdg) / "AppRestore" if xdg else Path.home() / "Library" / "Caches" / "AppRestore"
+    if platform.system() == "Darwin":
+        xdg = os.environ.get("XDG_CACHE_HOME")
+        return Path(xdg) / "AppRestore" if xdg else Path.home() / "Library" / "Caches" / "AppRestore"
+    return user_cache_root() / "AppRestore"
 
 
 def user_cache_root() -> Path:
@@ -44,7 +46,7 @@ def user_cache_root() -> Path:
     if platform.system() == "Darwin":
         return Path.home() / "Library" / "Caches"
     xdg = os.environ.get("XDG_CACHE_HOME")
-    return Path(xdg) if xdg else Path.home() / ".cache"
+    return Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / ".cache"
 
 
 def ipatool_sap_runtime_dir(unicorn_version: str) -> Path:
@@ -240,12 +242,11 @@ def data_dir() -> Path:
             if root
             else Path.home() / "AppData" / "Local" / "AppRestore"
         )
-    return (
-        Path.home()
-        / "Library"
-        / "Application Support"
-        / "AppRestore"
-    )
+    if platform.system() != "Darwin":
+        xdg = os.environ.get("XDG_DATA_HOME", "")
+        root = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / ".local" / "share"
+        return root / "AppRestore"
+    return Path.home() / "Library" / "Application Support" / "AppRestore"
 
 
 def known_apps_path() -> Path:
@@ -267,6 +268,8 @@ def ipa_library_dir() -> Path:
             / "AppRestore"
             / "ipas"
         )
+    if platform.system() == "Linux":
+        return data_dir() / "ipas"
     return Path.home() / "AppRestore" / "ipas"
 
 
@@ -277,6 +280,8 @@ def imazing_apps_dirs() -> list[Path]:
         return [
             home / "Library" / "Application Support" / "iMazing" / "Library" / "Apps",
         ]
+    if platform.system() != "Windows":
+        return []
     roaming = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming")
     local = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
     return [
@@ -321,6 +326,8 @@ def imazing_catalog_candidates() -> list[Path]:
     if platform.system() == "Darwin":
         return [home / "Library" / "Application Support" / "iMazing" / "Library" / "Apps.plist"]
 
+    if platform.system() != "Windows":
+        return []
     roaming = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming")
     local = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
     return [

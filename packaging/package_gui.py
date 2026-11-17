@@ -63,12 +63,16 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     asset = asset_name_for()
     if not asset:
-        print("GUI release assets are built on Windows and macOS only", file=sys.stderr)
+        print("GUI release assets are built on Windows, macOS and Linux x86_64", file=sys.stderr)
         return 2
 
     if sys.platform == "win32":
         app = dist / "AppRestore"
         binary_rel = Path("AppRestore") / "AppRestore.exe"
+        tool_dir = app
+    elif sys.platform == "linux":
+        app = dist / "AppRestore"
+        binary_rel = Path("AppRestore") / "AppRestore"
         tool_dir = app
     else:
         app = dist / "AppRestore.app"
@@ -78,6 +82,13 @@ def main() -> int:
     if not binary.is_file():
         print(f"missing build output: {binary}", file=sys.stderr)
         return 1
+
+    if sys.platform == "linux":
+        # Ubuntu's older C++ runtime breaks newer Fedora Mesa drivers. The
+        # font stack must also match the host's fontconfig configuration.
+        # These are system dependencies listed in docs/LINUX.md.
+        for library in ("libstdc++.so.6", "libgcc_s.so.1", "libfontconfig.so.1", "libfreetype.so.6"):
+            (app / "_internal" / library).unlink(missing_ok=True)
 
     ipatool_asset = current_asset()
     archive = args.ipatool_archive.resolve()
@@ -103,7 +114,8 @@ def main() -> int:
         run(["codesign", "--force", "--deep", "--sign", "-", str(app)], check=True)
         run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
 
-    report_path = out / f"selftest-{'windows' if sys.platform == 'win32' else 'macos'}.json"
+    report_platform = {"win32": "windows", "darwin": "macos"}.get(sys.platform, sys.platform)
+    report_path = out / f"selftest-{report_platform}.json"
     result = run([str(binary), "--self-test", "--output", str(report_path)], timeout=600)
     report = json.loads(report_path.read_text(encoding="utf-8"))
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -118,9 +130,12 @@ def main() -> int:
         print(f"built version {version!r} != expected {args.expect_version!r}", file=sys.stderr)
         return 1
 
+    if sys.platform == "linux":
+        (app / "README-Linux.md").write_text((ROOT / "docs" / "LINUX.md").read_text(encoding="utf-8"), encoding="utf-8")
+
     target = out / asset
     target.unlink(missing_ok=True)
-    if sys.platform == "win32":
+    if sys.platform != "darwin":
         zip_windows_folder(app, target)
     else:
         run(

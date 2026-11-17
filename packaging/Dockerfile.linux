@@ -1,0 +1,8 @@
+# Ubuntu 22.04 / glibc 2.35 baseline for portable x86_64 releases.
+FROM ubuntu:22.04
+ENV QT_QPA_PLATFORM=offscreen PATH="/opt/venv/bin:/usr/local/go/bin:${PATH}"
+WORKDIR /src
+COPY . .
+# One build layer also works on Docker hosts using the space-hungry VFS driver.
+# Optional extra_ca is for a local corporate proxy; never disable TLS verification.
+RUN --mount=type=secret,id=extra_ca bash packaging/build-linux.sh

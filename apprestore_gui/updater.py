@@ -107,6 +107,12 @@ def asset_name_for(platform: str | None = None, machine: str | None = None) -> s
     """
     host = platform is None
     platform = platform or sys.platform
+    if platform == "linux":
+        if machine is None:
+            import platform as _platform
+
+            machine = _platform.machine()
+        return "AppRestore-GUI-Linux-x86_64.zip" if machine.lower() in {"x86_64", "amd64"} else None
     if platform == "darwin":
         if machine is None and host:
             import platform as _platform
@@ -246,7 +252,7 @@ def installed_app_path(platform: str | None = None, executable: str | None = Non
 
     platform = platform or sys.platform
     exe = Path(executable or sys.executable)
-    if platform == "win32":
+    if platform in ("win32", "linux"):
         return exe.parent
     if platform == "darwin":
         bundle = exe.parent.parent.parent
@@ -305,6 +311,9 @@ def stage_update(
         if platform == "win32":
             new_app = staging / "AppRestore"
             binary = new_app / "AppRestore.exe"
+        elif platform == "linux":
+            new_app = staging / "AppRestore"
+            binary = new_app / "AppRestore"
         else:
             new_app = staging / "AppRestore.app"
             binary = new_app / "Contents" / "MacOS" / "AppRestore"
@@ -471,7 +480,10 @@ def launch_swap(
         script.write_text(POSIX_SWAP_SCRIPT, encoding="utf-8")
         script.chmod(0o700)
         if relaunch is None:
-            relaunch = f"/usr/bin/open {shlex_quote(str(staged.target_app))}"
+            if platform == "linux":
+                relaunch = shlex_quote(str(staged.target_app / "AppRestore"))
+            else:
+                relaunch = f"/usr/bin/open {shlex_quote(str(staged.target_app))}"
         command = [
             "/bin/sh",
             str(script),

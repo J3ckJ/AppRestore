@@ -74,7 +74,7 @@ def test_release_builds_both_gui_apps_and_publishes_them_with_checksums():
     assert 'gui_windows="AppRestore-GUI-Windows.zip"' in publish
     assert 'gui_macos="AppRestore-GUI-macOS.zip"' in publish
     assert f'gui_macos_intel="{INTEL_MAC_NAME}"' in publish
-    assert '== 10 ]]' in publish
+    assert '== 12 ]]' in publish
     assert (
         'sha256sum "$gui_windows" "$gui_macos" "$gui_macos_intel" '
         '"$cli_windows" "$cli_macos" "$cli_macos_intel" >> SHA256SUMS.txt'
@@ -126,7 +126,8 @@ def test_cli_asset_names_cover_every_platform():
         sys.path.remove(str(ROOT / "packaging"))
     for (platform_name, machine), name in CLI_NAMES.items():
         assert module.cli_asset_name(platform_name, machine) == name
-    assert module.cli_asset_name("linux", "x86_64") is None
+    assert module.cli_asset_name("linux", "x86_64") == "AppRestore-CLI-Linux-x86_64.zip"
+    assert module.cli_asset_name("linux", "aarch64") is None
 
 
 def test_release_builds_and_publishes_a_standalone_cli_for_every_platform():

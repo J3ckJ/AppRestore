@@ -40,7 +40,7 @@
 # patches = same SHA-256. The Go toolchain is pinned below (go1.26.5, the same
 # version upstream v2.8.1 and build-ipatool.yml use); override with IPATOOL_GOTOOLCHAIN.
 #
-# linux-amd64 is only for local checks; AppRestore does not ship it.
+# Linux release builds use Ubuntu 22.04 as the glibc baseline.
 #
 # Usage: packaging/build-ipatool.sh windows-amd64|macos-arm64|macos-amd64|linux-amd64
 set -euo pipefail

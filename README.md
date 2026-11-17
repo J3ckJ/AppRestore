@@ -6,7 +6,7 @@
 
 <p align="center">
   Возвращает на iPhone сгруженные и удалённые приложения.<br>
-  Windows и macOS · iPhone по USB · ваш Apple ID
+  Windows, macOS и Linux · iPhone по USB · ваш Apple ID
 </p>
 
 <p align="center">
@@ -15,7 +15,7 @@
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3"></a>
 </p>
 
-> **Статус:** beta · Версия 0.4.1. Windows и macOS · проект не связан с Apple Inc.
+> **Статус:** beta · Версия 0.4.1. Windows, macOS и Linux · проект не связан с Apple Inc.
 
 ## Что это
 
@@ -36,6 +36,13 @@ App Store кнопки «Загрузить» уже нет: приложени�
 есть право.
 
 ![Главный экран AppRestore](docs/screenshots/overview.png)
+
+## Linux (включая Fedora)
+
+Добавлена сборка GUI и CLI для Linux x86_64 (glibc 2.35+). Готовый Python
+входит в архив; для USB нужен системный usbmuxd.
+[Установка, запуск и сборка на Linux](docs/LINUX.md). Linux-архивы собираются
+workflow **Linux build and distro checks** и включаются в новые релизы.
 
 ## Скачать
 
@@ -88,7 +95,7 @@ App Store кнопки «Загрузить» уже нет: приложени�
 
 ## Что нужно
 
-- компьютер с **Windows 10/11 (64 бит)** или **macOS**;
+- компьютер с **Windows 10/11 (64 бит)**, **macOS** или **Linux x86_64**;
 - iPhone и кабель **USB**. Экран телефона разблокирован, на вопрос «Доверять
   этому компьютеру?» ответьте **Доверять**;
 - интернет;

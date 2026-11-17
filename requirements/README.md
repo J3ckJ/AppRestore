@@ -1,7 +1,7 @@
 # Reproducible Python dependencies
 
 `runtime.lock` is the universal, hash-locked runtime for CPython 3.10–3.13 on
-Windows and macOS. `build.lock` pins the local-project build backend, while
+Windows, macOS and Linux. `build.lock` pins the local-project build backend, while
 `test.lock` pins pytest and its test-only dependencies. `wheel-build.lock` is a
 separate, exact toolchain used only to reproduce the vendored `hexdump` wheel.
 Installers consume `build.lock` and `runtime.lock` with

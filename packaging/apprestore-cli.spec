@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for the standalone AppRestore CLI (Windows/macOS release).
+# PyInstaller spec for the standalone AppRestore CLI (Windows/macOS/Linux release).
 # A console onedir build: no Qt, no Python install needed on the target.
 
 import sys

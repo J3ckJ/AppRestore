@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "apprestore"
 version = "0.4.1"
-description = "Restore offloaded iOS applications from verified IPA files on macOS and Windows."
+description = "Restore offloaded iOS applications from verified IPA files on macOS, Windows and Linux."
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 license = "GPL-3.0-or-later"
@@ -38,6 +38,8 @@ gui = [
 apprestore_gui = ["resources/**/*", "ui4b/data/*.json", "qml/**/*.qml", "qml4b/**/*"]
 
 [tool.pytest.ini_options]
+# Frozen release folders contain third-party tests; collect only our suite.
+testpaths = ["tests"]
 # pymobiledevice3 currently brings in xonsh, whose third-party pytest plugin
 # tries to create an interactive Windows console during collection.  AppRestore
 # does not use that plugin; disabling it keeps `python -m pytest` reliable in

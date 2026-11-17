@@ -931,7 +931,7 @@ def _run_menu(service: AppRestoreService) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = AppRestoreArgumentParser(
         prog="apprestore",
-        description="Restore offloaded iOS applications from macOS or Windows.",
+        description="Restore offloaded iOS applications from macOS, Windows or Linux.",
     )
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--ipa-dir", type=Path, help="local IPA library")

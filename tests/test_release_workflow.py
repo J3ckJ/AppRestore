@@ -141,6 +141,9 @@ def test_every_external_action_is_pinned_to_a_full_commit() -> None:
 
         assert uses
         for action in uses:
+            if action.startswith("./"):
+                assert (ROOT / action).is_file()
+                continue
             assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", action), (
                 f"{path.name} contains an unpinned action: {action}"
             )

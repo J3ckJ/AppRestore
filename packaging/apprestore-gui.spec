@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for AppRestore GUI (Windows/macOS CI).
+# PyInstaller spec for AppRestore GUI (Windows/macOS/Linux CI).
 
 import importlib.util
 import sys

@@ -59,6 +59,8 @@ def cli_asset_name(platform_name: str | None = None, machine: str | None = None)
         if machine in {"x86_64", "amd64", "i386"}:
             return "AppRestore-CLI-macOS-Intel.zip"
         return "AppRestore-CLI-macOS.zip"
+    if platform_name == "linux" and machine in {"x86_64", "amd64"}:
+        return "AppRestore-CLI-Linux-x86_64.zip"
     return None
 
 
@@ -138,6 +140,10 @@ def write_readme(folder: Path, version: str) -> None:
             "  Откройте PowerShell в этой папке и выполните `.\\apprestore.exe`.",
             "\nДля USB нужен Apple Devices или iTunes: `.\\apprestore.exe setup`.\n",
         )
+    elif sys.platform == "linux":
+        label = "Linux x86_64"
+        run_hint = "  ./AppRestore-CLI/apprestore"
+        extra = "\nДля USB установите usbmuxd и libimobiledevice из репозитория дистрибутива.\n"
     else:
         intel = platform.machine() == "x86_64"
         label = "macOS Intel" if intel else "macOS Apple Silicon"
@@ -154,7 +160,7 @@ def write_readme(folder: Path, version: str) -> None:
 
 def make_zip(folder: Path, target: Path) -> None:
     target.unlink(missing_ok=True)
-    if sys.platform == "win32":
+    if sys.platform != "darwin":
         with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
             for path in sorted(folder.rglob("*")):
                 archive.write(path, (Path(folder.name) / path.relative_to(folder)).as_posix())
@@ -163,11 +169,14 @@ def make_zip(folder: Path, target: Path) -> None:
 
 
 def unpack(target: Path, destination: Path) -> None:
-    if sys.platform == "win32":
-        with zipfile.ZipFile(target) as archive:
-            archive.extractall(destination)
-    else:
+    if sys.platform == "darwin":
         run(["/usr/bin/ditto", "-x", "-k", str(target), str(destination)], check=True)
+    else:
+        # zipfile.extractall drops executable permissions on Linux.
+        sys.path.insert(0, str(ROOT))
+        from apprestore_gui.updater import extract_zip
+
+        extract_zip(target, destination)
 
 
 def main() -> int:
@@ -180,7 +189,7 @@ def main() -> int:
 
     asset = cli_asset_name()
     if not asset:
-        print("CLI release assets are built on Windows and macOS only", file=sys.stderr)
+        print("CLI release assets are built on Windows, macOS and Linux x86_64", file=sys.stderr)
         return 2
     folder = Path(args.dist) / FOLDER
     if not folder.is_dir():

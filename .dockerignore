@@ -1,0 +1,12 @@
+.git
+.venv
+**/__pycache__
+.pytest_cache
+build
+build-cli
+dist
+dist-cli
+cli-dist
+gui-dist
+linux-dist
+*.ipa

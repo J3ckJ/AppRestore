@@ -40,6 +40,8 @@ def current_asset() -> str:
         return "windows-amd64"
     if sys.platform == "darwin":
         return "macos-arm64" if machine in ("arm64", "aarch64") else "macos-amd64"
+    if sys.platform == "linux" and machine in ("x86_64", "amd64"):
+        return "linux-amd64"
     raise SystemExit(f"unsupported platform for the GUI bundle: {sys.platform}")
 
 
@@ -83,7 +85,12 @@ def install_license(destinations: list[Path]) -> None:
 
 
 def fetch(asset: str, destinations: list[Path]) -> None:
-    expected = ARCHIVE_SHA256[asset]
+    expected = ARCHIVE_SHA256.get(asset)
+    if expected is None:
+        raise SystemExit(
+            f"no published checksum for {asset}; build the patched archive with "
+            f"bash packaging/build-ipatool.sh {asset} and pass --ipatool-archive"
+        )
     url = f"{ARCHIVE_BASE}/ipatool-{IPATOOL_VERSION}-{asset}.tar.gz"
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "ipatool.tar.gz"
