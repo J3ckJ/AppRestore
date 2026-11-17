@@ -143,7 +143,11 @@ def test_frozen_service_devices_never_calls_sys_executable_m(frozen_windows, fak
     assert not any("-m" in call for call in runner.calls)
 
 
-def test_frozen_pymobiledevice3_command_uses_dispatcher(frozen_windows, fake_pmd3) -> None:
+@pytest.mark.parametrize("system", ["Windows", "Darwin", "Linux"])
+def test_frozen_pymobiledevice3_command_uses_dispatcher(
+    frozen_windows, fake_pmd3, monkeypatch, system
+) -> None:
+    monkeypatch.setattr("apprestore_core.tools.platform.system", lambda: system)
     command = AppRestoreTools()._pymobiledevice3_cmd("apps", "list")
     assert command[0] == FAKE_EXE
     assert command[1] == frozen.RUN_MODULE_FLAG
@@ -159,7 +163,11 @@ def test_unfrozen_command_still_uses_interpreter(monkeypatch, fake_pmd3) -> None
     assert command[:4] == [sys.executable, "-I", "-m", "pymobiledevice3"]
 
 
-def test_frozen_doctor_detail_names_bundle(frozen_windows, fake_pmd3, monkeypatch) -> None:
+@pytest.mark.parametrize("system", ["Windows", "Darwin", "Linux"])
+def test_frozen_doctor_detail_names_bundle(
+    frozen_windows, fake_pmd3, monkeypatch, system
+) -> None:
+    monkeypatch.setattr("apprestore_core.tools.platform.system", lambda: system)
     monkeypatch.setattr(
         "apprestore_core.tools.package_metadata.version", lambda name: "10.1.0"
     )
